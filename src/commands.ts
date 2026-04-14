@@ -21,7 +21,7 @@ export function registerCommands(pi: ExtensionAPI, rt: TomRuntime): void {
 			const rawStr = raw === null ? "unknown" : raw.toLocaleString();
 			const lines = [
 				`TOM status:`,
-				`  S=${rt.cfg.S.toLocaleString()}  T=${rt.cfg.T.toLocaleString()}  R=${rt.cfg.R.toLocaleString()}`,
+				`  T=${rt.cfg.T.toLocaleString()}  R=${rt.cfg.R.toLocaleString()}  keepRecentTokens=${rt.cfg.keepRecentTokens.toLocaleString()}`,
 				`  raw tokens:        ${rawStr}`,
 				`  observations:      ${state.observations.length} (${obsTokens.toLocaleString()} tokens)`,
 				`  reflections:       ${reflectionTokens.toLocaleString()} tokens`,

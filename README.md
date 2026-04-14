@@ -37,14 +37,15 @@ import tomExtension from "pi-observational-memory";
 pi.use(tomExtension);
 
 // or with overrides
-pi.use((api) => tomExtension(api, { T: 40_000, R: 20_000 }));
+pi.use((api) => tomExtension(api, { T: 40_000 }));
 ```
 
 ## Configuration
 
+TOM parameters are configured in `~/.pi/agent/extensions/tom.json` (global) or `.pi/tom.json` (project override):
+
 | Parameter | Default | Description |
 |---|---|---|
-| `S` | `10,000` | Safety buffer — tokens of raw conversation always kept |
 | `T` | `50,000` | Raw token threshold that triggers compaction |
 | `R` | `30,000` | Observation token threshold that triggers reflection |
 | `observerModel` | `google/gemini-2.5-flash` | Model used for observation generation |
@@ -52,6 +53,21 @@ pi.use((api) => tomExtension(api, { T: 40_000, R: 20_000 }));
 | `debounceMs` | `2,000` | Minimum ms after last tool call before firing |
 | `observerMaxTokens` | `2,048` | Max output tokens for the observer |
 | `reflectorMaxTokens` | `4,096` | Max output tokens for the reflector |
+
+### keepRecentTokens (from pi)
+
+TOM reads pi's `compaction.keepRecentTokens` setting from `~/.pi/agent/settings.json` (or `.pi/settings.json`). This controls how many recent tokens pi preserves verbatim during compaction — everything older is given to TOM for observation. Default: `20,000`.
+
+```json
+// ~/.pi/agent/settings.json
+{
+  "compaction": {
+    "keepRecentTokens": 20000
+  }
+}
+```
+
+`T` should always be greater than `keepRecentTokens`, otherwise TOM would trigger compaction but have no messages to observe.
 
 ## Commands
 
@@ -65,9 +81,10 @@ pi.use((api) => tomExtension(api, { T: 40_000, R: 20_000 }));
 
 1. On every `turn_end`, TOM checks if raw tokens exceed `T` and a debounce period has passed.
 2. If so, it triggers pi's compaction flow.
-3. During `session_before_compact`, the oldest chunk of messages is sent to the **observer**, which returns a prioritized observation.
-4. If total observation tokens exceed `R` (or a manual reflect was requested), the **reflector** runs — consolidating observations into reflections and deciding which observations to keep or drop.
-5. The resulting summary (reflections + observations) replaces the discarded conversation chunk in pi's session state.
+3. Pi determines a cut point using `keepRecentTokens` — recent messages are kept verbatim, older messages are passed to TOM.
+4. During `session_before_compact`, TOM sends all older messages to the **observer**, which returns a prioritized observation.
+5. If total observation tokens exceed `R` (or a manual reflect was requested), the **reflector** runs — consolidating observations into reflections and deciding which observations to keep or drop.
+6. The resulting summary (reflections + observations) replaces the discarded conversation in pi's session state.
 
 ## License
 

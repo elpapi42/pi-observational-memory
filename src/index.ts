@@ -5,7 +5,7 @@ import { runObserver } from "./observer.js";
 import { runReflector } from "./reflector.js";
 import { loadState, observationsTokenTotal, serializeState, type TomState } from "./state.js";
 import { buildSummary } from "./summary.js";
-import { newTriggerState, selectChunk, shouldFire } from "./trigger.js";
+import { newTriggerState, shouldFire } from "./trigger.js";
 
 export default function tomExtension(pi: ExtensionAPI, overrides?: Partial<TomConfig>): void {
 	const cfg: TomConfig = loadConfig(process.cwd(), overrides);
@@ -52,11 +52,8 @@ export default function tomExtension(pi: ExtensionAPI, overrides?: Partial<TomCo
 		const allMessages = [...preparation.messagesToSummarize, ...preparation.turnPrefixMessages];
 		if (allMessages.length === 0) return;
 
-		const { chunk } = selectChunk(allMessages, cfg);
-		if (chunk.length === 0) return;
-
 		try {
-			const observation = await runObserver(chunk, prior, cfg, ctx, signal);
+			const observation = await runObserver(allMessages, prior, cfg, ctx, signal);
 			if (!observation) {
 				if (ctx.hasUI) ctx.ui.notify("TOM: observer produced no output; skipping cycle", "warning");
 				return { cancel: true };
