@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { registerCommands } from "./commands.js";
-import { DEFAULT_CONFIG, type TomConfig } from "./config.js";
+import { loadConfig, type TomConfig } from "./config.js";
 import { runObserver } from "./observer.js";
 import { runReflector } from "./reflector.js";
 import { loadState, observationsTokenTotal, serializeState, type TomState } from "./state.js";
@@ -8,7 +8,7 @@ import { buildSummary } from "./summary.js";
 import { newTriggerState, selectChunk, shouldFire } from "./trigger.js";
 
 export default function tomExtension(pi: ExtensionAPI, overrides?: Partial<TomConfig>): void {
-	const cfg: TomConfig = { ...DEFAULT_CONFIG, ...(overrides ?? {}) };
+	const cfg: TomConfig = loadConfig(process.cwd(), overrides);
 	const trig = newTriggerState();
 
 	let forceReflectNext = false;

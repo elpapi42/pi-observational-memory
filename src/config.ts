@@ -1,3 +1,7 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { getAgentDir } from "@mariozechner/pi-coding-agent";
+
 export interface TomConfig {
 	S: number;
 	T: number;
@@ -19,6 +23,21 @@ export const DEFAULT_CONFIG: TomConfig = {
 	observerMaxTokens: 2_048,
 	reflectorMaxTokens: 4_096,
 };
+
+function readConfigFile(path: string): Partial<TomConfig> {
+	if (!existsSync(path)) return {};
+	try {
+		return JSON.parse(readFileSync(path, "utf-8")) as Partial<TomConfig>;
+	} catch {
+		return {};
+	}
+}
+
+export function loadConfig(cwd: string, overrides?: Partial<TomConfig>): TomConfig {
+	const globalConfig = readConfigFile(join(getAgentDir(), "extensions", "tom.json"));
+	const projectConfig = readConfigFile(join(cwd, ".pi", "tom.json"));
+	return { ...DEFAULT_CONFIG, ...globalConfig, ...projectConfig, ...(overrides ?? {}) };
+}
 
 export function batchSize(cfg: TomConfig): number {
 	return cfg.T - cfg.S;
