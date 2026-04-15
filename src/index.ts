@@ -213,6 +213,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 
 		ctx.compact({
 			onComplete: () => {
+				previousTokens = null;
 				if (ctx.hasUI) ctx.ui.notify("Observational memory: compaction complete", "info");
 			},
 			onError: (error) => {
