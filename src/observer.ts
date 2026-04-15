@@ -1,4 +1,4 @@
-import { complete } from "@mariozechner/pi-ai";
+import { completeSimple } from "@mariozechner/pi-ai";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { convertToLlm, serializeConversation } from "@mariozechner/pi-coding-agent";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
@@ -77,7 +77,7 @@ export async function runObserver(
 		"Emit the observation now.",
 	].join("\n");
 
-	const response = await complete(
+	const response = await completeSimple(
 		model,
 		{
 			messages: [
@@ -88,19 +88,8 @@ export async function runObserver(
 				},
 			],
 		},
-		{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: cfg.observerMaxTokens, signal },
+		{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: cfg.observerMaxTokens, signal, reasoning: "low" },
 	);
-
-	if (ctx.hasUI) {
-		const { content, ...responseMeta } = response;
-		const debug = [
-			`model: ${model.provider}/${model.id}`,
-			`input: ${userText.length} chars`,
-			`meta: ${JSON.stringify(responseMeta).slice(0, 800)}`,
-			`content: ${JSON.stringify(content).slice(0, 800)}`,
-		].join("\n");
-		ctx.ui.notify(`TOM debug:\n${debug}`, "info");
-	}
 
 	const raw = response.content
 		.map((c) => ("text" in c ? c.text : ""))

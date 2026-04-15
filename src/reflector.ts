@@ -1,4 +1,4 @@
-import { complete } from "@mariozechner/pi-ai";
+import { completeSimple } from "@mariozechner/pi-ai";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { TomConfig } from "./config.js";
 import { estimateTokensFromText, type TomState } from "./state.js";
@@ -75,7 +75,7 @@ export async function runReflector(
 		"Produce the updated reflections and keep-ids now.",
 	].join("\n");
 
-	const response = await complete(
+	const response = await completeSimple(
 		model,
 		{
 			messages: [
@@ -86,7 +86,7 @@ export async function runReflector(
 				},
 			],
 		},
-		{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: cfg.reflectorMaxTokens, signal },
+		{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: cfg.reflectorMaxTokens, signal, reasoning: "low" },
 	);
 
 	const raw = response.content
