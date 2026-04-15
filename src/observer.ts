@@ -91,6 +91,12 @@ export async function runObserver(
 		{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: cfg.observerMaxTokens, signal },
 	);
 
+	if (ctx.hasUI) {
+		const types = response.content.map((c) => `${c.type}(${"text" in c ? c.text.length : 0})`).join(", ");
+		ctx.ui.notify(`TOM debug: response has ${response.content.length} blocks: [${types}]`, "info");
+		ctx.ui.notify(`TOM debug raw: ${JSON.stringify(response.content).slice(0, 2000)}`, "info");
+	}
+
 	const raw = response.content
 		.map((c) => ("text" in c ? c.text : ""))
 		.join("\n")
