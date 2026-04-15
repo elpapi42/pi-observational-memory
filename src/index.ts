@@ -203,7 +203,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 
 	// ---- Trigger observation when token threshold is crossed ----
 
-	pi.on("agent_end", (_event, ctx) => {
+	pi.on("turn_end", (_event, ctx) => {
 		const entries = ctx.sessionManager.getBranch();
 		const tokens = estimateUncompactedTokens(entries);
 
@@ -211,15 +211,17 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		previousTokens = tokens;
 		if (!wasBelowThreshold || tokens <= config.observationThreshold) return;
 
-		ctx.compact({
-			onComplete: () => {
-				previousTokens = null;
-				if (ctx.hasUI) ctx.ui.notify("Observational memory: compaction complete", "info");
-			},
-			onError: (error) => {
-				if (ctx.hasUI) ctx.ui.notify(`Observational memory: ${error.message}`, "error");
-			},
-		});
+		setTimeout(() => {
+			ctx.compact({
+				onComplete: () => {
+					previousTokens = null;
+					if (ctx.hasUI) ctx.ui.notify("Observational memory: compaction complete", "info");
+				},
+				onError: (error) => {
+					if (ctx.hasUI) ctx.ui.notify(`Observational memory: ${error.message}`, "error");
+				},
+			});
+		}, 0);
 	});
 
 	// ---- Custom compaction: observer + reflector ----
