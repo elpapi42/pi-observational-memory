@@ -203,7 +203,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 
 	// ---- Trigger observation when token threshold is crossed ----
 
-	pi.on("turn_end", (_event, ctx) => {
+	pi.on("agent_end", (_event, ctx) => {
 		const entries = ctx.sessionManager.getBranch();
 		const tokens = estimateUncompactedTokens(entries);
 
