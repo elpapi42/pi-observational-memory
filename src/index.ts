@@ -73,16 +73,20 @@ function estimateTokens(text: string): number {
 	return Math.ceil(text.length / 4);
 }
 
-function estimateUncompactedTokens(
-	entries: Array<{ id?: string; type: string; firstKeptEntryId?: string; message?: unknown; content?: unknown }>,
+function estimateRawTailTokens(
+	entries: Array<{ type: string; message?: unknown; content?: unknown; firstKeptEntryId?: string; id?: string }>,
 ): number {
 	let startIndex = 0;
 	for (let i = entries.length - 1; i >= 0; i--) {
 		if (entries[i].type === "compaction") {
-			const firstKeptId = entries[i].firstKeptEntryId;
-			if (firstKeptId) {
-				const keptIndex = entries.findIndex((e) => e.id === firstKeptId);
-				startIndex = keptIndex >= 0 ? keptIndex : i + 1;
+			const keptId = entries[i].firstKeptEntryId;
+			if (keptId) {
+				for (let j = 0; j < entries.length; j++) {
+					if (entries[j].id === keptId) {
+						startIndex = j;
+						break;
+					}
+				}
 			} else {
 				startIndex = i + 1;
 			}
@@ -93,7 +97,6 @@ function estimateUncompactedTokens(
 	let tokens = 0;
 	for (let i = startIndex; i < entries.length; i++) {
 		const entry = entries[i];
-		if (entry.type === "compaction") continue;
 		if (entry.type === "message" && entry.message) {
 			tokens += estimateMessageTokens(entry.message as Parameters<typeof estimateMessageTokens>[0]);
 		} else if (entry.type === "custom_message" && entry.content) {
@@ -181,14 +184,14 @@ Do NOT wrap output in code blocks or markdown fences.`;
 export default function observationalMemory(pi: ExtensionAPI) {
 	let config: Config = { ...DEFAULTS };
 	let state: MemoryState = { observations: "", reflections: "" };
-	let previousTokens: number | null = null;
+	let compactInFlight = false;
 
 	// ---- Restore state from last compaction entry ----
 
 	pi.on("session_start", (_event, ctx) => {
 		config = loadConfig(ctx.cwd);
 		state = { observations: "", reflections: "" };
-		previousTokens = null;
+		compactInFlight = false;
 
 		const entries = ctx.sessionManager.getBranch();
 		for (let i = entries.length - 1; i >= 0; i--) {
@@ -201,23 +204,28 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		}
 	});
 
-	// ---- Trigger observation when token threshold is crossed ----
+	// ---- Trigger compaction when raw tail exceeds threshold ----
 
-	pi.on("turn_end", (_event, ctx) => {
+	pi.on("agent_end", (_event, ctx) => {
+		if (compactInFlight) return;
+
 		const entries = ctx.sessionManager.getBranch();
-		const tokens = estimateUncompactedTokens(entries);
+		const tokens = estimateRawTailTokens(entries);
+		if (tokens < config.observationThreshold) return;
 
-		const wasBelowThreshold = previousTokens !== null && previousTokens <= config.observationThreshold;
-		previousTokens = tokens;
-		if (!wasBelowThreshold || tokens <= config.observationThreshold) return;
-
+		compactInFlight = true;
 		setTimeout(() => {
+			if (!ctx.isIdle()) {
+				compactInFlight = false;
+				return;
+			}
 			ctx.compact({
 				onComplete: () => {
-					previousTokens = null;
+					compactInFlight = false;
 					if (ctx.hasUI) ctx.ui.notify("Observational memory: compaction complete", "info");
 				},
 				onError: (error) => {
+					compactInFlight = false;
 					if (ctx.hasUI) ctx.ui.notify(`Observational memory: ${error.message}`, "error");
 				},
 			});
@@ -362,7 +370,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		description: "Show observational memory status",
 		handler: async (_args, ctx) => {
 			const entries = ctx.sessionManager.getBranch();
-			const rawTokens = estimateUncompactedTokens(entries);
+			const rawTokens = estimateRawTailTokens(entries);
 			const obsTokens = estimateTokens(state.observations);
 			const refTokens = estimateTokens(state.reflections);
 
