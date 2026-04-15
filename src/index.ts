@@ -392,8 +392,9 @@ export default function observationalMemory(pi: ExtensionAPI) {
 	// ---- /om-view command ----
 
 	pi.registerCommand("om-view", {
-		description: "Print full observational memory contents",
-		handler: async (_args, ctx) => {
+		description: "Print full observational memory contents (--full to include raw messages)",
+		handler: async (args, ctx) => {
+			const full = args.includes("--full");
 			const sections: string[] = [];
 
 			sections.push("── Reflections ──");
@@ -401,6 +402,40 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			sections.push("");
 			sections.push("── Observations ──");
 			sections.push(state.observations || "(none)");
+
+			if (full) {
+				const entries = ctx.sessionManager.getBranch();
+				let startIndex = 0;
+				for (let i = entries.length - 1; i >= 0; i--) {
+					const entry = entries[i];
+					if (entry.type === "compaction") {
+						const keptId = entry.firstKeptEntryId;
+						let found = false;
+						for (let j = 0; j < entries.length; j++) {
+							if (entries[j].id === keptId) {
+								startIndex = j;
+								found = true;
+								break;
+							}
+						}
+						if (!found) startIndex = i + 1;
+						break;
+					}
+				}
+
+				const rawMessages = entries
+					.slice(startIndex)
+					.filter((e): e is typeof e & { type: "message"; message: unknown } => e.type === "message")
+					.map((e) => e.message);
+
+				sections.push("");
+				sections.push("── Raw Messages ──");
+				if (rawMessages.length > 0) {
+					sections.push(serializeConversation(convertToLlm(rawMessages)));
+				} else {
+					sections.push("(none)");
+				}
+			}
 
 			ctx.ui.notify(sections.join("\n"), "info");
 		},
