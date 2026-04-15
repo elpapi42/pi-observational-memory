@@ -92,11 +92,14 @@ export async function runObserver(
 	);
 
 	if (ctx.hasUI) {
-		ctx.ui.notify(`TOM debug model: ${model.provider}/${model.id}`, "info");
-		ctx.ui.notify(`TOM debug input length: ${userText.length} chars`, "info");
 		const { content, ...responseMeta } = response;
-		ctx.ui.notify(`TOM debug response meta: ${JSON.stringify(responseMeta).slice(0, 1000)}`, "info");
-		ctx.ui.notify(`TOM debug content: ${JSON.stringify(content).slice(0, 2000)}`, "info");
+		const debug = [
+			`model: ${model.provider}/${model.id}`,
+			`input: ${userText.length} chars`,
+			`meta: ${JSON.stringify(responseMeta).slice(0, 800)}`,
+			`content: ${JSON.stringify(content).slice(0, 800)}`,
+		].join("\n");
+		ctx.ui.notify(`TOM debug:\n${debug}`, "info");
 	}
 
 	const raw = response.content
