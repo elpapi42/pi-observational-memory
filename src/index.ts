@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { complete } from "@mariozechner/pi-ai";
+import { completeSimple } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
 	convertToLlm,
@@ -230,7 +230,11 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		ctx.ui.notify("Observational memory: running observer...", "info");
 
 		try {
-			const observerResponse = await complete(
+			const observerOptions = model.reasoning
+				? { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 4096, signal, reasoning: "high" as const }
+				: { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 4096, signal };
+
+			const observerResponse = await completeSimple(
 				model,
 				{
 					systemPrompt: OBSERVER_SYSTEM,
@@ -247,7 +251,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 						},
 					],
 				},
-				{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 4096, signal },
+				observerOptions,
 			);
 
 			const newObservations = extractText(observerResponse);
@@ -268,7 +272,11 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			ctx.ui.notify("Observational memory: running reflector...", "info");
 
 			try {
-				const reflectorResponse = await complete(
+				const reflectorOptions = model.reasoning
+					? { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal, reasoning: "high" as const }
+					: { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal };
+
+				const reflectorResponse = await completeSimple(
 					model,
 					{
 						systemPrompt: REFLECTOR_SYSTEM,
@@ -285,7 +293,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 							},
 						],
 					},
-					{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal },
+					reflectorOptions,
 				);
 
 				const output = extractText(reflectorResponse);
