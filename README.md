@@ -2,6 +2,8 @@
 
 Observational memory extension for [Pi](https://github.com/mariozechner/pi). Replaces Pi's default compaction with a two-tier system of **observations** (timestamped event log) and **reflections** (stable long-term facts), giving the agent persistent memory across long conversations.
 
+Inspired by [Mastra's Observational Memory](https://mastra.ai/blog/observational-memory#how-it-works) concept. This is an independent implementation adapted for Pi's extension system and compaction model.
+
 ## How it works
 
 When Pi's context window fills up, this extension intercepts the compaction event and runs two LLM passes:
