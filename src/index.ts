@@ -1,108 +1,273 @@
+import { complete } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { registerCommands } from "./commands.js";
-import { loadConfig, type TomConfig } from "./config.js";
-import { runObserver } from "./observer.js";
-import { runReflector } from "./reflector.js";
-import { loadState, observationsTokenTotal, serializeState, type TomState } from "./state.js";
-import { buildSummary } from "./summary.js";
-import { newTriggerState, shouldFire } from "./trigger.js";
+import { convertToLlm, serializeConversation } from "@mariozechner/pi-coding-agent";
 
-export default function tomExtension(pi: ExtensionAPI, overrides?: Partial<TomConfig>): void {
-	const cfg: TomConfig = loadConfig(process.cwd(), overrides);
-	const trig = newTriggerState();
+// ============================================================================
+// Constants
+// ============================================================================
 
-	let forceReflectNext = false;
-	let cycleCount = 0;
-	let lastRawTokens: number | null = null;
+const OBSERVATION_THRESHOLD = 50_000;
+const REFLECTION_THRESHOLD = 30_000;
 
-	pi.on("tool_execution_start", () => {
-		trig.lastToolCallAt = Date.now();
+// ============================================================================
+// Types
+// ============================================================================
+
+interface MemoryState {
+	observations: string;
+	reflections: string;
+}
+
+interface MemoryDetails {
+	type: "observational-memory";
+	version: 1;
+	observations: string;
+	reflections: string;
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+function isMemoryDetails(d: unknown): d is MemoryDetails {
+	return !!d && typeof d === "object" && (d as Record<string, unknown>).type === "observational-memory";
+}
+
+function estimateTokens(text: string): number {
+	return Math.ceil(text.length / 4);
+}
+
+function extractText(response: { content: Array<{ type: string; text?: string }> }): string {
+	return response.content
+		.filter((c): c is { type: "text"; text: string } => c.type === "text")
+		.map((c) => c.text)
+		.join("\n");
+}
+
+// ============================================================================
+// Prompts
+// ============================================================================
+
+const OBSERVER_SYSTEM = `You are an observation agent for a coding assistant. Compress conversation messages into concise, timestamped observations.
+
+Format as a date-grouped log:
+
+Date: YYYY-MM-DD
+- 🔴 HH:MM Observation text
+  - 🔴 HH:MM Sub-observation
+  - 🟡 HH:MM Sub-observation
+- 🟢 HH:MM Another observation
+
+Priority levels:
+- 🔴 Important: user goals, constraints, decisions, names, deadlines, architectural choices, bugs, errors
+- 🟡 Maybe important: questions asked, preferences, approaches considered, configuration details
+- 🟢 Info only: routine operations, minor details
+
+Rules:
+- Group observations by date, with timestamps inline.
+- Use the three-date model when relevant: note the observation date, the referenced date (if the event refers to a different day), and a relative date (e.g. "2 days ago").
+- Nest related sub-observations under a parent observation.
+- Preserve exact file paths, function names, error messages, and technical details.
+- Focus on WHAT happened and WHY, not routine tool calls.
+- Each observation should be one concise line.
+- Do NOT wrap output in code blocks or markdown fences.`;
+
+const REFLECTOR_SYSTEM = `You are a reflection agent for a coding assistant. Garbage-collect observations and distill stable long-term reflections.
+
+You will receive current reflections (long-term facts) and accumulated observations.
+
+Your task:
+1. PROMOTE observations to reflections when they represent stable, long-lived facts:
+   - User identity, role, preferences
+   - Project goals and architecture decisions
+   - Permanent constraints and requirements
+   - Key technical decisions and their rationale
+2. PRUNE observations that are:
+   - Completed tasks no longer relevant
+   - Routine operations already captured in reflections
+   - Outdated or superseded by newer information
+   - 🟢 info-only items that have aged out
+3. KEEP observations that are still active but not yet stable enough for reflections.
+
+Output EXACTLY two sections with these tags:
+
+<reflections>
+[Updated long-term reflections — stable facts, one per line]
+</reflections>
+
+<observations>
+[Surviving observations in the same date-grouped log format]
+</observations>
+
+Do NOT wrap output in code blocks or markdown fences.`;
+
+// ============================================================================
+// Extension
+// ============================================================================
+
+export default function observationalMemory(pi: ExtensionAPI) {
+	let state: MemoryState = { observations: "", reflections: "" };
+	let previousTokens: number | null = null;
+
+	// ---- Restore state from last compaction entry ----
+
+	pi.on("session_start", (_event, ctx) => {
+		state = { observations: "", reflections: "" };
+		previousTokens = null;
+
+		const entries = ctx.sessionManager.getBranch();
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i];
+			if (entry.type === "compaction" && isMemoryDetails(entry.details)) {
+				state.observations = entry.details.observations;
+				state.reflections = entry.details.reflections;
+				break;
+			}
+		}
 	});
-	pi.on("tool_execution_end", () => {
-		trig.lastToolCallAt = Date.now();
-	});
 
-	pi.on("turn_end", async (_event, ctx) => {
+	// ---- Trigger observation when token threshold is crossed ----
+
+	pi.on("turn_end", (_event, ctx) => {
 		const usage = ctx.getContextUsage();
-		if (!usage || usage.tokens === null) return;
-		const branch = ctx.sessionManager.getBranch();
-		const state = loadState(branch);
-		const nonRaw = observationsTokenTotal(state) + Math.ceil(state.reflections.length / 4);
-		const rawTokens = Math.max(0, usage.tokens - nonRaw);
-		lastRawTokens = rawTokens;
-		if (!shouldFire(rawTokens, cfg, trig, Date.now())) return;
-		trig.inFlight = true;
+		const tokens = usage?.tokens ?? null;
+		if (tokens === null) return;
+
+		const wasBelowThreshold = previousTokens !== null && previousTokens <= OBSERVATION_THRESHOLD;
+		previousTokens = tokens;
+		if (!wasBelowThreshold || tokens <= OBSERVATION_THRESHOLD) return;
+
 		ctx.compact({
-			customInstructions: "tom-observe",
 			onComplete: () => {
-				trig.inFlight = false;
+				if (ctx.hasUI) ctx.ui.notify("Observational memory: compaction complete", "info");
 			},
-			onError: () => {
-				trig.inFlight = false;
+			onError: (error) => {
+				if (ctx.hasUI) ctx.ui.notify(`Observational memory: ${error.message}`, "error");
 			},
 		});
 	});
 
-	pi.on("session_before_compact", async (event, ctx) => {
-		const { preparation, branchEntries, signal } = event;
-		const prior = loadState(branchEntries);
-		const wantReflect = forceReflectNext;
-		forceReflectNext = false;
+	// ---- Custom compaction: observer + reflector ----
 
-		const allMessages = [...preparation.messagesToSummarize, ...preparation.turnPrefixMessages];
+	pi.on("session_before_compact", async (event, ctx) => {
+		const { preparation, signal } = event;
+		const { messagesToSummarize, turnPrefixMessages, firstKeptEntryId, tokensBefore } = preparation;
+
+		const model = ctx.model;
+		if (!model) return;
+
+		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+		if (!auth.ok || !auth.apiKey) return;
+
+		const allMessages = [...messagesToSummarize, ...turnPrefixMessages];
 		if (allMessages.length === 0) return;
 
+		const conversationText = serializeConversation(convertToLlm(allMessages));
+		const now = new Date();
+		const dateStr = now.toISOString().split("T")[0];
+		const timeStr = now.toTimeString().slice(0, 5);
+
+		// ---- Run observer ----
+
+		ctx.ui.notify("Observational memory: running observer...", "info");
+
 		try {
-			const observation = await runObserver(allMessages, prior, cfg, ctx, signal);
-			if (!observation) {
-				if (ctx.hasUI) ctx.ui.notify("TOM: observer produced no output; skipping cycle", "warning");
-				return { cancel: true };
-			}
-
-			let next: TomState = {
-				version: 1,
-				reflections: prior.reflections,
-				observations: [...prior.observations, observation],
-			};
-
-			const shouldReflect = wantReflect || observationsTokenTotal(next) > cfg.R;
-			if (shouldReflect) {
-				const reflected = await runReflector(next, cfg, ctx, signal);
-				if (reflected) next = reflected;
-				else if (ctx.hasUI) ctx.ui.notify("TOM: reflector failed, keeping observations", "warning");
-			}
-
-			const summary = buildSummary(next);
-			cycleCount += 1;
-			if (ctx.hasUI) {
-				ctx.ui.notify(
-					`TOM cycle #${cycleCount}: +1 observation (${observation.priority}), total=${next.observations.length}${shouldReflect ? ", reflected" : ""}`,
-					"info",
-				);
-			}
-
-			return {
-				compaction: {
-					summary,
-					firstKeptEntryId: preparation.firstKeptEntryId,
-					tokensBefore: preparation.tokensBefore,
-					details: serializeState(next),
+			const observerResponse = await complete(
+				model,
+				{
+					systemPrompt: OBSERVER_SYSTEM,
+					messages: [
+						{
+							role: "user" as const,
+							content: [
+								{
+									type: "text" as const,
+									text: `Today is ${dateStr}, current time is ${timeStr}.\n\nCompress the following conversation into observations:\n\n<conversation>\n${conversationText}\n</conversation>`,
+								},
+							],
+							timestamp: Date.now(),
+						},
+					],
 				},
-			};
-		} catch (err) {
-			if (signal.aborted) return { cancel: true };
-			const msg = err instanceof Error ? err.message : String(err);
-			if (ctx.hasUI) ctx.ui.notify(`TOM cycle failed: ${msg}`, "error");
-			return { cancel: true };
-		}
-	});
+				{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 4096, signal },
+			);
 
-	registerCommands(pi, {
-		cfg,
-		forceReflect: () => {
-			forceReflectNext = true;
-		},
-		cycleCount: () => cycleCount,
-		lastRawTokens: () => lastRawTokens,
+			const newObservations = extractText(observerResponse);
+			if (!newObservations.trim()) return;
+
+			state.observations = state.observations
+				? `${state.observations}\n\n${newObservations}`
+				: newObservations;
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : String(error);
+			if (ctx.hasUI) ctx.ui.notify(`Observer failed: ${msg}`, "error");
+			return;
+		}
+
+		// ---- Run reflector if observations are too large ----
+
+		if (estimateTokens(state.observations) > REFLECTION_THRESHOLD) {
+			ctx.ui.notify("Observational memory: running reflector...", "info");
+
+			try {
+				const reflectorResponse = await complete(
+					model,
+					{
+						systemPrompt: REFLECTOR_SYSTEM,
+						messages: [
+							{
+								role: "user" as const,
+								content: [
+									{
+										type: "text" as const,
+										text: `Today is ${dateStr}.\n\n<current-reflections>\n${state.reflections || "(none yet)"}\n</current-reflections>\n\n<current-observations>\n${state.observations}\n</current-observations>\n\nGarbage-collect these observations. Promote long-lived facts to reflections, prune what's no longer needed, keep what's still active.`,
+									},
+								],
+								timestamp: Date.now(),
+							},
+						],
+					},
+					{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal },
+				);
+
+				const output = extractText(reflectorResponse);
+				const reflectionsMatch = output.match(/<reflections>\n?([\s\S]*?)\n?<\/reflections>/);
+				const observationsMatch = output.match(/<observations>\n?([\s\S]*?)\n?<\/observations>/);
+
+				if (reflectionsMatch) state.reflections = reflectionsMatch[1].trim();
+				if (observationsMatch) state.observations = observationsMatch[1].trim();
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				if (ctx.hasUI) ctx.ui.notify(`Reflector failed: ${msg}`, "warning");
+			}
+		}
+
+		// ---- Build summary ----
+
+		let summary = "";
+		if (state.reflections) {
+			summary += `<reflections>\n${state.reflections}\n</reflections>\n\n`;
+		}
+		if (state.observations) {
+			summary += `<observations>\n${state.observations}\n</observations>`;
+		}
+
+		if (!summary.trim()) return;
+
+		const details: MemoryDetails = {
+			type: "observational-memory",
+			version: 1,
+			observations: state.observations,
+			reflections: state.reflections,
+		};
+
+		return {
+			compaction: {
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				details,
+			},
+		};
 	});
 }
