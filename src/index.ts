@@ -1,13 +1,44 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { complete } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { convertToLlm, serializeConversation } from "@mariozechner/pi-coding-agent";
+import { convertToLlm, getAgentDir, serializeConversation } from "@mariozechner/pi-coding-agent";
 
 // ============================================================================
-// Constants
+// Config
 // ============================================================================
 
-const OBSERVATION_THRESHOLD = 50_000;
-const REFLECTION_THRESHOLD = 30_000;
+interface Config {
+	observationThreshold: number;
+	reflectionThreshold: number;
+}
+
+const DEFAULTS: Config = {
+	observationThreshold: 50_000,
+	reflectionThreshold: 30_000,
+};
+
+function loadConfig(cwd: string): Config {
+	const globalPath = join(getAgentDir(), "observational-memory.json");
+	const projectPath = join(cwd, ".pi", "observational-memory.json");
+
+	let globalConfig: Partial<Config> = {};
+	let projectConfig: Partial<Config> = {};
+
+	if (existsSync(globalPath)) {
+		try {
+			globalConfig = JSON.parse(readFileSync(globalPath, "utf-8"));
+		} catch {}
+	}
+
+	if (existsSync(projectPath)) {
+		try {
+			projectConfig = JSON.parse(readFileSync(projectPath, "utf-8"));
+		} catch {}
+	}
+
+	return { ...DEFAULTS, ...globalConfig, ...projectConfig };
+}
 
 // ============================================================================
 // Types
@@ -106,12 +137,14 @@ Do NOT wrap output in code blocks or markdown fences.`;
 // ============================================================================
 
 export default function observationalMemory(pi: ExtensionAPI) {
+	let config: Config = { ...DEFAULTS };
 	let state: MemoryState = { observations: "", reflections: "" };
 	let previousTokens: number | null = null;
 
 	// ---- Restore state from last compaction entry ----
 
 	pi.on("session_start", (_event, ctx) => {
+		config = loadConfig(ctx.cwd);
 		state = { observations: "", reflections: "" };
 		previousTokens = null;
 
@@ -133,9 +166,9 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		const tokens = usage?.tokens ?? null;
 		if (tokens === null) return;
 
-		const wasBelowThreshold = previousTokens !== null && previousTokens <= OBSERVATION_THRESHOLD;
+		const wasBelowThreshold = previousTokens !== null && previousTokens <= config.observationThreshold;
 		previousTokens = tokens;
-		if (!wasBelowThreshold || tokens <= OBSERVATION_THRESHOLD) return;
+		if (!wasBelowThreshold || tokens <= config.observationThreshold) return;
 
 		ctx.compact({
 			onComplete: () => {
@@ -206,7 +239,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 
 		// ---- Run reflector if observations are too large ----
 
-		if (estimateTokens(state.observations) > REFLECTION_THRESHOLD) {
+		if (estimateTokens(state.observations) > config.reflectionThreshold) {
 			ctx.ui.notify("Observational memory: running reflector...", "info");
 
 			try {
@@ -269,5 +302,30 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				details,
 			},
 		};
+	});
+
+	// ---- /om-status command ----
+
+	pi.registerCommand("om-status", {
+		description: "Show observational memory status",
+		handler: async (_args, ctx) => {
+			const usage = ctx.getContextUsage();
+			const rawTokens = usage?.tokens ?? 0;
+			const obsTokens = estimateTokens(state.observations);
+			const refTokens = estimateTokens(state.reflections);
+
+			const lines = [
+				"── Observational Memory ──",
+				`Raw context:   ~${rawTokens.toLocaleString()} tokens`,
+				`Observations:  ~${obsTokens.toLocaleString()} tokens`,
+				`Reflections:   ~${refTokens.toLocaleString()} tokens`,
+				"",
+				"── Parameters ──",
+				`Observation threshold: ${config.observationThreshold.toLocaleString()}`,
+				`Reflection threshold:  ${config.reflectionThreshold.toLocaleString()}`,
+			];
+
+			ctx.ui.notify(lines.join("\n"), "info");
+		},
 	});
 }
