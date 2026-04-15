@@ -388,4 +388,21 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			ctx.ui.notify(lines.join("\n"), "info");
 		},
 	});
+
+	// ---- /om-view command ----
+
+	pi.registerCommand("om-view", {
+		description: "Print full observational memory contents",
+		handler: async (_args, ctx) => {
+			const sections: string[] = [];
+
+			sections.push("── Reflections ──");
+			sections.push(state.reflections || "(none)");
+			sections.push("");
+			sections.push("── Observations ──");
+			sections.push(state.observations || "(none)");
+
+			ctx.ui.notify(sections.join("\n"), "info");
+		},
+	});
 }
