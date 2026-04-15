@@ -15,17 +15,17 @@ The resulting `<reflections>` + `<observations>` block becomes the compaction su
 
 ## Install
 
-```bash
-npm install pi-observational-memory
-```
-
-Then symlink or copy the package into Pi's extensions directory:
+Install from npm with pi:
 
 ```bash
-ln -s $(npm root)/pi-observational-memory ~/.pi/extensions/pi-observational-memory
+pi install npm:pi-observational-memory
 ```
 
-Pi will discover it on next session start.
+Or install directly from GitHub with pi:
+
+```bash
+pi install https://github.com/elpapi42/pi-observational-memory
+```
 
 ## Configuration
 
