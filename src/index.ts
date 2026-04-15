@@ -187,13 +187,22 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		const { messagesToSummarize, turnPrefixMessages, firstKeptEntryId, tokensBefore } = preparation;
 
 		const model = ctx.model;
-		if (!model) return;
+		if (!model) {
+			ctx.ui.notify("Observational memory: skipped — no model available", "warning");
+			return;
+		}
 
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		if (!auth.ok || !auth.apiKey) return;
+		if (!auth.ok || !auth.apiKey) {
+			ctx.ui.notify("Observational memory: skipped — no API key/auth", "warning");
+			return;
+		}
 
 		const allMessages = [...messagesToSummarize, ...turnPrefixMessages];
-		if (allMessages.length === 0) return;
+		if (allMessages.length === 0) {
+			ctx.ui.notify("Observational memory: skipped — no messages to summarize", "warning");
+			return;
+		}
 
 		const conversationText = serializeConversation(convertToLlm(allMessages));
 		const now = new Date();
