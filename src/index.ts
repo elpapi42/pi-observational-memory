@@ -73,11 +73,27 @@ function estimateTokens(text: string): number {
 	return Math.ceil(text.length / 4);
 }
 
-function estimateUncompactedTokens(entries: Array<{ type: string; message?: unknown; content?: unknown }>): number {
-	let tokens = 0;
+function estimateUncompactedTokens(
+	entries: Array<{ id?: string; type: string; firstKeptEntryId?: string; message?: unknown; content?: unknown }>,
+): number {
+	let startIndex = 0;
 	for (let i = entries.length - 1; i >= 0; i--) {
+		if (entries[i].type === "compaction") {
+			const firstKeptId = entries[i].firstKeptEntryId;
+			if (firstKeptId) {
+				const keptIndex = entries.findIndex((e) => e.id === firstKeptId);
+				startIndex = keptIndex >= 0 ? keptIndex : i + 1;
+			} else {
+				startIndex = i + 1;
+			}
+			break;
+		}
+	}
+
+	let tokens = 0;
+	for (let i = startIndex; i < entries.length; i++) {
 		const entry = entries[i];
-		if (entry.type === "compaction") break;
+		if (entry.type === "compaction") continue;
 		if (entry.type === "message" && entry.message) {
 			tokens += estimateMessageTokens(entry.message as Parameters<typeof estimateMessageTokens>[0]);
 		} else if (entry.type === "custom_message" && entry.content) {
