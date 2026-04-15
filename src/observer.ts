@@ -92,8 +92,7 @@ export async function runObserver(
 	);
 
 	const raw = response.content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text")
-		.map((c) => c.text)
+		.map((c) => ("text" in c ? c.text : ""))
 		.join("\n")
 		.trim();
 	if (!raw) return undefined;

@@ -17,7 +17,7 @@ Raw conversation  →  Observations  →  Reflections
 ```
 
 1. **Raw** — the live conversation (tool calls, user messages, agent responses).
-2. **Observations** — when raw tokens exceed a threshold, TOM sends the oldest chunk to an observer LLM that produces a dense, factual summary (80–250 words) tagged with a priority (high / med / low).
+2. **Observations** — when raw tokens exceed a threshold, TOM sends the older messages (everything pi marks for compaction) to an observer LLM that produces a dense, factual summary (80–250 words) tagged with a priority (high / med / low).
 3. **Reflections** — when accumulated observations grow too large, a reflector LLM consolidates them into a stable document of durable facts: goals, constraints, architectural decisions, user preferences. Absorbed observations are dropped; still-relevant ones are kept.
 
 The result: sessions can run indefinitely without losing load-bearing context.
@@ -59,7 +59,6 @@ TOM parameters are configured in `~/.pi/agent/extensions/tom.json` (global) or `
 TOM reads pi's `compaction.keepRecentTokens` setting from `~/.pi/agent/settings.json` (or `.pi/settings.json`). This controls how many recent tokens pi preserves verbatim during compaction — everything older is given to TOM for observation. Default: `20,000`.
 
 ```json
-// ~/.pi/agent/settings.json
 {
   "compaction": {
     "keepRecentTokens": 20000

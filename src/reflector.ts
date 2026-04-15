@@ -90,8 +90,7 @@ export async function runReflector(
 	);
 
 	const raw = response.content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text")
-		.map((c) => c.text)
+		.map((c) => ("text" in c ? c.text : ""))
 		.join("\n");
 	const parsed = parseReflectorOutput(raw);
 	if (!parsed) return undefined;
