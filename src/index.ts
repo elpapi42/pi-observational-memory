@@ -2,7 +2,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { complete } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { convertToLlm, getAgentDir, serializeConversation } from "@mariozechner/pi-coding-agent";
+import {
+	convertToLlm,
+	estimateTokens as estimateMessageTokens,
+	getAgentDir,
+	serializeConversation,
+} from "@mariozechner/pi-coding-agent";
 
 // ============================================================================
 // Config
@@ -66,6 +71,27 @@ function isMemoryDetails(d: unknown): d is MemoryDetails {
 
 function estimateTokens(text: string): number {
 	return Math.ceil(text.length / 4);
+}
+
+function estimateUncompactedTokens(entries: Array<{ type: string; message?: unknown; content?: unknown }>): number {
+	let tokens = 0;
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (entry.type === "compaction") break;
+		if (entry.type === "message" && entry.message) {
+			tokens += estimateMessageTokens(entry.message as Parameters<typeof estimateMessageTokens>[0]);
+		} else if (entry.type === "custom_message" && entry.content) {
+			const content = entry.content;
+			if (typeof content === "string") {
+				tokens += Math.ceil(content.length / 4);
+			} else if (Array.isArray(content)) {
+				for (const block of content) {
+					if (block.type === "text" && block.text) tokens += Math.ceil(block.text.length / 4);
+				}
+			}
+		}
+	}
+	return tokens;
 }
 
 function extractText(response: { content: Array<{ type: string; text?: string }> }): string {
@@ -162,9 +188,8 @@ export default function observationalMemory(pi: ExtensionAPI) {
 	// ---- Trigger observation when token threshold is crossed ----
 
 	pi.on("turn_end", (_event, ctx) => {
-		const usage = ctx.getContextUsage();
-		const tokens = usage?.tokens ?? null;
-		if (tokens === null) return;
+		const entries = ctx.sessionManager.getBranch();
+		const tokens = estimateUncompactedTokens(entries);
 
 		const wasBelowThreshold = previousTokens !== null && previousTokens <= config.observationThreshold;
 		previousTokens = tokens;
@@ -318,8 +343,8 @@ export default function observationalMemory(pi: ExtensionAPI) {
 	pi.registerCommand("om-status", {
 		description: "Show observational memory status",
 		handler: async (_args, ctx) => {
-			const usage = ctx.getContextUsage();
-			const rawTokens = usage?.tokens ?? 0;
+			const entries = ctx.sessionManager.getBranch();
+			const rawTokens = estimateUncompactedTokens(entries);
 			const obsTokens = estimateTokens(state.observations);
 			const refTokens = estimateTokens(state.reflections);
 
