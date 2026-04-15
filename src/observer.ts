@@ -92,9 +92,11 @@ export async function runObserver(
 	);
 
 	if (ctx.hasUI) {
-		const types = response.content.map((c) => `${c.type}(${"text" in c ? c.text.length : 0})`).join(", ");
-		ctx.ui.notify(`TOM debug: response has ${response.content.length} blocks: [${types}]`, "info");
-		ctx.ui.notify(`TOM debug raw: ${JSON.stringify(response.content).slice(0, 2000)}`, "info");
+		ctx.ui.notify(`TOM debug model: ${model.provider}/${model.id}`, "info");
+		ctx.ui.notify(`TOM debug input length: ${userText.length} chars`, "info");
+		const { content, ...responseMeta } = response;
+		ctx.ui.notify(`TOM debug response meta: ${JSON.stringify(responseMeta).slice(0, 1000)}`, "info");
+		ctx.ui.notify(`TOM debug content: ${JSON.stringify(content).slice(0, 2000)}`, "info");
 	}
 
 	const raw = response.content
