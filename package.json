@@ -4,10 +4,17 @@
   "description": "Observational memory extension for pi — cache-friendly tiered compaction with observations and reflections.",
   "type": "module",
   "license": "MIT",
+  "author": "elpapi42",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elpapi42/pi-observational-memory.git"
+  },
+  "homepage": "https://github.com/elpapi42/pi-observational-memory#readme",
+  "keywords": ["pi", "pi-agent", "extension", "observational-memory", "memory", "compaction"],
   "pi": {
     "extensions": ["./src/index.ts"]
   },
-  "files": ["src/"],
+  "files": ["src/", "LICENSE", "README.md"],
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
