@@ -16,6 +16,7 @@ import {
 interface Config {
 	observationThreshold: number;
 	reflectionThreshold: number;
+	compactionModel?: { provider: string; id: string };
 }
 
 const DEFAULTS: Config = {
@@ -241,7 +242,18 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		const { preparation, signal } = event;
 		const { messagesToSummarize, turnPrefixMessages, firstKeptEntryId, tokensBefore } = preparation;
 
-		const model = ctx.model;
+		let model = ctx.model;
+		if (config.compactionModel) {
+			const configured = ctx.modelRegistry.find(config.compactionModel.provider, config.compactionModel.id);
+			if (configured) {
+				model = configured;
+			} else if (ctx.hasUI) {
+				ctx.ui.notify(
+					`Observational memory: configured model ${config.compactionModel.provider}/${config.compactionModel.id} not found, using session model`,
+					"warning",
+				);
+			}
+		}
 		if (!model) return;
 
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
