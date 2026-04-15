@@ -146,24 +146,27 @@ Rules:
 - Preserve exact file paths, function names, error messages, and technical details.
 - Focus on WHAT happened and WHY, not routine tool calls.
 - Each observation should be one concise line.
+- Do NOT repeat information already captured in existing reflections or observations.
 - Do NOT wrap output in code blocks or markdown fences.`;
 
-const REFLECTOR_SYSTEM = `You are a reflection agent for a coding assistant. Garbage-collect observations and distill stable long-term reflections.
+const REFLECTOR_SYSTEM = `You are a reflection agent for a coding assistant. Your job is to maintain long-term reflections while preserving as many observations as possible.
 
 You will receive current reflections (long-term facts) and accumulated observations.
 
 Your task:
-1. PROMOTE observations to reflections when they represent stable, long-lived facts:
+1. PROMOTE observations to reflections ONLY when they are clearly stable, long-lived facts:
    - User identity, role, preferences
    - Project goals and architecture decisions
    - Permanent constraints and requirements
    - Key technical decisions and their rationale
-2. PRUNE observations that are:
-   - Completed tasks no longer relevant
-   - Routine operations already captured in reflections
-   - Outdated or superseded by newer information
-   - 🟢 info-only items that have aged out
-3. KEEP observations that are still active but not yet stable enough for reflections.
+   After promoting, KEEP the original observation — do not remove it.
+2. PRUNE observations ONLY when you are certain they are dead:
+   - Tasks explicitly completed AND no longer referenced
+   - Information directly contradicted or superseded by a newer observation
+   - Exact duplicates of other observations
+   When in doubt, KEEP the observation.
+3. KEEP everything else. Most observations should survive. An observation being old or low-priority (🟢) is NOT a reason to remove it.
+4. UPDATE reflections: merge new promoted facts into existing reflections. Remove reflections only if directly contradicted by observations.
 
 Output EXACTLY two sections with these tags:
 
@@ -172,7 +175,7 @@ Output EXACTLY two sections with these tags:
 </reflections>
 
 <observations>
-[Surviving observations in the same date-grouped log format]
+[Surviving observations in the same date-grouped log format — most should be preserved]
 </observations>
 
 Do NOT wrap output in code blocks or markdown fences.`;
@@ -271,7 +274,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 							content: [
 								{
 									type: "text" as const,
-									text: `Today is ${dateStr}, current time is ${timeStr}.\n\nCompress the following conversation into observations:\n\n<conversation>\n${conversationText}\n</conversation>`,
+									text: `Today is ${dateStr}, current time is ${timeStr}.\n\n<current-reflections>\n${state.reflections || "(none yet)"}\n</current-reflections>\n\n<current-observations>\n${state.observations || "(none yet)"}\n</current-observations>\n\nCompress the following conversation into new observations:\n\n<conversation>\n${conversationText}\n</conversation>`,
 								},
 							],
 							timestamp: Date.now(),
