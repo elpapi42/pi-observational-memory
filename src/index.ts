@@ -209,8 +209,8 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				"",
 				"── Parameters ──",
 				`Observation threshold: ${config.observationThreshold.toLocaleString()}`,
-				`Reflection threshold:  ${config.reflectionThreshold.toLocaleString()}`,
-				`Keep recent tokens:    ${keepRecentTokens.toLocaleString()} (pi compaction)`,
+				`Reflection threshold:  ${config.reflectionThreshold.toLocaleString()} (interpreted as observations token budget)`,
+				`Keep recent tokens:    ${keepRecentTokens.toLocaleString()} (pi compaction, how many tokens in raw messages)`,
 			];
 
 			ctx.ui.notify(lines.join("\n"), "info");
