@@ -20,10 +20,15 @@ function utcTime(epochMs: number): string {
 	return new Date(epochMs).toISOString().slice(11, 16);
 }
 
+function utcIso(epochMs: number): string {
+	if (!Number.isFinite(epochMs)) return "????-??-??T??:??Z";
+	return new Date(epochMs).toISOString().slice(0, 16) + "Z";
+}
+
 function serializeWithTimestamps(messages: Message[]): string {
 	return messages
 		.map((msg): string | null => {
-			const time = utcTime(msg.timestamp);
+			const ts = utcIso(msg.timestamp);
 			if (msg.role === "user") {
 				const text =
 					typeof msg.content === "string"
@@ -32,7 +37,7 @@ function serializeWithTimestamps(messages: Message[]): string {
 							.filter((b): b is TextContent => b.type === "text")
 							.map((b) => b.text)
 							.join("\n");
-				return `[User @ ${time} UTC]: ${text}`;
+				return `[User @ ${ts}]: ${text}`;
 			}
 			if (msg.role === "assistant") {
 				const parts = msg.content.map((b) => {
@@ -43,14 +48,14 @@ function serializeWithTimestamps(messages: Message[]): string {
 				});
 				const body = parts.filter(Boolean).join("\n");
 				if (!body) return null;
-				return `[Assistant @ ${time} UTC]: ${body}`;
+				return `[Assistant @ ${ts}]: ${body}`;
 			}
 			// toolResult
 			const text = msg.content
 				.filter((b): b is TextContent => b.type === "text")
 				.map((b) => b.text)
 				.join("\n");
-			return `[Tool result for ${(msg as ToolResultMessage).toolName} @ ${time} UTC]: ${text}`;
+			return `[Tool result for ${(msg as ToolResultMessage).toolName} @ ${ts}]: ${text}`;
 		})
 		.filter((line): line is string => line !== null)
 		.join("\n\n");
