@@ -1,17 +1,24 @@
 import { completeSimple } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { convertToLlm, serializeConversation } from "@mariozechner/pi-coding-agent";
-import { DEFAULTS, loadConfig } from "./config.js";
+import { DEFAULTS, loadConfig, saveConfig } from "./config.js";
 import type { Config } from "./config.js";
 import { CONTEXT_USAGE_INSTRUCTIONS, OBSERVER_SYSTEM, REFLECTOR_SYSTEM } from "./prompts.js";
+import { openSettingsModal } from "./settings-modal.js";
 import { estimateRawTailTokens, estimateTokens, extractText } from "./tokens.js";
 import type { MemoryDetails, MemoryState } from "./types.js";
 import { isMemoryDetails } from "./types.js";
+import { createOmWidget } from "./widget.js";
 
 export default function observationalMemory(pi: ExtensionAPI) {
 	let config: Config = { ...DEFAULTS };
 	let state: MemoryState = { observations: "", reflections: "" };
 	let compactInFlight = false;
+	let widgetTui: import("@mariozechner/pi-tui").TUI | undefined;
+
+	function refreshWidget() {
+		if (widgetTui) widgetTui.requestRender();
+	}
 
 	pi.on("session_start", (_event, ctx) => {
 		config = loadConfig(ctx.cwd);
@@ -27,6 +34,21 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				break;
 			}
 		}
+
+		if (ctx.hasUI) {
+			ctx.ui.setWidget("om-widget", (tui, theme) => {
+				widgetTui = tui;
+				return createOmWidget(theme, {
+					getState: () => state,
+					getConfig: () => config,
+					getEntries: () => ctx.sessionManager.getBranch(),
+				});
+			}, { placement: "belowEditor" });
+		}
+	});
+
+	pi.on("agent_end", (_event, _ctx) => {
+		refreshWidget();
 	});
 
 	pi.on("agent_end", (_event, ctx) => {
@@ -46,10 +68,12 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				onComplete: () => {
 					compactInFlight = false;
 					if (ctx.hasUI) ctx.ui.notify("Observational memory: compaction complete", "info");
+					refreshWidget();
 				},
 				onError: (error) => {
 					compactInFlight = false;
 					if (ctx.hasUI) ctx.ui.notify(`Observational memory: ${error.message}`, "error");
+					refreshWidget();
 				},
 			});
 		}, 0);
@@ -84,7 +108,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		const dateStr = now.toISOString().split("T")[0];
 		const timeStr = now.toTimeString().slice(0, 5);
 
-		ctx.ui.notify("Observational memory: running observer...", "info");
+		if (ctx.hasUI) ctx.ui.notify("Observational memory: running observer...", "info");
 
 		try {
 			const observerOptions = model.reasoning
@@ -124,7 +148,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		}
 
 		if (estimateTokens(state.observations) > config.reflectionThreshold) {
-			ctx.ui.notify("Observational memory: running reflector...", "info");
+			if (ctx.hasUI) ctx.ui.notify("Observational memory: running reflector...", "info");
 
 			try {
 				const reflectorOptions = model.reasoning
@@ -190,6 +214,22 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				details,
 			},
 		};
+	});
+
+	pi.registerCommand("om-settings", {
+		description: "Open observational memory settings",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				console.log("/om-settings requires interactive TUI mode.");
+				return;
+			}
+
+			await openSettingsModal(ctx, config, state, (newConfig) => {
+				config = newConfig;
+				saveConfig(config);
+				refreshWidget();
+			});
+		},
 	});
 
 	pi.registerCommand("om-status", {

@@ -44,6 +44,12 @@ export function estimateRawTailTokens(
 	return tokens;
 }
 
+export function formatK(n: number): string {
+	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+	if (n >= 1_000) return `${(n / 1_000).toFixed(n < 10_000 ? 1 : 0)}k`;
+	return String(n);
+}
+
 export function extractText(response: { content: Array<{ type: string; text?: string }> }): string {
 	return response.content
 		.filter((c): c is { type: "text"; text: string } => c.type === "text")

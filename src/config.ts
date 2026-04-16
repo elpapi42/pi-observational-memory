@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 
 export interface Config {
@@ -33,4 +33,34 @@ export function loadConfig(cwd: string): Config {
 	}
 
 	return { ...DEFAULTS, ...globalConfig, ...projectConfig };
+}
+
+/** Persist only non-default values to keep the config file clean and future-proof. */
+function diffFromDefaults(config: Config): Partial<Config> {
+	const result: Partial<Config> = {};
+	for (const [key, value] of Object.entries(config) as [keyof Config, Config[keyof Config]][]) {
+		const defaultValue = DEFAULTS[key];
+		if (JSON.stringify(value) !== JSON.stringify(defaultValue)) {
+			(result as Record<string, unknown>)[key] = value;
+		}
+	}
+	return result;
+}
+
+export function saveConfig(config: Config): void {
+	const path = join(getAgentDir(), "observational-memory.json");
+	const data = diffFromDefaults(config);
+
+	if (Object.keys(data).length === 0) {
+		// All defaults — remove the file so project-level configs can take effect
+		try {
+			if (existsSync(path)) unlinkSync(path);
+		} catch {}
+		return;
+	}
+
+	const tmpPath = `${path}.tmp`;
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(tmpPath, JSON.stringify(data, null, 2) + "\n", "utf-8");
+	renameSync(tmpPath, path);
 }
