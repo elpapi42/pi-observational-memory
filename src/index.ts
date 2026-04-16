@@ -42,16 +42,22 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				compactInFlight = false;
 				return;
 			}
-			ctx.compact({
-				onComplete: () => {
-					compactInFlight = false;
-					if (ctx.hasUI) ctx.ui.notify("Observational memory: compaction complete", "info");
-				},
-				onError: (error) => {
-					compactInFlight = false;
-					if (ctx.hasUI) ctx.ui.notify(`Observational memory: ${error.message}`, "error");
-				},
-			});
+			try {
+				ctx.compact({
+					onComplete: () => {
+						compactInFlight = false;
+						if (ctx.hasUI) ctx.ui.notify("Observational memory: compaction complete", "info");
+					},
+					onError: (error) => {
+						compactInFlight = false;
+						if (ctx.hasUI) ctx.ui.notify(`Observational memory: ${error.message}`, "error");
+					},
+				});
+			} catch (error) {
+				compactInFlight = false;
+				const msg = error instanceof Error ? error.message : String(error);
+				if (ctx.hasUI) ctx.ui.notify(`Observational memory: compact threw: ${msg}`, "error");
+			}
 		}, 0);
 	});
 
