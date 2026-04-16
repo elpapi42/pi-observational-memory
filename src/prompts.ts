@@ -14,6 +14,12 @@ Priority levels:
 - 🟢 Info only: routine operations, minor details
 - ✅ Completed: a task, question, subtask, or issue is concretely resolved
 
+Priority calibration — novelty is NOT importance:
+- 🔴 means this CHANGES how future work proceeds: user goals/decisions/constraints made in this session, bugs, errors, architectural decisions, named deadlines.
+- 🟡 is the default for reference facts that describe the world but don't mandate action: third-party service descriptions, discovered file structures, tech stack details, existing configuration.
+- Example: "User decided to switch to Postgres" → 🔴 (a decision). "Service X happens to use Postgres" → 🟡 (a discovered fact, not a decision).
+- When in doubt between 🔴 and 🟡, choose 🟡. Do not inflate reference material to 🔴 just because it is new information.
+
 CRITICAL — DISTINGUISH USER ASSERTIONS FROM QUESTIONS:
 
 When the user TELLS you something about themselves, mark it as an assertion:
@@ -37,6 +43,7 @@ Rules:
 - Focus on WHAT happened and WHY, not routine tool calls.
 - Each observation should be one concise line.
 - Observations must be complete factual sentences. Never emit an observation whose text is only markdown syntax (\`\`\`, ---, etc.), a code-block delimiter, or a standalone header/label line (e.g. "Date: 2026-04-16").
+- Observation text is plain prose. Do NOT use markdown styling (\`**bold**\`, \`_italic_\`, \`# headers\`) inside observation text. Backticks around paths, function names, commands, or short code snippets are fine and encouraged.
 
 CONTENT PRESERVATION:
 
@@ -84,17 +91,27 @@ If the new state contradicts or updates previous information, make that explicit
 - Do NOT repeat information already captured in existing reflections or observations.
 - Do NOT wrap output in code blocks or markdown fences.
 
-AVOIDING REPETITIVE OBSERVATIONS:
+AVOIDING REPETITIVE OR FRAGMENTED OBSERVATIONS:
 - Do NOT repeat the same observation across multiple turns if there is no new information.
 - When the agent performs repeated similar actions (e.g., browsing files, running the same tool type multiple times), group them into a single observation with the key results.
+- When reporting similar items (service descriptions, file summaries, config entries, enumerated facts), do NOT emit one observation per item. Cluster them into a single observation — either as a labeled list in one sentence, or grouped by shared characteristic with differences called out.
+- Only split into separate observations when the items have substantially different content, priority, or implications.
 
-BAD (repetitive):
+BAD (repetitive actions):
 - 🟡 2026-04-16T14:30Z Agent used view tool on src/auth.ts
 - 🟡 2026-04-16T14:31Z Agent used view tool on src/users.ts
 - 🟡 2026-04-16T14:32Z Agent used view tool on src/routes.ts
 
 GOOD (grouped):
 - 🟡 2026-04-16T14:30Z Agent investigated auth flow — viewed src/auth.ts (token validation), src/users.ts (user lookup by email), src/routes.ts (middleware chain)
+
+BAD (fragmented enumeration):
+- 🟡 2026-04-16T15:00Z Service A: Next.js 15, Prisma, Supabase
+- 🟡 2026-04-16T15:00Z Service B: Next.js 15, Prisma, Supabase
+- 🟡 2026-04-16T15:00Z Service C: Next.js 15, Prisma, Supabase, plus OpenAI
+
+GOOD (clustered):
+- 🟡 2026-04-16T15:00Z Services A, B, C share a Next.js 15 + Prisma + Supabase stack; C additionally integrates OpenAI.
 
 Only add a new observation for a repeated action if the NEW result changes the picture.
 
