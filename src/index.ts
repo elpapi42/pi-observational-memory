@@ -3,8 +3,8 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { convertToLlm, SettingsManager } from "@mariozechner/pi-coding-agent";
 import { DEFAULTS, loadConfig } from "./config.js";
 import type { Config } from "./config.js";
-import { normalizeTimestamp, parseObservations, parseReflectorOutput } from "./parser.js";
-import { CONTEXT_USAGE_INSTRUCTIONS, OBSERVER_SYSTEM, REFLECTOR_SYSTEM } from "./prompts.js";
+import { normalizeTimestamp, parseObservations } from "./parser.js";
+import { CONTEXT_USAGE_INSTRUCTIONS, OBSERVER_SYSTEM, PROMOTER_SYSTEM, PRUNER_SYSTEM } from "./prompts.js";
 import { renderObservations, renderReflections } from "./renderer.js";
 import { estimateObservationsTokens, estimateRawTailTokens, estimateTokens, extractText } from "./tokens.js";
 import type { MemoryState, Observation } from "./types.js";
@@ -56,25 +56,46 @@ function serializeWithTimestamps(messages: Message[]): string {
 		.join("\n\n");
 }
 
-// Tool definition for the observer — flat schema, no recursion needed
+const observationArraySchema = Type.Array(
+	Type.Object({
+		timestamp: Type.String({ description: "YYYY-MM-DDTHH:MMZ UTC" }),
+		priority: Type.Union([
+			Type.Literal("important"),
+			Type.Literal("maybe"),
+			Type.Literal("info"),
+			Type.Literal("completed"),
+		]),
+		text: Type.String(),
+	}),
+);
+
 const recordObservationsTool: Tool = {
 	name: "record_observations",
 	description:
 		"Record observations extracted from the conversation. " +
 		"Call this exactly once with all observations for this batch.",
 	parameters: Type.Object({
-		observations: Type.Array(
-			Type.Object({
-				timestamp: Type.String({ description: "YYYY-MM-DDTHH:MMZ UTC" }),
-				priority: Type.Union([
-					Type.Literal("important"),
-					Type.Literal("maybe"),
-					Type.Literal("info"),
-					Type.Literal("completed"),
-				]),
-				text: Type.String(),
-			}),
-		),
+		observations: observationArraySchema,
+	}),
+};
+
+const recordReflectionsTool: Tool = {
+	name: "record_reflections",
+	description:
+		"Record the complete updated list of long-term reflections. " +
+		"Call this exactly once with every reflection that should persist (existing ones to keep plus any newly promoted facts).",
+	parameters: Type.Object({
+		reflections: Type.Array(Type.String()),
+	}),
+};
+
+const recordSurvivingObservationsTool: Tool = {
+	name: "record_surviving_observations",
+	description:
+		"Record the full list of observations that survive pruning. " +
+		"Call this exactly once with every observation to keep, preserving each one's original timestamp, priority, and text.",
+	parameters: Type.Object({
+		observations: observationArraySchema,
 	}),
 };
 
@@ -240,68 +261,110 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			return;
 		}
 
-		// 6e — Reflector with validation
+		// 6e — Two-step reflector: promote reflections, then prune observations
 		if (estimateObservationsTokens(state.observations) > config.reflectionThreshold) {
-			ctx.ui.notify("Observational memory: running reflector...", "info");
-
+			// Step 1 — Promoter: update the reflections list
+			ctx.ui.notify("Observational memory: running promoter...", "info");
 			try {
-				const reflectorOptions = model.reasoning
-					? { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal, reasoning: "high" as const }
-					: { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal };
+				const promoterOptions = model.reasoning
+					? { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal, reasoning: "high" as const, tools: [recordReflectionsTool] }
+					: { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal, tools: [recordReflectionsTool] };
+				const promoterObsText = renderObservations(state.observations) || "(none)";
+				const promoterRefText = renderReflections(state.reflections) || "(none yet)";
 
-				const reflectorObsText = renderObservations(state.observations);
-				const reflectorRefText = renderReflections(state.reflections) || "(none yet)";
-
-				const reflectorResponse = await completeSimple(
+				const promoterResponse = await completeSimple(
 					model,
 					{
-						systemPrompt: REFLECTOR_SYSTEM,
+						systemPrompt: PROMOTER_SYSTEM,
 						messages: [
 							{
 								role: "user" as const,
 								content: [
 									{
 										type: "text" as const,
-										text: `Today is ${dateStr} (UTC).\n\n<current-reflections>\n${reflectorRefText}\n</current-reflections>\n\n<current-observations>\n${reflectorObsText}\n</current-observations>\n\nGarbage-collect these observations. Promote long-lived facts to reflections, prune what's no longer needed, keep what's still active.`,
+										text: `Today is ${dateStr} (UTC).\n\n<current-reflections>\n${promoterRefText}\n</current-reflections>\n\n<current-observations>\n${promoterObsText}\n</current-observations>\n\nUpdate the long-term reflections list. Promote stable facts, merge overlaps, drop only contradicted entries.`,
 									},
 								],
 								timestamp: Date.now(),
 							},
 						],
 					},
-					reflectorOptions,
+					promoterOptions,
 				);
 
-				const output = extractText(reflectorResponse);
-				const parsed = parseReflectorOutput(output);
-
-				if (parsed.observations.length < 1) {
-					if (ctx.hasUI) ctx.ui.notify("Observational memory: reflector produced no observations, keeping previous state", "warning");
-				} else {
-					const fallbackCount = parsed.observations.filter((o) => o.raw).length;
-					if (fallbackCount / parsed.observations.length > 0.2) {
-						if (ctx.hasUI) ctx.ui.notify("Observational memory: reflector output had too many parse failures, keeping previous state", "warning");
-					} else {
-						state.observations = parsed.observations;
-						state.reflections = parsed.reflections;
+				const reflectionsCall = promoterResponse.content.find(
+					(b): b is ToolCall => b.type === "toolCall" && b.name === "record_reflections",
+				);
+				if (reflectionsCall) {
+					const raw = reflectionsCall.arguments as { reflections: string[] };
+					if (Array.isArray(raw.reflections)) {
+						state.reflections = raw.reflections.map((r) => r.trim()).filter(Boolean);
+					} else if (ctx.hasUI) {
+						ctx.ui.notify("Observational memory: promoter returned non-array, keeping previous reflections", "warning");
 					}
+				} else if (ctx.hasUI) {
+					ctx.ui.notify("Observational memory: promoter did not call tool, keeping previous reflections", "warning");
 				}
 			} catch (error) {
 				const msg = error instanceof Error ? error.message : String(error);
-				if (ctx.hasUI) ctx.ui.notify(`Reflector failed: ${msg}`, "warning");
+				if (ctx.hasUI) ctx.ui.notify(`Promoter failed: ${msg}`, "warning");
+			}
+
+			// Step 2 — Pruner: drop dead/redundant observations given updated reflections
+			ctx.ui.notify("Observational memory: running pruner...", "info");
+			try {
+				const prunerOptions = model.reasoning
+					? { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal, reasoning: "high" as const, tools: [recordSurvivingObservationsTool] }
+					: { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal, tools: [recordSurvivingObservationsTool] };
+
+				const prunerObsText = renderObservations(state.observations) || "(none)";
+				const prunerRefText = renderReflections(state.reflections) || "(none yet)";
+
+				const prunerResponse = await completeSimple(
+					model,
+					{
+						systemPrompt: PRUNER_SYSTEM,
+						messages: [
+							{
+								role: "user" as const,
+								content: [
+									{
+										type: "text" as const,
+										text: `Today is ${dateStr} (UTC).\n\n<current-reflections>\n${prunerRefText}\n</current-reflections>\n\n<current-observations>\n${prunerObsText}\n</current-observations>\n\nReturn the full list of surviving observations. Prefer keeping — drop only what is clearly dead, duplicated, or fully covered by a reflection.`,
+									},
+								],
+								timestamp: Date.now(),
+							},
+						],
+					},
+					prunerOptions,
+				);
+
+				const survivorsCall = prunerResponse.content.find(
+					(b): b is ToolCall => b.type === "toolCall" && b.name === "record_surviving_observations",
+				);
+				if (survivorsCall) {
+					const raw = survivorsCall.arguments as { observations: Observation[] };
+					if (Array.isArray(raw.observations) && raw.observations.length > 0) {
+						state.observations = raw.observations.map((o) => ({ ...o, timestamp: normalizeTimestamp(o.timestamp) }));
+					} else if (ctx.hasUI) {
+						ctx.ui.notify("Observational memory: pruner returned empty list, keeping previous observations", "warning");
+					}
+				} else if (ctx.hasUI) {
+					ctx.ui.notify("Observational memory: pruner did not call tool, keeping previous observations", "warning");
+				}
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				if (ctx.hasUI) ctx.ui.notify(`Pruner failed: ${msg}`, "warning");
 			}
 		}
 
 		// 6f — Summary rendering & compaction details
-		let summary = "";
-		const obsText = renderObservations(state.observations);
 		const refText = renderReflections(state.reflections);
-		if (refText) summary += `<reflections>\n${refText}\n</reflections>\n\n`;
-		if (obsText) summary += `<observations>\n${obsText}\n</observations>`;
-
-		if (!summary.trim()) return;
-
-		summary += `\n\n${CONTEXT_USAGE_INSTRUCTIONS}`;
+		const obsText = renderObservations(state.observations);
+		const sections = [refText, obsText].filter(Boolean);
+		if (sections.length === 0) return;
+		const summary = `${sections.join("\n\n")}\n\n${CONTEXT_USAGE_INSTRUCTIONS}`;
 
 		return {
 			compaction: {

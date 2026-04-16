@@ -67,26 +67,3 @@ export function parseObservations(text: string): Observation[] {
 	return observations;
 }
 
-/**
- * Parse reflections text (dash-prefixed lines) into a string array.
- */
-export function parseReflections(text: string): string[] {
-	return text
-		.split("\n")
-		.map((line) => line.trim())
-		.filter(Boolean)
-		.map((line) => line.replace(/^-\s*/, ""));
-}
-
-/**
- * Parse reflector output containing <reflections> and <observations> XML tags.
- */
-export function parseReflectorOutput(text: string): { reflections: string[]; observations: Observation[] } {
-	const reflectionsMatch = text.match(/<reflections>\n?([\s\S]*?)\n?<\/reflections>/);
-	const observationsMatch = text.match(/<observations>\n?([\s\S]*?)\n?<\/observations>/);
-
-	return {
-		reflections: reflectionsMatch ? parseReflections(reflectionsMatch[1].trim()) : [],
-		observations: observationsMatch ? parseObservations(observationsMatch[1].trim()) : [],
-	};
-}

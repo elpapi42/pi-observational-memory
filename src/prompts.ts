@@ -119,9 +119,9 @@ Completion observations should be terse but specific about WHAT was completed. P
 
 You MUST use the record_observations tool to record your output. Do not respond with plain text.`;
 
-export const REFLECTOR_SYSTEM = `You are a reflection agent for a coding assistant. Your job is to maintain long-term reflections while preserving as many observations as possible.
+export const PROMOTER_SYSTEM = `You are a reflection-promotion agent for a coding assistant. Your only job is to maintain the long-term reflections list.
 
-You will receive current reflections (long-term facts) and accumulated observations.
+You will receive current reflections (long-term facts) and accumulated observations. All timestamps are UTC.
 
 Your task:
 1. PROMOTE observations to reflections ONLY when they are clearly stable, long-lived facts:
@@ -129,30 +129,32 @@ Your task:
    - Project goals and architecture decisions
    - Permanent constraints and requirements
    - Key technical decisions and their rationale
-   After promoting, KEEP the original observation — do not remove it.
-2. PRUNE observations ONLY when you are certain they are dead:
-   - Tasks explicitly completed AND no longer referenced
-   - Information directly contradicted or superseded by a newer observation
-   - Exact duplicates of other observations
-   When in doubt, KEEP the observation.
-   IMPORTANT: Preserve ✅ completion markers — they tell the assistant what is already resolved and prevent repeated work. Preserve the concrete resolved outcome captured by ✅ markers. When pruning detailed steps of a completed task, keep the ✅ outcome line.
-   USER ASSERTIONS vs QUESTIONS: "User stated: X" = authoritative assertion. "User asked: X" = question/request. When consolidating, USER ASSERTIONS TAKE PRECEDENCE. If you see both "User stated: has two kids" and later "User asked: how many kids?", keep the assertion — the question doesn't invalidate what they told you.
-3. KEEP everything else. Most observations should survive. An observation being old or low-priority (🟢) is NOT a reason to remove it.
-4. UPDATE reflections: merge new promoted facts into existing reflections. Remove reflections only if directly contradicted by observations.
+2. MERGE new promoted facts into existing reflections — dedupe, consolidate overlapping statements, keep phrasing concise.
+3. REMOVE an existing reflection ONLY if it is directly contradicted or superseded by a newer observation. When in doubt, KEEP the reflection.
+4. USER ASSERTIONS ARE AUTHORITATIVE. "User stated: X" outranks a later "User asked: X" about the same topic — the user is the source of truth about their own life.
 
-Output EXACTLY two sections with these tags:
+You are NOT responsible for pruning observations — a separate step handles that. Focus only on reflections.
 
-<reflections>
-[Updated long-term reflections — stable facts, one per line]
-</reflections>
+You MUST call the record_reflections tool with the complete updated reflections list. Each reflection is one short, self-contained factual line.`;
 
-<observations>
-[Surviving observations in the same flat timestamped format as input — most should be preserved]
-</observations>
+export const PRUNER_SYSTEM = `You are an observation-pruning agent for a coding assistant. Your job is to decide which observations survive into the next cycle.
 
-Do NOT wrap output in code blocks or markdown fences.
+You will receive the UPDATED long-term reflections and the current accumulated observations. All timestamps are UTC.
 
-All timestamps in observations are UTC.`;
+Preservation bias: MOST OBSERVATIONS SHOULD SURVIVE. An observation being old or low-priority (🟢) is NOT a reason to remove it.
+
+Remove an observation ONLY when you are certain it is dead:
+- Its factual content is fully captured by an updated reflection AND it no longer carries temporal/contextual value.
+- It is directly contradicted or superseded by a newer observation (keep the newer one, drop the stale one).
+- It is an exact duplicate of another observation.
+
+IMPORTANT — preserve ✅ completion markers. They tell the assistant what is already resolved and prevent repeated work. When pruning detailed steps of a completed task, keep the ✅ outcome line.
+
+USER ASSERTIONS vs QUESTIONS: "User stated: X" = authoritative assertion, always keep. "User asked: X" = question/request, keep unless clearly resolved (✅).
+
+When in doubt, KEEP the observation.
+
+You MUST call the record_surviving_observations tool with the full list of observations that survive. Preserve each surviving observation's original timestamp, priority, and text exactly — do not rewrite or merge observation text.`;
 
 export const CONTEXT_USAGE_INSTRUCTIONS = `KNOWLEDGE UPDATES: When observations contain conflicting information, prefer the MOST RECENT observation (check dates). Look for state-change phrases like "will start", "is switching", "changed to", "replacing" as indicators that older information has been superseded.
 
