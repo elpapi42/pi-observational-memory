@@ -1,12 +1,14 @@
-import { completeSimple, type Message, type TextContent, type ToolCall, type ToolResultMessage } from "@mariozechner/pi-ai";
+import { completeSimple, Type, type Message, type TextContent, type Tool, type ToolCall, type ToolResultMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { convertToLlm, SettingsManager } from "@mariozechner/pi-coding-agent";
 import { DEFAULTS, loadConfig } from "./config.js";
 import type { Config } from "./config.js";
+import { normalizeTimestamp, parseObservations, parseReflectorOutput } from "./parser.js";
 import { CONTEXT_USAGE_INSTRUCTIONS, OBSERVER_SYSTEM, REFLECTOR_SYSTEM } from "./prompts.js";
-import { estimateRawTailTokens, estimateTokens, extractText } from "./tokens.js";
-import type { MemoryDetails, MemoryState } from "./types.js";
-import { isMemoryDetails } from "./types.js";
+import { renderObservations, renderReflections } from "./renderer.js";
+import { estimateObservationsTokens, estimateRawTailTokens, estimateTokens, extractText } from "./tokens.js";
+import type { MemoryState, Observation } from "./types.js";
+import { isOurDetails } from "./types.js";
 
 function utcDate(epochMs: number): string {
 	if (!Number.isFinite(epochMs)) return "????-??-??";
@@ -54,20 +56,43 @@ function serializeWithTimestamps(messages: Message[]): string {
 		.join("\n\n");
 }
 
+// Tool definition for the observer — flat schema, no recursion needed
+const recordObservationsTool: Tool = {
+	name: "record_observations",
+	description:
+		"Record observations extracted from the conversation. " +
+		"Call this exactly once with all observations for this batch.",
+	parameters: Type.Object({
+		observations: Type.Array(
+			Type.Object({
+				timestamp: Type.String({ description: "YYYY-MM-DDTHH:MMZ UTC" }),
+				priority: Type.Union([
+					Type.Literal("important"),
+					Type.Literal("maybe"),
+					Type.Literal("info"),
+					Type.Literal("completed"),
+				]),
+				text: Type.String(),
+			}),
+		),
+	}),
+};
+
 export default function observationalMemory(pi: ExtensionAPI) {
 	let config: Config = { ...DEFAULTS };
-	let state: MemoryState = { observations: "", reflections: "" };
+	let state: MemoryState = { observations: [], reflections: [] };
 	let compactInFlight = false;
 
+	// 6b — Session start
 	pi.on("session_start", (_event, ctx) => {
 		config = loadConfig(ctx.cwd);
-		state = { observations: "", reflections: "" };
+		state = { observations: [], reflections: [] };
 		compactInFlight = false;
 
 		const entries = ctx.sessionManager.getBranch();
 		for (let i = entries.length - 1; i >= 0; i--) {
 			const entry = entries[i];
-			if (entry.type === "compaction" && isMemoryDetails(entry.details)) {
+			if (entry.type === "compaction" && isOurDetails(entry.details)) {
 				state.observations = entry.details.observations;
 				state.reflections = entry.details.reflections;
 				break;
@@ -151,12 +176,16 @@ export default function observationalMemory(pi: ExtensionAPI) {
 					: ` Messages in this batch span ${firstMsgDate} to ${lastMsgDate} (UTC).`;
 		}
 
+		const currentRefText = renderReflections(state.reflections) || "(none yet)";
+		const currentObsText = renderObservations(state.observations) || "(none yet)";
+
+		// 6d — Observer with tool
 		ctx.ui.notify("Observational memory: running observer...", "info");
 
 		try {
 			const observerOptions = model.reasoning
-				? { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 4096, signal, reasoning: "high" as const }
-				: { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 4096, signal };
+				? { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 4096, signal, reasoning: "high" as const, tools: [recordObservationsTool] }
+				: { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 4096, signal, tools: [recordObservationsTool] };
 
 			const observerResponse = await completeSimple(
 				model,
@@ -168,7 +197,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 							content: [
 								{
 									type: "text" as const,
-									text: `Today is ${dateStr}, current time is ${timeStr} UTC.${dateRangeNote}\n\n<current-reflections>\n${state.reflections || "(none yet)"}\n</current-reflections>\n\n<current-observations>\n${state.observations || "(none yet)"}\n</current-observations>\n\nCompress the following conversation into new observations:\n\n<conversation>\n${conversationText}\n</conversation>`,
+									text: `Today is ${dateStr}, current time is ${timeStr} UTC.${dateRangeNote}\n\n<current-reflections>\n${currentRefText}\n</current-reflections>\n\n<current-observations>\n${currentObsText}\n</current-observations>\n\nCompress the following conversation into new observations:\n\n<conversation>\n${conversationText}\n</conversation>`,
 								},
 							],
 							timestamp: Date.now(),
@@ -178,25 +207,50 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				observerOptions,
 			);
 
-			const newObservations = extractText(observerResponse);
-			if (!newObservations.trim()) return;
+			// Primary path: tool was called
+			const toolCallBlock = observerResponse.content.find(
+				(b): b is ToolCall => b.type === "toolCall" && b.name === "record_observations",
+			);
 
-			state.observations = state.observations
-				? `${state.observations}\n\n${newObservations}`
-				: newObservations;
+			if (toolCallBlock) {
+				const raw = toolCallBlock.arguments as { observations: Observation[] };
+				if (raw.observations && raw.observations.length > 0) {
+					// Normalize timestamps on ingestion — model may produce non-canonical forms
+					state.observations.push(
+						...raw.observations.map((o) => ({ ...o, timestamp: normalizeTimestamp(o.timestamp) })),
+					);
+				} else if (ctx.hasUI) {
+					ctx.ui.notify("Observational memory: observer called tool with zero observations", "warning");
+				}
+			} else {
+				// Fallback path: model responded with text
+				const text = extractText(observerResponse);
+				if (text.trim()) {
+					const newObs = parseObservations(text);
+					if (newObs.length > 0) {
+						state.observations.push(...newObs);
+					}
+				} else if (ctx.hasUI) {
+					ctx.ui.notify("Observational memory: observer produced no output", "warning");
+				}
+			}
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : String(error);
 			if (ctx.hasUI) ctx.ui.notify(`Observer failed: ${msg}`, "error");
 			return;
 		}
 
-		if (estimateTokens(state.observations) > config.reflectionThreshold) {
+		// 6e — Reflector with validation
+		if (estimateObservationsTokens(state.observations) > config.reflectionThreshold) {
 			ctx.ui.notify("Observational memory: running reflector...", "info");
 
 			try {
 				const reflectorOptions = model.reasoning
 					? { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal, reasoning: "high" as const }
 					: { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal };
+
+				const reflectorObsText = renderObservations(state.observations);
+				const reflectorRefText = renderReflections(state.reflections) || "(none yet)";
 
 				const reflectorResponse = await completeSimple(
 					model,
@@ -208,7 +262,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 								content: [
 									{
 										type: "text" as const,
-										text: `Today is ${dateStr} (UTC).\n\n<current-reflections>\n${state.reflections || "(none yet)"}\n</current-reflections>\n\n<current-observations>\n${state.observations}\n</current-observations>\n\nGarbage-collect these observations. Promote long-lived facts to reflections, prune what's no longer needed, keep what's still active.`,
+										text: `Today is ${dateStr} (UTC).\n\n<current-reflections>\n${reflectorRefText}\n</current-reflections>\n\n<current-observations>\n${reflectorObsText}\n</current-observations>\n\nGarbage-collect these observations. Promote long-lived facts to reflections, prune what's no longer needed, keep what's still active.`,
 									},
 								],
 								timestamp: Date.now(),
@@ -219,59 +273,60 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				);
 
 				const output = extractText(reflectorResponse);
-				const reflectionsMatch = output.match(/<reflections>\n?([\s\S]*?)\n?<\/reflections>/);
-				const observationsMatch = output.match(/<observations>\n?([\s\S]*?)\n?<\/observations>/);
+				const parsed = parseReflectorOutput(output);
 
-				if (reflectionsMatch) state.reflections = reflectionsMatch[1].trim();
-				if (observationsMatch) state.observations = observationsMatch[1].trim();
+				if (parsed.observations.length < 1) {
+					if (ctx.hasUI) ctx.ui.notify("Observational memory: reflector produced no observations, keeping previous state", "warning");
+				} else {
+					const fallbackCount = parsed.observations.filter((o) => o.raw).length;
+					if (fallbackCount / parsed.observations.length > 0.2) {
+						if (ctx.hasUI) ctx.ui.notify("Observational memory: reflector output had too many parse failures, keeping previous state", "warning");
+					} else {
+						state.observations = parsed.observations;
+						state.reflections = parsed.reflections;
+					}
+				}
 			} catch (error) {
 				const msg = error instanceof Error ? error.message : String(error);
 				if (ctx.hasUI) ctx.ui.notify(`Reflector failed: ${msg}`, "warning");
 			}
 		}
 
+		// 6f — Summary rendering & compaction details
 		let summary = "";
-		if (state.reflections) {
-			summary += `<reflections>\n${state.reflections}\n</reflections>\n\n`;
-		}
-		if (state.observations) {
-			summary += `<observations>\n${state.observations}\n</observations>`;
-		}
+		const obsText = renderObservations(state.observations);
+		const refText = renderReflections(state.reflections);
+		if (refText) summary += `<reflections>\n${refText}\n</reflections>\n\n`;
+		if (obsText) summary += `<observations>\n${obsText}\n</observations>`;
 
 		if (!summary.trim()) return;
 
 		summary += `\n\n${CONTEXT_USAGE_INSTRUCTIONS}`;
-
-		const details: MemoryDetails = {
-			type: "observational-memory",
-			version: 1,
-			observations: state.observations,
-			reflections: state.reflections,
-		};
 
 		return {
 			compaction: {
 				summary,
 				firstKeptEntryId,
 				tokensBefore,
-				details,
+				details: { type: "observational-memory" as const, ...state },
 			},
 		};
 	});
 
+	// 6g — Command updates
 	pi.registerCommand("om-status", {
 		description: "Show observational memory status",
 		handler: async (_args, ctx) => {
 			const entries = ctx.sessionManager.getBranch();
 			const rawTokens = estimateRawTailTokens(entries);
-			const obsTokens = estimateTokens(state.observations);
-			const refTokens = estimateTokens(state.reflections);
+			const obsTokens = estimateObservationsTokens(state.observations);
+			const refTokens = estimateTokens(renderReflections(state.reflections));
 			const keepRecentTokens = SettingsManager.create(ctx.cwd).getCompactionKeepRecentTokens();
 
 			const lines = [
 				"── Observational Memory ──",
 				`Raw messages:  ~${rawTokens.toLocaleString()} tokens`,
-				`Observations:  ~${obsTokens.toLocaleString()} tokens`,
+				`Observations:  ${state.observations.length} items (~${obsTokens.toLocaleString()} tokens)`,
 				`Reflections:   ~${refTokens.toLocaleString()} tokens`,
 				"",
 				"── Parameters ──",
@@ -291,10 +346,10 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			const sections: string[] = [];
 
 			sections.push("── Reflections ──");
-			sections.push(state.reflections || "(none)");
+			sections.push(renderReflections(state.reflections) || "(none)");
 			sections.push("");
 			sections.push("── Observations ──");
-			sections.push(state.observations || "(none)");
+			sections.push(renderObservations(state.observations) || "(none)");
 
 			if (full) {
 				const entries = ctx.sessionManager.getBranch();

@@ -1,4 +1,6 @@
 import { estimateTokens as estimateMessageTokens } from "@mariozechner/pi-coding-agent";
+import type { Observation } from "./types.js";
+import { renderObservations } from "./renderer.js";
 
 export function estimateTokens(text: string): number {
 	return Math.ceil(text.length / 4);
@@ -42,6 +44,10 @@ export function estimateRawTailTokens(
 		}
 	}
 	return tokens;
+}
+
+export function estimateObservationsTokens(observations: Observation[]): number {
+	return estimateTokens(renderObservations(observations));
 }
 
 export function extractText(response: { content: Array<{ type: string; text?: string }> }): string {
