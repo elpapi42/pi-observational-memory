@@ -8,20 +8,20 @@ import { estimateRawTailTokens, estimateTokens, extractText } from "./tokens.js"
 import type { MemoryDetails, MemoryState } from "./types.js";
 import { isMemoryDetails } from "./types.js";
 
-function localDate(epochMs: number): string {
-	const d = new Date(epochMs);
-	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+function utcDate(epochMs: number): string {
+	if (!Number.isFinite(epochMs)) return "????-??-??";
+	return new Date(epochMs).toISOString().slice(0, 10);
 }
 
-function localTime(epochMs: number): string {
-	const d = new Date(epochMs);
-	return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+function utcTime(epochMs: number): string {
+	if (!Number.isFinite(epochMs)) return "??:??";
+	return new Date(epochMs).toISOString().slice(11, 16);
 }
 
 function serializeWithTimestamps(messages: Message[]): string {
 	return messages
 		.map((msg): string | null => {
-			const time = localTime(msg.timestamp);
+			const time = utcTime(msg.timestamp);
 			if (msg.role === "user") {
 				const text =
 					typeof msg.content === "string"
@@ -30,7 +30,7 @@ function serializeWithTimestamps(messages: Message[]): string {
 							.filter((b): b is TextContent => b.type === "text")
 							.map((b) => b.text)
 							.join("\n");
-				return `[User @ ${time}]: ${text}`;
+				return `[User @ ${time} UTC]: ${text}`;
 			}
 			if (msg.role === "assistant") {
 				const parts = msg.content.map((b) => {
@@ -41,14 +41,14 @@ function serializeWithTimestamps(messages: Message[]): string {
 				});
 				const body = parts.filter(Boolean).join("\n");
 				if (!body) return null;
-				return `[Assistant @ ${time}]: ${body}`;
+				return `[Assistant @ ${time} UTC]: ${body}`;
 			}
 			// toolResult
 			const text = msg.content
 				.filter((b): b is TextContent => b.type === "text")
 				.map((b) => b.text)
 				.join("\n");
-			return `[Tool result for ${(msg as ToolResultMessage).toolName} @ ${time}]: ${text}`;
+			return `[Tool result for ${(msg as ToolResultMessage).toolName} @ ${time} UTC]: ${text}`;
 		})
 		.filter((line): line is string => line !== null)
 		.join("\n\n");
@@ -131,27 +131,24 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		const allMessages = [...messagesToSummarize, ...turnPrefixMessages];
 		if (allMessages.length === 0) return;
 
-		// Bug 1: use local date, not UTC
 		const now = new Date();
-		const dateStr = localDate(now.getTime());
-		const timeStr = localTime(now.getTime());
+		const dateStr = utcDate(now.getTime());
+		const timeStr = utcTime(now.getTime());
 
-		// Bug 2: serialize with per-message timestamps
 		const llmMessages = convertToLlm(allMessages);
 		const conversationText = serializeWithTimestamps(llmMessages);
 
-		// Bug 3: inform the Observer of the message date range
 		let dateRangeNote = "";
 		if (llmMessages.length > 0) {
 			const timestamps = llmMessages.map((m) => m.timestamp);
 			const firstTs = timestamps.reduce((a, b) => Math.min(a, b));
 			const lastTs = timestamps.reduce((a, b) => Math.max(a, b));
-			const firstMsgDate = localDate(firstTs);
-			const lastMsgDate = localDate(lastTs);
+			const firstMsgDate = utcDate(firstTs);
+			const lastMsgDate = utcDate(lastTs);
 			dateRangeNote =
 				firstMsgDate === lastMsgDate
-					? ` Messages in this batch are from ${firstMsgDate}.`
-					: ` Messages in this batch span ${firstMsgDate} to ${lastMsgDate}.`;
+					? ` Messages in this batch are from ${firstMsgDate} (UTC).`
+					: ` Messages in this batch span ${firstMsgDate} to ${lastMsgDate} (UTC).`;
 		}
 
 		ctx.ui.notify("Observational memory: running observer...", "info");
@@ -171,7 +168,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 							content: [
 								{
 									type: "text" as const,
-									text: `Today is ${dateStr}, current time is ${timeStr}.${dateRangeNote}\n\n<current-reflections>\n${state.reflections || "(none yet)"}\n</current-reflections>\n\n<current-observations>\n${state.observations || "(none yet)"}\n</current-observations>\n\nCompress the following conversation into new observations:\n\n<conversation>\n${conversationText}\n</conversation>`,
+									text: `Today is ${dateStr}, current time is ${timeStr} UTC.${dateRangeNote}\n\n<current-reflections>\n${state.reflections || "(none yet)"}\n</current-reflections>\n\n<current-observations>\n${state.observations || "(none yet)"}\n</current-observations>\n\nCompress the following conversation into new observations:\n\n<conversation>\n${conversationText}\n</conversation>`,
 								},
 							],
 							timestamp: Date.now(),
@@ -211,7 +208,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 								content: [
 									{
 										type: "text" as const,
-										text: `Today is ${dateStr}.\n\n<current-reflections>\n${state.reflections || "(none yet)"}\n</current-reflections>\n\n<current-observations>\n${state.observations}\n</current-observations>\n\nGarbage-collect these observations. Promote long-lived facts to reflections, prune what's no longer needed, keep what's still active.`,
+										text: `Today is ${dateStr} (UTC).\n\n<current-reflections>\n${state.reflections || "(none yet)"}\n</current-reflections>\n\n<current-observations>\n${state.observations}\n</current-observations>\n\nGarbage-collect these observations. Promote long-lived facts to reflections, prune what's no longer needed, keep what's still active.`,
 									},
 								],
 								timestamp: Date.now(),

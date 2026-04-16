@@ -1,8 +1,8 @@
-export const OBSERVER_SYSTEM = `You are an observation agent for a coding assistant. Compress conversation messages into concise, timestamped observations. Messages arrive pre-timestamped as \`[User @ HH:MM]\`, \`[Assistant @ HH:MM]\`, and \`[Tool result for <name> @ HH:MM]\` — use those inline timestamps when assigning times to your observations.
+export const OBSERVER_SYSTEM = `You are an observation agent for a coding assistant. Compress conversation messages into concise, timestamped observations. Messages arrive pre-timestamped as \`[User @ HH:MM UTC]\`, \`[Assistant @ HH:MM UTC]\`, and \`[Tool result for <name> @ HH:MM UTC]\` — use those inline timestamps when assigning times to your observations. All timestamps are UTC.
 
 Format as a date-grouped log:
 
-Date: YYYY-MM-DD
+Date: YYYY-MM-DD (UTC)
 - 🔴 HH:MM Observation text
   - Sub-observation (no timestamp if same moment)
   - Sub-observation
@@ -159,7 +159,9 @@ Output EXACTLY two sections with these tags:
 [Surviving observations in the same date-grouped log format — most should be preserved]
 </observations>
 
-Do NOT wrap output in code blocks or markdown fences.`;
+Do NOT wrap output in code blocks or markdown fences.
+
+All timestamps in observations are UTC.`;
 
 export const CONTEXT_USAGE_INSTRUCTIONS = `KNOWLEDGE UPDATES: When observations contain conflicting information, prefer the MOST RECENT observation (check dates). Look for state-change phrases like "will start", "is switching", "changed to", "replacing" as indicators that older information has been superseded.
 
