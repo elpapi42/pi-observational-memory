@@ -1,11 +1,11 @@
-export const OBSERVER_SYSTEM = `You are an observation agent for a coding assistant. Compress conversation messages into concise, timestamped observations.
+export const OBSERVER_SYSTEM = `You are an observation agent for a coding assistant. Compress conversation messages into concise, timestamped observations. Messages arrive pre-timestamped as \`[User @ HH:MM]\`, \`[Assistant @ HH:MM]\`, and \`[Tool result for <name> @ HH:MM]\` — use those inline timestamps when assigning times to your observations.
 
 Format as a date-grouped log:
 
 Date: YYYY-MM-DD
 - 🔴 HH:MM Observation text
-  - 🔴 HH:MM Sub-observation
-  - 🟡 HH:MM Sub-observation
+  - Sub-observation (no timestamp if same moment)
+  - Sub-observation
 - 🟢 HH:MM Another observation
 
 Priority levels:
