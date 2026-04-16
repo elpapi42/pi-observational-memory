@@ -13,24 +13,26 @@ export const DEFAULTS: Config = {
 	reflectionThreshold: 30_000,
 };
 
+const SETTINGS_KEY = "observational-memory";
+
+function readNamespacedConfig(path: string): Partial<Config> {
+	if (!existsSync(path)) return {};
+	try {
+		const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+		const nested = raw[SETTINGS_KEY];
+		return nested && typeof nested === "object" ? (nested as Partial<Config>) : {};
+	} catch {
+		return {};
+	}
+}
+
 export function loadConfig(cwd: string): Config {
-	const globalPath = join(getAgentDir(), "observational-memory.json");
-	const projectPath = join(cwd, ".pi", "observational-memory.json");
+	const globalPath = join(getAgentDir(), "settings.json");
+	const projectPath = join(cwd, ".pi", "settings.json");
 
-	let globalConfig: Partial<Config> = {};
-	let projectConfig: Partial<Config> = {};
-
-	if (existsSync(globalPath)) {
-		try {
-			globalConfig = JSON.parse(readFileSync(globalPath, "utf-8"));
-		} catch {}
-	}
-
-	if (existsSync(projectPath)) {
-		try {
-			projectConfig = JSON.parse(readFileSync(projectPath, "utf-8"));
-		} catch {}
-	}
-
-	return { ...DEFAULTS, ...globalConfig, ...projectConfig };
+	return {
+		...DEFAULTS,
+		...readNamespacedConfig(globalPath),
+		...readNamespacedConfig(projectPath),
+	};
 }

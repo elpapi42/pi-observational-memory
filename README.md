@@ -94,12 +94,14 @@ That's it. The extension hooks into Pi's compaction lifecycle automatically. No 
 
 ### Extension settings
 
-Create `~/.pi/agent/observational-memory.json` (or `.pi/observational-memory.json` per project):
+Settings live under the `observational-memory` key in Pi's `settings.json` — globally at `~/.pi/agent/settings.json`, or per-project at `.pi/settings.json`. Project values override global.
 
 ```json
 {
-  "observationThreshold": 50000,
-  "reflectionThreshold": 30000
+  "observational-memory": {
+    "observationThreshold": 50000,
+    "reflectionThreshold": 30000
+  }
 }
 ```
 
@@ -115,13 +117,15 @@ The observer and reflector don't need the same capabilities as your coding agent
 
 ```json
 {
-  "compactionModel": { "provider": "openrouter", "id": "google/gemma-4-31b-it" }
+  "observational-memory": {
+    "compactionModel": { "provider": "openrouter", "id": "google/gemma-4-31b-it" }
+  }
 }
 ```
 
 ### Pi compaction settings
 
-The extension works with Pi's built-in compaction settings in `~/.pi/agent/settings.json`:
+The extension works alongside Pi's built-in compaction settings in the same `settings.json`:
 
 ```json
 {

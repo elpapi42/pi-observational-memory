@@ -1,6 +1,6 @@
 import { completeSimple } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { convertToLlm, serializeConversation } from "@mariozechner/pi-coding-agent";
+import { convertToLlm, serializeConversation, SettingsManager } from "@mariozechner/pi-coding-agent";
 import { DEFAULTS, loadConfig } from "./config.js";
 import type { Config } from "./config.js";
 import { CONTEXT_USAGE_INSTRUCTIONS, OBSERVER_SYSTEM, REFLECTOR_SYSTEM } from "./prompts.js";
@@ -199,6 +199,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			const rawTokens = estimateRawTailTokens(entries);
 			const obsTokens = estimateTokens(state.observations);
 			const refTokens = estimateTokens(state.reflections);
+			const keepRecentTokens = SettingsManager.create(ctx.cwd).getCompactionKeepRecentTokens();
 
 			const lines = [
 				"── Observational Memory ──",
@@ -209,6 +210,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				"── Parameters ──",
 				`Observation threshold: ${config.observationThreshold.toLocaleString()}`,
 				`Reflection threshold:  ${config.reflectionThreshold.toLocaleString()}`,
+				`Keep recent tokens:    ${keepRecentTokens.toLocaleString()} (pi compaction)`,
 			];
 
 			ctx.ui.notify(lines.join("\n"), "info");

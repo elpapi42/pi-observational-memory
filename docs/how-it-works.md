@@ -118,12 +118,14 @@ The `keepRecentTokens` setting is especially important: it controls the size of 
 
 ### Extension config
 
-Configured in `~/.pi/agent/observational-memory.json` (or `.pi/observational-memory.json` per project):
+Configured under the `observational-memory` key in Pi's `settings.json` — globally at `~/.pi/agent/settings.json`, or per-project at `.pi/settings.json`. Project values override global.
 
 ```json
 {
-  "observationThreshold": 50000,
-  "reflectionThreshold": 30000
+  "observational-memory": {
+    "observationThreshold": 50000,
+    "reflectionThreshold": 30000
+  }
 }
 ```
 
