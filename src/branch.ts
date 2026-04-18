@@ -53,6 +53,15 @@ export function rawTokensSinceLastCompaction(entries: Entry[]): number {
 	return rawTokensFromIndex(entries, findLastCompactionIndex(entries) + 1);
 }
 
+export function rawLiveTokens(entries: Entry[]): number {
+	const compactionIdx = findLastCompactionIndex(entries);
+	if (compactionIdx === -1) return rawTokensFromIndex(entries, 0);
+	const firstKept = entries[compactionIdx].firstKeptEntryId;
+	const firstKeptIdx = firstKept ? entries.findIndex((e) => e.id === firstKept) : -1;
+	if (firstKeptIdx === -1) return rawTokensFromIndex(entries, compactionIdx + 1);
+	return rawTokensFromIndex(entries, firstKeptIdx);
+}
+
 export function firstRawIdAfter(entries: Entry[], afterIndex: number): string | undefined {
 	for (let i = Math.max(0, afterIndex + 1); i < entries.length; i++) {
 		if (RAW_TYPES.has(entries[i].type)) return entries[i].id;
@@ -117,6 +126,29 @@ export function collectObservationsForCompaction(entries: Entry[], newFirstKeptE
 		result.push(data);
 	}
 	void prior;
+	return result;
+}
+
+export function collectObservationsPendingNextCompaction(entries: Entry[]): ObservationEntryData[] {
+	const priorCompactionIdx = findLastCompactionIndex(entries);
+	const priorFirstKept = priorCompactionIdx >= 0 ? entries[priorCompactionIdx].firstKeptEntryId : undefined;
+	const priorFirstKeptIdx = priorFirstKept ? entries.findIndex((e) => e.id === priorFirstKept) : -1;
+	const startIdx = priorFirstKeptIdx >= 0 ? priorFirstKeptIdx : priorCompactionIdx + 1;
+
+	const result: ObservationEntryData[] = [];
+	for (let i = startIdx; i < entries.length; i++) {
+		const entry = entries[i];
+		if (!isObservationEntry(entry)) continue;
+		const data = entry.data;
+		if (!isObservationEntryData(data)) continue;
+
+		if (priorFirstKeptIdx !== -1) {
+			const upToIdx = entries.findIndex((e) => e.id === data.coversUpToId);
+			if (upToIdx !== -1 && upToIdx < priorFirstKeptIdx) continue;
+		}
+
+		result.push(data);
+	}
 	return result;
 }
 

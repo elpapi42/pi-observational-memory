@@ -1,12 +1,13 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { SettingsManager } from "@mariozechner/pi-coding-agent";
 import {
-	collectObservationsAfter,
 	collectObservationsForCompaction,
+	collectObservationsPendingNextCompaction,
 	findLastBoundIndex,
 	findLastCompactionIndex,
 	firstRawIdAfter,
 	getPriorMemoryDetails,
+	rawLiveTokens,
 	rawMessagesBetween,
 	rawTokensFromIndex,
 	rawTokensSinceLastBound,
@@ -67,14 +68,13 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		if (!leafId) return;
 		const coversUpToId = leafId;
 
-		const lastCompactionIdx = findLastCompactionIndex(entries);
 		const priorDetails = getPriorMemoryDetails(entries);
 		const priorReflectionContents = priorDetails ? priorDetails.reflections.map((r) => r.content) : [];
 		const priorObservationContents = priorDetails ? priorDetails.observations.map((o) => o.content) : [];
-		const sinceCompactionObservations = collectObservationsAfter(entries, lastCompactionIdx);
+		const pendingObservations = collectObservationsPendingNextCompaction(entries);
 		const allPriorObservationContents = [
 			...priorObservationContents,
-			...sinceCompactionObservations.map((o) => o.content),
+			...pendingObservations.map((o) => o.content),
 		];
 
 		const chunk = rawMessagesBetween(entries, coversFromId, coversUpToId);
@@ -217,14 +217,14 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			const entries = ctx.sessionManager.getBranch() as Parameters<typeof rawTokensSinceLastBound>[0];
 			const sinceBound = rawTokensSinceLastBound(entries);
 			const sinceCompaction = rawTokensSinceLastCompaction(entries);
+			const liveRaw = rawLiveTokens(entries);
 
 			const priorDetails = getPriorMemoryDetails(entries);
 			const detailsObsTokens = priorDetails ? priorDetails.observations.reduce((s, o) => s + o.tokenCount, 0) : 0;
 			const detailsRefTokens = priorDetails ? priorDetails.reflections.reduce((s, r) => s + r.tokenCount, 0) : 0;
 
-			const lastCompactionIdx = findLastCompactionIndex(entries);
-			const sinceCompactionObs = collectObservationsAfter(entries, lastCompactionIdx);
-			const treeObsTokens = sinceCompactionObs.reduce((s, o) => s + o.tokenCount, 0);
+			const pendingObs = collectObservationsPendingNextCompaction(entries);
+			const treeObsTokens = pendingObs.reduce((s, o) => s + o.tokenCount, 0);
 
 			const keepRecentTokens = SettingsManager.create(ctx.cwd).getCompactionKeepRecentTokens();
 
@@ -232,7 +232,8 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				"── Observational Memory (v2) ──",
 				`Raw since last bound:       ~${sinceBound.toLocaleString()} tokens (observer fires at ${config.observationThresholdTokens.toLocaleString()})`,
 				`Raw since last compaction:  ~${sinceCompaction.toLocaleString()} tokens (compaction fires at ${config.compactionThresholdTokens.toLocaleString()})`,
-				`Observations in tree:       ${sinceCompactionObs.length} entries, ~${treeObsTokens.toLocaleString()} tokens`,
+				`Raw live (kept tail + new): ~${liveRaw.toLocaleString()} tokens`,
+				`Observations pending next compaction: ${pendingObs.length} entries, ~${treeObsTokens.toLocaleString()} tokens`,
 				`Observations in details:    ${priorDetails?.observations.length ?? 0} entries, ~${detailsObsTokens.toLocaleString()} tokens`,
 				`Reflections in details:     ${priorDetails?.reflections.length ?? 0} entries, ~${detailsRefTokens.toLocaleString()} tokens`,
 				"",
@@ -257,7 +258,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			const entries = ctx.sessionManager.getBranch() as Parameters<typeof getPriorMemoryDetails>[0];
 			const priorDetails = getPriorMemoryDetails(entries);
 			const lastCompactionIdx = findLastCompactionIndex(entries);
-			const sinceCompactionObs = collectObservationsAfter(entries, lastCompactionIdx);
+			const pendingObs = collectObservationsPendingNextCompaction(entries);
 
 			const sections: string[] = [];
 
@@ -275,9 +276,9 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				sections.push("(none)");
 			}
 			sections.push("");
-			sections.push("── Observations appended since last compaction (in tree) ──");
-			if (sinceCompactionObs.length > 0) {
-				sections.push(sinceCompactionObs.map((o) => o.content).join("\n"));
+			sections.push("── Observations pending next compaction (in tree) ──");
+			if (pendingObs.length > 0) {
+				sections.push(pendingObs.map((o) => o.content).join("\n"));
 			} else {
 				sections.push("(none)");
 			}
