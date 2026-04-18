@@ -49,8 +49,7 @@ Fires on `turn_end`. Async, fire-and-forget.
    - `coversUpToId` = current leaf id at fire time (entries landing during the LLM call are deferred to the next observer).
 4. Run observer LLM with: prior observations (full `details.observations` from most recent compaction + every `om.observation` content appended since), and the raw chunk in `[coversFromId, coversUpToId]` rendered as serialized conversation.
 5. Append `om.observation` `custom` entry with `{ content, coversFromId, coversUpToId, tokenCount }`. `tokenCount` is the estimated token count of `content`.
-6. Emit `om.observation-generated` on `pi.events` (informational; no internal consumer).
-7. Clear `observerInFlight`.
+6. Clear `observerInFlight`.
 
 `observerInFlight` is required: back-to-back agent loops or fast turn cadence can otherwise race two observers against the same range. The skipped trigger is harmless — the counter keeps growing and the next `turn_end` will catch up.
 
@@ -89,7 +88,6 @@ Compaction is therefore one of two shapes per fire: 0 LLM calls (early sessions,
 - `turn_end` — observation trigger; fire-and-forget observer if threshold met and `observerInFlight` is false.
 - `agent_end` — compaction trigger; defers `ctx.compact()` via `setTimeout` if threshold met and `compactInFlight` is false.
 - `session_before_compact` — own it; perform compaction assembly above.
-- `pi.events.emit('om.observation-generated', ...)` — emitted after observer lands. Informational only; no internal consumer.
 
 `session_start` and `session_tree` are deliberately not registered. With pure on-demand recompute there is no closure cache to rebuild on session lifecycle or tree navigation.
 
@@ -150,10 +148,6 @@ pi sessions are append-only trees of typed entries, each with `{ type, id, paren
 
 - **`getBranch(leafId?)`** — returns the path from leaf to root. Used for counter recomputation and the compaction-assembly walk.
 - **`getLeafId()` / `getLeafEntry()`** — current branch tip; used to capture `coversUpToId` at observer fire time.
-
-## Inter-extension event bus
-
-- **`pi.events.emit / on`** — used to publish `om.observation-generated` after an observer call completes. Informational; no internal consumer in this spec.
 
 ## Key invariants leaned on
 

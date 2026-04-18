@@ -1,5 +1,5 @@
 export const STRICT_FORMAT_RULES = `Output format — strict:
-- Each entry is a single line beginning with a timestamp prefix: "YYYY-MM-DD HH:MM " (UTC, to the minute), followed by plain prose.
+- Each entry is a single line beginning with a timestamp prefix: "YYYY-MM-DD HH:MM " (local time, 24-hour, to the minute), followed by plain prose.
 - One entry per line. Multiple entries are separated by line breaks.
 - No markdown, no bullets, no headers, no code fences, no XML tags.
 - No emojis, no priority/importance markers, no [tags], no labels.
@@ -15,7 +15,7 @@ export const OBSERVER_SYSTEM = `You are an observation agent for a coding assist
 You receive:
 - Current reflections (long-lived facts already crystallized).
 - Current observations (timestamped events already recorded).
-- A new chunk of conversation with inline timestamps formatted as "[User @ YYYY-MM-DD HH:MM UTC]:", "[Assistant @ ...]:", "[Tool result for <name> @ ...]:".
+- A new chunk of conversation with inline timestamps formatted as "[User @ YYYY-MM-DD HH:MM]:", "[Assistant @ ...]:", "[Tool result for <name> @ ...]:".
 
 Your task:
 - Produce NEW observations covering the new chunk only. Do not restate facts already in the current reflections or current observations unless something has materially changed.
@@ -45,7 +45,7 @@ Your task:
   - Project goals, architectural decisions, key technical decisions and their rationale.
   - Recurring user behavior or working style.
   - Permanent constraints and requirements.
-- Use the current date and time as the timestamp for each new reflection.
+- Use the provided current local time as the timestamp for each new reflection.
 - Output zero new reflections if nothing new is stable enough to crystallize. Empty output is valid.
 - Each reflection is one line.
 
@@ -65,7 +65,7 @@ Your task:
 - You MAY merge multiple closely-related observations into a single combined observation. When merging, use the timestamp of the most recent of the merged observations and write a single coherent line that preserves the salient details.
 - You MAY rewrite an observation for clarity, but never invent facts not present in the input.
 - When in doubt, keep the observation. Preserve user assertions and concrete completions aggressively.
-- Preserve all timestamps in their original UTC values (or the most recent one when merging).
+- Preserve all timestamps in their original values (or the most recent one when merging).
 - Output the kept observations in chronological order (oldest first).
 
 ${STRICT_FORMAT_RULES}`;

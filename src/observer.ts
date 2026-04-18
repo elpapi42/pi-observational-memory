@@ -1,6 +1,6 @@
 import { completeSimple, type Message } from "@mariozechner/pi-ai";
 import { OBSERVER_SYSTEM } from "./prompts.js";
-import { serializeConversation } from "./serialize.js";
+import { nowTimestamp, serializeConversation } from "./serialize.js";
 import { extractText } from "./tokens.js";
 import type { Observation } from "./types.js";
 
@@ -25,7 +25,10 @@ export async function runObserver(args: RunObserverArgs): Promise<string | undef
 	const conversation = serializeConversation(chunk);
 	if (!conversation.trim()) return undefined;
 
-	const userText = `<current-reflections>
+	const now = nowTimestamp();
+	const userText = `Current local time: ${now}
+
+<current-reflections>
 ${joinOrEmpty(priorReflections)}
 </current-reflections>
 
@@ -33,7 +36,7 @@ ${joinOrEmpty(priorReflections)}
 ${joinOrEmpty(priorObservations)}
 </current-observations>
 
-Compress the following new conversation chunk into observations. Do not restate facts already in current reflections or observations.
+Compress the following new conversation chunk into observations. Do not restate facts already in current reflections or observations. Prefer the inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies.
 
 <conversation>
 ${conversation}

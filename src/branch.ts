@@ -97,11 +97,11 @@ export function collectObservationsForCompaction(entries: Entry[], newFirstKeptE
 	const newKeptIdx = entries.findIndex((e) => e.id === newFirstKeptEntryId);
 	if (newKeptIdx === -1) return [];
 
-	const startIdx = priorCompactionIdx + 1;
-
-	const result: ObservationEntryData[] = [];
 	const priorFirstKept = priorCompactionIdx >= 0 ? entries[priorCompactionIdx].firstKeptEntryId : undefined;
 	const priorFirstKeptIdx = priorFirstKept ? entries.findIndex((e) => e.id === priorFirstKept) : -1;
+	const startIdx = priorFirstKeptIdx >= 0 ? priorFirstKeptIdx : priorCompactionIdx + 1;
+
+	const result: ObservationEntryData[] = [];
 
 	for (let i = startIdx; i < newKeptIdx; i++) {
 		const entry = entries[i];

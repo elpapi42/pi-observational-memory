@@ -1,6 +1,7 @@
 import { completeSimple } from "@mariozechner/pi-ai";
 import { parseObservations, parseReflections } from "./parse.js";
 import { CONTEXT_USAGE_INSTRUCTIONS, PRUNER_SYSTEM, REFLECTOR_SYSTEM } from "./prompts.js";
+import { nowTimestamp } from "./serialize.js";
 import { extractText } from "./tokens.js";
 import type { Observation, Reflection } from "./types.js";
 
@@ -27,7 +28,10 @@ export async function runReflector(
 	reflections: Reflection[],
 	observations: Observation[],
 ): Promise<Reflection[]> {
-	const userText = `<current-reflections>
+	const now = nowTimestamp();
+	const userText = `Current local time: ${now}
+
+<current-reflections>
 ${joinOrEmpty(reflections)}
 </current-reflections>
 
@@ -35,7 +39,7 @@ ${joinOrEmpty(reflections)}
 ${joinOrEmpty(observations)}
 </current-observations>
 
-Crystallize new long-lived reflections from the observation pool. Output ONLY new reflections (do not restate existing ones). Empty output is valid if nothing new is stable enough to crystallize.`;
+Crystallize new long-lived reflections from the observation pool. Output ONLY new reflections (do not restate existing ones). Use the current local time above as the timestamp for each new reflection. Empty output is valid if nothing new is stable enough to crystallize.`;
 
 	const response = await completeSimple(
 		args.model,

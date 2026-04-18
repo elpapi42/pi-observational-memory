@@ -103,7 +103,6 @@ export default function observationalMemory(pi: ExtensionAPI) {
 					tokenCount: estimateStringTokens(content),
 				};
 				pi.appendEntry(OBSERVATION_CUSTOM_TYPE, data);
-				pi.events.emit("om.observation-generated", { coversFromId, coversUpToId, tokenCount: data.tokenCount });
 			} catch (error) {
 				const msg = error instanceof Error ? error.message : String(error);
 				if (ctx.hasUI) ctx.ui.notify(`Observational memory: observer failed: ${msg}`, "warning");

@@ -94,7 +94,7 @@ Every observation and reflection follows a strict format:
 YYYY-MM-DD HH:MM <plain prose>
 ```
 
-The timestamp is UTC, to the minute. The text is plain prose — no emojis, no priority markers, no `[tags]`, no Markdown bullets, no code fences, no embedded structured fields.
+The timestamp is local time, 24-hour, to the minute. The text is plain prose — no emojis, no priority markers, no `[tags]`, no Markdown bullets, no code fences, no embedded structured fields.
 
 This strictness exists for three reasons:
 1. The pruner LLM round-trips the observation set, so it must emit content the parser can re-split into entries. The timestamp prefix is the only delimiter.
