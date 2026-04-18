@@ -9,7 +9,6 @@ import {
 	gapRawEntries,
 	getPriorMemoryDetails,
 	liveTailEntries,
-	liveTailStartIndex,
 	rawLiveTokens,
 	rawTailEntriesBetween,
 	rawTokensFromIndex,
@@ -247,18 +246,6 @@ export default function observationalMemory(pi: ExtensionAPI) {
 
 		const entries = branchEntries as Parameters<typeof getPriorMemoryDetails>[0];
 
-		const newKeptIdx = entries.findIndex((e) => e.id === firstKeptEntryId);
-		const currentLiveTailStart = liveTailStartIndex(entries);
-		if (newKeptIdx !== -1 && newKeptIdx <= currentLiveTailStart) {
-			const keepRecentTokens = SettingsManager.create(ctx.cwd).getCompactionKeepRecentTokens();
-			if (ctx.hasUI) ctx.ui.notify(
-				`Observational memory: nothing to compact — live tail (~${rawLiveTokens(entries).toLocaleString()} tokens) is at or below compaction.keepRecentTokens (${keepRecentTokens.toLocaleString()}). ` +
-				"No raw entries would be pruned. Skipping.",
-				"warning",
-			);
-			return { cancel: true };
-		}
-
 		const priorDetails = getPriorMemoryDetails(entries);
 
 		if (observerPromise) {
@@ -331,6 +318,11 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		const deltaObservationData = collectObservationsByCoverage(entries, priorFirstKeptEntryId, firstKeptEntryId);
 		if (gapObservationData) deltaObservationData.push(gapObservationData);
 
+		if (deltaObservationData.length === 0) {
+			if (ctx.hasUI) ctx.ui.notify("Observational memory: nothing to compact yet", "warning");
+			return { cancel: true };
+		}
+
 		const workingReflections: Reflection[] = priorDetails ? [...priorDetails.reflections] : [];
 		const workingObservations: Observation[] = [
 			...(priorDetails ? priorDetails.observations : []),
@@ -371,15 +363,6 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		}
 
 		const summary = renderSummary(finalReflections, finalObservations);
-		if (!summary.trim()) {
-			if (ctx.hasUI) ctx.ui.notify(
-				"Observational memory: no observations in pool; cancelling compaction. " +
-				"This may be transient — try running /compact manually. " +
-				"If it persists, check that the observer model is configured correctly.",
-				"error",
-			);
-			return { cancel: true };
-		}
 
 		const details: MemoryDetails = {
 			type: "observational-memory",
