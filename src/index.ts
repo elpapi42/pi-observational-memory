@@ -8,6 +8,7 @@ import {
 	gapRawEntries,
 	getPriorMemoryDetails,
 	liveTailEntries,
+	liveTailStartIndex,
 	rawLiveTokens,
 	rawTailEntriesBetween,
 	rawTokensFromIndex,
@@ -244,6 +245,18 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		resolveFailureNotified = false;
 
 		const entries = branchEntries as Parameters<typeof getPriorMemoryDetails>[0];
+
+		const newKeptIdx = entries.findIndex((e) => e.id === firstKeptEntryId);
+		const currentLiveTailStart = liveTailStartIndex(entries);
+		if (newKeptIdx !== -1 && newKeptIdx <= currentLiveTailStart) {
+			if (ctx.hasUI) ctx.ui.notify(
+				`Observational memory: nothing to compact — live tail (~${rawLiveTokens(entries).toLocaleString()} tokens) is at or below pi's kept-tail target. ` +
+				"No raw entries would be pruned. Skipping.",
+				"info",
+			);
+			return { cancel: true };
+		}
+
 		const priorDetails = getPriorMemoryDetails(entries);
 
 		if (observerPromise) {
