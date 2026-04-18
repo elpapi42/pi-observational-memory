@@ -1,6 +1,6 @@
-import { completeSimple, type Message } from "@mariozechner/pi-ai";
+import { completeSimple } from "@mariozechner/pi-ai";
 import { OBSERVER_SYSTEM } from "./prompts.js";
-import { nowTimestamp, serializeConversation } from "./serialize.js";
+import { nowTimestamp } from "./serialize.js";
 import { extractText } from "./tokens.js";
 import type { Observation } from "./types.js";
 
@@ -10,7 +10,7 @@ interface RunObserverArgs {
 	headers?: Record<string, string>;
 	priorReflections: string[];
 	priorObservations: string[];
-	chunk: Message[];
+	chunk: string;
 	signal?: AbortSignal;
 }
 
@@ -20,10 +20,8 @@ function joinOrEmpty(items: string[]): string {
 
 export async function runObserver(args: RunObserverArgs): Promise<string | undefined> {
 	const { model, apiKey, headers, priorReflections, priorObservations, chunk, signal } = args;
-	if (chunk.length === 0) return undefined;
-
-	const conversation = serializeConversation(chunk);
-	if (!conversation.trim()) return undefined;
+	const conversation = chunk.trim();
+	if (!conversation) return undefined;
 
 	const now = nowTimestamp();
 	const userText = `Current local time: ${now}

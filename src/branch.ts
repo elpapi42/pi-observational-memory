@@ -1,19 +1,21 @@
-import type { Message } from "@mariozechner/pi-ai";
 import { OBSERVATION_CUSTOM_TYPE, isMemoryDetails, isObservationEntryData, type MemoryDetails, type ObservationEntryData } from "./types.js";
 import { estimateEntryTokens } from "./tokens.js";
 
 type Entry = {
 	type: string;
 	id: string;
+	timestamp?: string;
 	message?: unknown;
 	content?: unknown;
 	customType?: string;
+	summary?: unknown;
+	fromId?: string;
 	data?: unknown;
 	details?: unknown;
 	firstKeptEntryId?: string;
 };
 
-const RAW_TYPES = new Set(["message", "custom_message"]);
+const RAW_TYPES = new Set(["message", "custom_message", "branch_summary"]);
 
 function isObservationEntry(entry: Entry): boolean {
 	return entry.type === "custom" && entry.customType === OBSERVATION_CUSTOM_TYPE;
@@ -53,13 +55,25 @@ export function rawTokensSinceLastCompaction(entries: Entry[]): number {
 	return rawTokensFromIndex(entries, findLastCompactionIndex(entries) + 1);
 }
 
-export function rawLiveTokens(entries: Entry[]): number {
+export function liveTailStartIndex(entries: Entry[]): number {
 	const compactionIdx = findLastCompactionIndex(entries);
-	if (compactionIdx === -1) return rawTokensFromIndex(entries, 0);
+	if (compactionIdx === -1) return 0;
 	const firstKept = entries[compactionIdx].firstKeptEntryId;
 	const firstKeptIdx = firstKept ? entries.findIndex((e) => e.id === firstKept) : -1;
-	if (firstKeptIdx === -1) return rawTokensFromIndex(entries, compactionIdx + 1);
-	return rawTokensFromIndex(entries, firstKeptIdx);
+	return firstKeptIdx >= 0 ? firstKeptIdx : compactionIdx + 1;
+}
+
+export function rawLiveTokens(entries: Entry[]): number {
+	return rawTokensFromIndex(entries, liveTailStartIndex(entries));
+}
+
+export function liveTailEntries(entries: Entry[]): Entry[] {
+	const start = liveTailStartIndex(entries);
+	const result: Entry[] = [];
+	for (let i = start; i < entries.length; i++) {
+		if (RAW_TYPES.has(entries[i].type)) result.push(entries[i]);
+	}
+	return result;
 }
 
 export function firstRawIdAfter(entries: Entry[], afterIndex: number): string | undefined {
@@ -69,19 +83,16 @@ export function firstRawIdAfter(entries: Entry[], afterIndex: number): string | 
 	return undefined;
 }
 
-export function rawMessagesBetween(entries: Entry[], fromId: string, untilId: string): Message[] {
+export function rawTailEntriesBetween(entries: Entry[], fromId: string, untilId: string): Entry[] {
 	const fromIdx = entries.findIndex((e) => e.id === fromId);
 	const untilIdx = entries.findIndex((e) => e.id === untilId);
 	if (fromIdx === -1 || untilIdx === -1 || untilIdx < fromIdx) return [];
 
-	const messages: Message[] = [];
+	const result: Entry[] = [];
 	for (let i = fromIdx; i <= untilIdx; i++) {
-		const entry = entries[i];
-		if (entry.type === "message" && entry.message) {
-			messages.push(entry.message as Message);
-		}
+		if (RAW_TYPES.has(entries[i].type)) result.push(entries[i]);
 	}
-	return messages;
+	return result;
 }
 
 export function getPriorMemoryDetails(entries: Entry[]): MemoryDetails | undefined {

@@ -4,7 +4,7 @@ export function estimateStringTokens(text: string): number {
 	return Math.ceil(text.length / 4);
 }
 
-export function estimateEntryTokens(entry: { type: string; message?: unknown; content?: unknown }): number {
+export function estimateEntryTokens(entry: { type: string; message?: unknown; content?: unknown; summary?: unknown }): number {
 	if (entry.type === "message" && entry.message) {
 		return estimateMessageTokens(entry.message as Parameters<typeof estimateMessageTokens>[0]);
 	}
@@ -18,6 +18,9 @@ export function estimateEntryTokens(entry: { type: string; message?: unknown; co
 			}
 			return total;
 		}
+	}
+	if (entry.type === "branch_summary" && typeof entry.summary === "string") {
+		return estimateStringTokens(entry.summary);
 	}
 	return 0;
 }

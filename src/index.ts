@@ -4,11 +4,11 @@ import {
 	collectObservationsForCompaction,
 	collectObservationsPendingNextCompaction,
 	findLastBoundIndex,
-	findLastCompactionIndex,
 	firstRawIdAfter,
 	getPriorMemoryDetails,
+	liveTailEntries,
 	rawLiveTokens,
-	rawMessagesBetween,
+	rawTailEntriesBetween,
 	rawTokensFromIndex,
 	rawTokensSinceLastBound,
 	rawTokensSinceLastCompaction,
@@ -17,7 +17,7 @@ import { renderSummary, runPruner, runReflector } from "./compaction.js";
 import { DEFAULTS, loadConfig, type Config } from "./config.js";
 import { runObserver } from "./observer.js";
 import { parseObservations } from "./parse.js";
-import { serializeConversation } from "./serialize.js";
+import { serializeBranchEntries } from "./serialize.js";
 import { estimateStringTokens } from "./tokens.js";
 import { OBSERVATION_CUSTOM_TYPE, type MemoryDetails, type Observation, type Reflection } from "./types.js";
 
@@ -77,8 +77,10 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			...pendingObservations.map((o) => o.content),
 		];
 
-		const chunk = rawMessagesBetween(entries, coversFromId, coversUpToId);
-		if (chunk.length === 0) return;
+		const chunkEntries = rawTailEntriesBetween(entries, coversFromId, coversUpToId);
+		if (chunkEntries.length === 0) return;
+		const chunk = serializeBranchEntries(chunkEntries);
+		if (!chunk.trim()) return;
 
 		observerInFlight = true;
 		void (async () => {
@@ -257,7 +259,6 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			const full = args.includes("--full");
 			const entries = ctx.sessionManager.getBranch() as Parameters<typeof getPriorMemoryDetails>[0];
 			const priorDetails = getPriorMemoryDetails(entries);
-			const lastCompactionIdx = findLastCompactionIndex(entries);
 			const pendingObs = collectObservationsPendingNextCompaction(entries);
 
 			const sections: string[] = [];
@@ -284,15 +285,10 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			}
 
 			if (full) {
-				const tailStart = lastCompactionIdx >= 0 ? lastCompactionIdx + 1 : 0;
-				const tailMessages = rawMessagesBetween(
-					entries,
-					entries[tailStart]?.id ?? entries[0]?.id ?? "",
-					ctx.sessionManager.getLeafId() ?? entries[entries.length - 1]?.id ?? "",
-				);
+				const tail = liveTailEntries(entries);
 				sections.push("");
 				sections.push("── Raw uncompacted tail ──");
-				sections.push(tailMessages.length > 0 ? serializeConversation(tailMessages) : "(none)");
+				sections.push(tail.length > 0 ? serializeBranchEntries(tail) : "(none)");
 			}
 
 			ctx.ui.notify(sections.join("\n"), "info");
