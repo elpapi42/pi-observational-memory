@@ -12,7 +12,7 @@ The pi tree is the **only** source of truth. No disk sidecar, no in-memory autho
 
 ## Entry shapes
 
-- `om.observation` — `{ content, coversFromId, coversUpToId, tokenCount }`. Append-only `custom` entry written by the observer. Cover IDs are needed here for the async-race filter at the next compaction.
+- `om.observation` — `{ content, coversFromId, coversUpToId, tokenCount }`. Append-only `custom` entry written by the observer. Cover IDs are stored for diagnostics and to define the chunk boundaries the observer used; they are not consulted at compaction time.
 - `compaction.details` — `{ reflections: Reflection[], observations: Observation[] }`. Cumulative branch-local state.
   - `Reflection` and `Observation` (inside `compaction.details`) share the narrow shape: `{ content, tokenCount }`. Cover IDs are intentionally dropped because the pruner LLM may merge or rewrite content.
 
@@ -68,7 +68,7 @@ On `session_before_compact`:
 
 1. Read pi's proposed `firstKeptEntryId` from `event.preparation`.
 2. Find prior `compaction` entry on branch (or root).
-3. Walk `[prior.firstKeptEntryId, new.firstKeptEntryId)` collecting `om.observation` entries. Filter any whose `coversUpToId` precedes prior's `firstKeptEntryId` (async-race guard for late observer landings).
+3. Walk `[prior.firstKeptEntryId, new.firstKeptEntryId)` collecting `om.observation` entries. No coverage-based filtering: each tree-level observation is collected by exactly one compaction (the first whose `new.firstKeptEntryId` index is past the observation), so no deduplication is needed.
 4. Merge with prior `compaction.details`:
    - working reflection set = prior.reflections (carried forward as-is)
    - working observation set = prior.observations ∪ delta observations (each delta observation contributes a new `{ content, tokenCount }` entry; cover IDs from the tree entry are dropped at this point)
@@ -97,7 +97,7 @@ A single model is used for observer, reflector, and pruner. Default is `ctx.mode
 
 ## Async race handling
 
-Observer is fired-and-forgotten. Late observations land in the tree with `coversUpToId` set; the next compaction walk filters out any whose range is already baked into prior `details`. No locks needed beyond `observerInFlight`.
+Observer is fired-and-forgotten. Late observations land in the tree at whatever index pi assigns them. The next compaction walk picks them up by tree position alone — no coverage-based filtering is applied, so a late landing cannot be dropped on a false assumption that its content is already represented elsewhere. The `observerInFlight` flag prevents two observers from racing on the same chunk, so observations are always disjoint by construction; this means the unfiltered walk cannot produce duplicates either.
 
 There is no separate reflection race because reflection happens synchronously inside compaction, on the data it has at that moment.
 

@@ -58,7 +58,7 @@ The extension recomputes raw tokens since the most recent `compaction` entry on 
 
 This is where the summary is built. The extension owns this hook entirely — Pi's default LLM summarizer is bypassed.
 
-1. **Walk the delta.** Collect every `om.observation` entry between the prior compaction's `firstKeptEntryId` and the new compaction's `firstKeptEntryId`. Filter out any whose `coversUpToId` precedes the prior `firstKeptEntryId` — this guards against late-landing observers whose range is already baked into the prior summary.
+1. **Walk the delta.** Collect every `om.observation` entry between the prior compaction's `firstKeptEntryId` and the new compaction's `firstKeptEntryId`. The walk uses tree position only — no coverage-based filter — because each observation entry is collected by exactly one compaction (the first whose `firstKeptEntryId` index is past it). The `observerInFlight` flag keeps observation chunks disjoint, so duplicate coverage cannot arise.
 
 2. **Merge with prior state.** The cumulative state lives in `compaction.details = { reflections: [], observations: [] }`. Reflections from the prior compaction are carried forward as-is. Observations from the prior compaction are unioned with the delta observations to form the working observation pool.
 
@@ -122,7 +122,7 @@ This means session resume, branch switching, and tree navigation are all transpa
 
 The observer is fire-and-forget, so observations can land out of order with respect to compaction:
 
-- If `ctx.compact()` runs while an observer is still in flight, the in-flight observer's `om.observation` entry will land *after* the new compaction. Its `coversUpToId` will reference an entry that's now before the new `firstKeptEntryId` — i.e., its content describes raw entries already baked into the new compaction's `details.observations`. The next compaction's walk filters such entries out by checking `coversUpToId` against the prior `firstKeptEntryId`.
+- If `ctx.compact()` runs while an observer is still in flight, the in-flight observer's `om.observation` entry lands at whatever index pi assigns it. The next compaction's walk picks it up by tree position — no coverage-based filter is applied — so its content is preserved into `details.observations` even when its chunk straddled a `firstKeptEntryId` boundary. Because `observerInFlight` keeps chunks disjoint, an unfiltered walk still cannot produce duplicate coverage.
 
 - If two `turn_end` events fire while an observer is running, the second is dropped (the `observerInFlight` flag is set). The accumulated raw tokens are picked up by the next `turn_end` after the in-flight observer completes. No data is lost; observations just batch together.
 

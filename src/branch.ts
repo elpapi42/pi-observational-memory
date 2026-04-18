@@ -117,12 +117,6 @@ export function collectObservationsForCompaction(entries: Entry[], newFirstKeptE
 		if (!isObservationEntry(entry)) continue;
 		const data = entry.data;
 		if (!isObservationEntryData(data)) continue;
-
-		if (priorFirstKeptIdx !== -1) {
-			const upToIdx = entries.findIndex((e) => e.id === data.coversUpToId);
-			if (upToIdx !== -1 && upToIdx < priorFirstKeptIdx) continue;
-		}
-
 		result.push(data);
 	}
 	void prior;
@@ -141,12 +135,6 @@ export function collectObservationsPendingNextCompaction(entries: Entry[]): Obse
 		if (!isObservationEntry(entry)) continue;
 		const data = entry.data;
 		if (!isObservationEntryData(data)) continue;
-
-		if (priorFirstKeptIdx !== -1) {
-			const upToIdx = entries.findIndex((e) => e.id === data.coversUpToId);
-			if (upToIdx !== -1 && upToIdx < priorFirstKeptIdx) continue;
-		}
-
 		result.push(data);
 	}
 	return result;
