@@ -249,10 +249,11 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		const newKeptIdx = entries.findIndex((e) => e.id === firstKeptEntryId);
 		const currentLiveTailStart = liveTailStartIndex(entries);
 		if (newKeptIdx !== -1 && newKeptIdx <= currentLiveTailStart) {
+			const keepRecentTokens = SettingsManager.create(ctx.cwd).getCompactionKeepRecentTokens();
 			if (ctx.hasUI) ctx.ui.notify(
-				`Observational memory: nothing to compact — live tail (~${rawLiveTokens(entries).toLocaleString()} tokens) is at or below pi's kept-tail target. ` +
+				`Observational memory: nothing to compact — live tail (~${rawLiveTokens(entries).toLocaleString()} tokens) is at or below compaction.keepRecentTokens (${keepRecentTokens.toLocaleString()}). ` +
 				"No raw entries would be pruned. Skipping.",
-				"info",
+				"warning",
 			);
 			return { cancel: true };
 		}
