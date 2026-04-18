@@ -282,21 +282,21 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			const keepRecentTokens = SettingsManager.create(ctx.cwd).getCompactionKeepRecentTokens();
 
 			const lines = [
-				"── Observational Memory (v2) ──",
-				`Raw since last bound:       ~${sinceBound.toLocaleString()} tokens (observer fires at ${config.observationThresholdTokens.toLocaleString()})`,
+				"── State ──",
+				`Raw since last observation: ~${sinceBound.toLocaleString()} tokens (observer fires at ${config.observationThresholdTokens.toLocaleString()})`,
 				`Raw since last compaction:  ~${sinceCompaction.toLocaleString()} tokens (compaction fires at ${config.compactionThresholdTokens.toLocaleString()})`,
 				`Raw live (kept tail + new): ~${liveRaw.toLocaleString()} tokens`,
-				`Observations pending next compaction: ${pendingObs.length} entries, ~${treeObsTokens.toLocaleString()} tokens`,
-				`Observations in details:    ${priorDetails?.observations.length ?? 0} entries, ~${detailsObsTokens.toLocaleString()} tokens`,
-				`Reflections in details:     ${priorDetails?.reflections.length ?? 0} entries, ~${detailsRefTokens.toLocaleString()} tokens`,
+				`Observations pending:       ~${treeObsTokens.toLocaleString()} tokens (${pendingObs.length} entries)`,
+				`Observations:               ~${detailsObsTokens.toLocaleString()} tokens (${priorDetails?.observations.length ?? 0} entries)`,
+				`Reflections:                ~${detailsRefTokens.toLocaleString()} tokens (${priorDetails?.reflections.length ?? 0} entries)`,
+				`Observer in flight:         ${observerInFlight}`,
+				`Compact in flight:          ${compactInFlight}`,
 				"",
 				"── Parameters ──",
 				`Observation threshold tokens: ${config.observationThresholdTokens.toLocaleString()}`,
 				`Compaction threshold tokens:  ${config.compactionThresholdTokens.toLocaleString()}`,
 				`Reflection threshold tokens:  ${config.reflectionThresholdTokens.toLocaleString()}`,
-				`Pi keep-recent tokens:      ${keepRecentTokens.toLocaleString()}`,
-				`Observer in flight:         ${observerInFlight}`,
-				`Compact in flight:          ${compactInFlight}`,
+				`Pi keep-recent tokens:        ${keepRecentTokens.toLocaleString()}`,
 			];
 
 			ctx.ui.notify(lines.join("\n"), "info");
