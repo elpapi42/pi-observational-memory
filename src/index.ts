@@ -364,6 +364,10 @@ export default function observationalMemory(pi: ExtensionAPI) {
 
 		const summary = renderSummary(finalReflections, finalObservations);
 
+		if (finalObservations.length === 0) {
+			throw new Error("invariant violated: finalObservations empty after delta guard");
+		}
+
 		const details: MemoryDetails = {
 			type: "observational-memory",
 			version: 2,
