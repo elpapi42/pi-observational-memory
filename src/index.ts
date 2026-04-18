@@ -288,15 +288,15 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				`Raw live (kept tail + new): ~${liveRaw.toLocaleString()} tokens`,
 				`Observations pending:       ~${treeObsTokens.toLocaleString()} tokens (${pendingObs.length} entries)`,
 				`Observations:               ~${detailsObsTokens.toLocaleString()} tokens (${priorDetails?.observations.length ?? 0} entries)`,
-				`Reflections:                ~${detailsRefTokens.toLocaleString()} tokens (${priorDetails?.reflections.length ?? 0} entries)`,
+				`Reflections:                ~${detailsRefTokens.toLocaleString()} tokens`,
 				`Observer in flight:         ${observerInFlight}`,
 				`Compact in flight:          ${compactInFlight}`,
 				"",
 				"── Parameters ──",
-				`Observation threshold tokens: ${config.observationThresholdTokens.toLocaleString()}`,
-				`Compaction threshold tokens:  ${config.compactionThresholdTokens.toLocaleString()}`,
-				`Reflection threshold tokens:  ${config.reflectionThresholdTokens.toLocaleString()}`,
-				`Pi keep-recent tokens:        ${keepRecentTokens.toLocaleString()}`,
+				`Observation threshold: ${config.observationThresholdTokens.toLocaleString()} tokens`,
+				`Compaction threshold:  ${config.compactionThresholdTokens.toLocaleString()} tokens`,
+				`Reflection threshold:  ${config.reflectionThresholdTokens.toLocaleString()} tokens`,
+				`Pi kept tail size:     ${keepRecentTokens.toLocaleString()} tokens`,
 			];
 
 			ctx.ui.notify(lines.join("\n"), "info");
