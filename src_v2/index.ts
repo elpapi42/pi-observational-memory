@@ -57,7 +57,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 
 		const entries = ctx.sessionManager.getBranch() as Parameters<typeof rawTokensSinceLastBound>[0];
 		const tokens = rawTokensSinceLastBound(entries);
-		if (tokens < config.observationChunkTokens) return;
+		if (tokens < config.observationThresholdTokens) return;
 
 		const lastBoundIdx = findLastBoundIndex(entries);
 		const coversFromId = firstRawIdAfter(entries, lastBoundIdx);
@@ -119,7 +119,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 
 		const entries = ctx.sessionManager.getBranch() as Parameters<typeof rawTokensSinceLastCompaction>[0];
 		const tokens = rawTokensSinceLastCompaction(entries);
-		if (tokens < config.compactionTriggerTokens) return;
+		if (tokens < config.compactionThresholdTokens) return;
 
 		compactInFlight = true;
 		setTimeout(() => {
@@ -169,7 +169,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		let finalReflections = workingReflections;
 		let finalObservations = workingObservations;
 
-		if (observationTokens >= config.reflectionGateTokens) {
+		if (observationTokens >= config.reflectionThresholdTokens) {
 			if (ctx.hasUI) ctx.ui.notify("Observational memory: running reflector + pruner...", "info");
 			try {
 				const newReflections = await runReflector(
@@ -231,16 +231,16 @@ export default function observationalMemory(pi: ExtensionAPI) {
 
 			const lines = [
 				"── Observational Memory (v2) ──",
-				`Raw since last bound:       ~${sinceBound.toLocaleString()} tokens (observer fires at ${config.observationChunkTokens.toLocaleString()})`,
-				`Raw since last compaction:  ~${sinceCompaction.toLocaleString()} tokens (compaction fires at ${config.compactionTriggerTokens.toLocaleString()})`,
+				`Raw since last bound:       ~${sinceBound.toLocaleString()} tokens (observer fires at ${config.observationThresholdTokens.toLocaleString()})`,
+				`Raw since last compaction:  ~${sinceCompaction.toLocaleString()} tokens (compaction fires at ${config.compactionThresholdTokens.toLocaleString()})`,
 				`Observations in tree:       ${sinceCompactionObs.length} entries, ~${treeObsTokens.toLocaleString()} tokens`,
 				`Observations in details:    ${priorDetails?.observations.length ?? 0} entries, ~${detailsObsTokens.toLocaleString()} tokens`,
 				`Reflections in details:     ${priorDetails?.reflections.length ?? 0} entries, ~${detailsRefTokens.toLocaleString()} tokens`,
 				"",
 				"── Parameters ──",
-				`Observation chunk tokens:   ${config.observationChunkTokens.toLocaleString()}`,
-				`Compaction trigger tokens:  ${config.compactionTriggerTokens.toLocaleString()}`,
-				`Reflection gate tokens:     ${config.reflectionGateTokens.toLocaleString()}`,
+				`Observation threshold tokens: ${config.observationThresholdTokens.toLocaleString()}`,
+				`Compaction threshold tokens:  ${config.compactionThresholdTokens.toLocaleString()}`,
+				`Reflection threshold tokens:  ${config.reflectionThresholdTokens.toLocaleString()}`,
 				`Pi keep-recent tokens:      ${keepRecentTokens.toLocaleString()}`,
 				`Observer in flight:         ${observerInFlight}`,
 				`Compact in flight:          ${compactInFlight}`,
