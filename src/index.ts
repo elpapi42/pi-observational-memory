@@ -28,6 +28,11 @@ export default function observationalMemory(pi: ExtensionAPI) {
 	let observerInFlight = false;
 	let observerPromise: Promise<void> | null = null;
 	let compactInFlight = false;
+	let resolveFailureNotified = false;
+
+	type ResolveResult =
+		| { ok: true; model: unknown; apiKey: string; headers?: Record<string, string> }
+		| { ok: false; reason: string };
 
 	function launchObserverTask(
 		ctx: any,
@@ -57,7 +62,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		configLoaded = true;
 	}
 
-	async function resolveModel(ctx: { model: unknown; modelRegistry: any; hasUI: boolean; ui?: { notify: (m: string, lvl?: string) => void } }) {
+	async function resolveModel(ctx: { model: unknown; modelRegistry: any; hasUI: boolean; ui?: { notify: (m: string, lvl?: string) => void } }): Promise<ResolveResult> {
 		let model = ctx.model;
 		if (config.compactionModel) {
 			const configured = ctx.modelRegistry.find(config.compactionModel.provider, config.compactionModel.id);
@@ -70,10 +75,13 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				);
 			}
 		}
-		if (!model) return undefined;
+		if (!model) return { ok: false, reason: "no model available (session has no model and no compactionModel configured)" };
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		if (!auth.ok || !auth.apiKey) return undefined;
-		return { model, apiKey: auth.apiKey as string, headers: auth.headers as Record<string, string> | undefined };
+		if (!auth.ok || !auth.apiKey) {
+			const provider = (model as { provider?: string }).provider ?? "unknown";
+			return { ok: false, reason: `no API key for provider "${provider}"` };
+		}
+		return { ok: true, model, apiKey: auth.apiKey as string, headers: auth.headers as Record<string, string> | undefined };
 	}
 
 	pi.on("turn_end", (_event, ctx) => {
@@ -106,9 +114,24 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		const chunk = serializeBranchEntries(chunkEntries);
 		if (!chunk.trim()) return;
 
+		if (ctx.hasUI) ctx.ui.notify(
+			`Observational memory: observer running on ~${tokens.toLocaleString()}-token chunk`,
+			"info",
+		);
+
 		void launchObserverTask(ctx, "observer", async () => {
 			const resolved = await resolveModel(ctx as any);
-			if (!resolved) return;
+			if (!resolved.ok) {
+				if (!resolveFailureNotified && ctx.hasUI && ctx.ui) {
+					ctx.ui.notify(
+						`Observational memory: observer skipped — ${resolved.reason}`,
+						"warning",
+					);
+					resolveFailureNotified = true;
+				}
+				return;
+			}
+			resolveFailureNotified = false;
 
 			const content = await runObserver({
 				model: resolved.model as any,
@@ -118,15 +141,26 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				priorObservations: allPriorObservationContents,
 				chunk,
 			});
-			if (!content) return;
+			if (!content) {
+				if (ctx.hasUI && ctx.ui) ctx.ui.notify(
+					"Observational memory: observer returned empty content (no observation recorded)",
+					"warning",
+				);
+				return;
+			}
 
+			const observationTokens = estimateStringTokens(content);
 			const data = {
 				content,
 				coversFromId,
 				coversUpToId,
-				tokenCount: estimateStringTokens(content),
+				tokenCount: observationTokens,
 			};
 			pi.appendEntry(OBSERVATION_CUSTOM_TYPE, data);
+			if (ctx.hasUI && ctx.ui) ctx.ui.notify(
+				`Observational memory: observation recorded (~${observationTokens.toLocaleString()} tokens)`,
+				"info",
+			);
 		});
 	});
 
@@ -137,6 +171,11 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		const entries = ctx.sessionManager.getBranch() as Parameters<typeof rawTokensSinceLastCompaction>[0];
 		const tokens = rawTokensSinceLastCompaction(entries);
 		if (tokens < config.compactionThresholdTokens) return;
+
+		if (ctx.hasUI) ctx.ui.notify(
+			`Observational memory: compaction threshold reached (~${tokens.toLocaleString()} tokens); triggering compaction`,
+			"info",
+		);
 
 		compactInFlight = true;
 		setTimeout(async () => {
@@ -149,6 +188,10 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			}
 			if (!ctx.isIdle()) {
 				compactInFlight = false;
+				if (ctx.hasUI) ctx.ui.notify(
+					"Observational memory: compaction deferred — agent became busy after observer wait",
+					"info",
+				);
 				return;
 			}
 			try {
@@ -176,7 +219,15 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		const { firstKeptEntryId, tokensBefore } = preparation;
 
 		const resolved = await resolveModel(ctx as any);
-		if (!resolved) return;
+		if (!resolved.ok) {
+			if (ctx.hasUI) ctx.ui.notify(
+				`Observational memory: cannot compact — ${resolved.reason}. ` +
+				"Fix the model/API key and try /compact manually.",
+				"error",
+			);
+			return { cancel: true };
+		}
+		resolveFailureNotified = false;
 
 		const entries = branchEntries as Parameters<typeof getPriorMemoryDetails>[0];
 		const priorDetails = getPriorMemoryDetails(entries);
@@ -203,12 +254,18 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				);
 				finalReflections = [...workingReflections, ...newReflections];
 
-				const prunedObservations = await runPruner(
+				const prunerResult = await runPruner(
 					{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal },
 					finalReflections,
 					workingObservations,
 				);
-				finalObservations = prunedObservations;
+				finalObservations = prunerResult.observations;
+				if (prunerResult.fellBack && ctx.hasUI) {
+					ctx.ui.notify(
+						"Observational memory: pruner output unparseable; kept prior observation set unchanged",
+						"warning",
+					);
+				}
 			} catch (error) {
 				const msg = error instanceof Error ? error.message : String(error);
 				if (ctx.hasUI) ctx.ui.notify(`Observational memory: reflect/prune failed: ${msg}`, "warning");
@@ -216,7 +273,15 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		}
 
 		const summary = renderSummary(finalReflections, finalObservations);
-		if (!summary.trim()) return;
+		if (!summary.trim()) {
+			if (ctx.hasUI) ctx.ui.notify(
+				"Observational memory: no observations in pool; cancelling compaction. " +
+				"This may be transient — try running /compact manually. " +
+				"If it persists, check that the observer model is configured correctly.",
+				"error",
+			);
+			return { cancel: true };
+		}
 
 		const details: MemoryDetails = {
 			type: "observational-memory",
@@ -226,13 +291,23 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		};
 
 		const gap = gapRawEntries(entries, firstKeptEntryId);
-		if (gap.length > 0 && !observerInFlight) {
+		if (gap.length > 0 && observerInFlight) {
+			if (ctx.hasUI) ctx.ui.notify(
+				`Observational memory: catch-up observer skipped — another observer is in flight. ${gap.length} gap entries will be picked up at the next compaction.`,
+				"warning",
+			);
+		} else if (gap.length > 0) {
 			const gapChunk = serializeBranchEntries(gap);
 			if (gapChunk.trim()) {
 				const gapFromId = gap[0].id;
 				const gapUpToId = gap[gap.length - 1].id;
 				const priorReflectionContents = finalReflections.map((r) => r.content);
 				const priorObservationContents = finalObservations.map((o) => o.content);
+				const gapTokenEstimate = estimateStringTokens(gapChunk);
+				if (ctx.hasUI) ctx.ui.notify(
+					`Observational memory: catch-up observer running on ~${gapTokenEstimate.toLocaleString()}-token gap`,
+					"info",
+				);
 				void launchObserverTask(ctx, "catch-up observer", async () => {
 					const content = await runObserver({
 						model: resolved.model as any,
@@ -242,16 +317,32 @@ export default function observationalMemory(pi: ExtensionAPI) {
 						priorObservations: priorObservationContents,
 						chunk: gapChunk,
 					});
-					if (!content) return;
+					if (!content) {
+						if (ctx.hasUI && ctx.ui) ctx.ui.notify(
+							"Observational memory: catch-up observer returned empty content",
+							"warning",
+						);
+						return;
+					}
+					const observationTokens = estimateStringTokens(content);
 					pi.appendEntry(OBSERVATION_CUSTOM_TYPE, {
 						content,
 						coversFromId: gapFromId,
 						coversUpToId: gapUpToId,
-						tokenCount: estimateStringTokens(content),
+						tokenCount: observationTokens,
 					});
+					if (ctx.hasUI && ctx.ui) ctx.ui.notify(
+						`Observational memory: catch-up observation recorded (~${observationTokens.toLocaleString()} tokens)`,
+						"info",
+					);
 				});
 			}
 		}
+
+		if (ctx.hasUI) ctx.ui.notify(
+			`Observational memory: compaction assembled — ${finalObservations.length} observation${finalObservations.length === 1 ? "" : "s"}, ${finalReflections.length} reflection${finalReflections.length === 1 ? "" : "s"}`,
+			"info",
+		);
 
 		return {
 			compaction: {

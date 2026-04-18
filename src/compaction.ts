@@ -60,11 +60,16 @@ Crystallize new long-lived reflections from the observation pool. Output ONLY ne
 	return out ? parseReflections(out) : [];
 }
 
+export interface PrunerResult {
+	observations: Observation[];
+	fellBack: boolean;
+}
+
 export async function runPruner(
 	args: LlmArgs,
 	reflections: Reflection[],
 	observations: Observation[],
-): Promise<Observation[]> {
+): Promise<PrunerResult> {
 	const userText = `<current-reflections>
 ${joinOrEmpty(reflections)}
 </current-reflections>
@@ -91,7 +96,9 @@ Output the COMPLETE kept observation set. Drop redundant, contradicted, or trivi
 	);
 
 	const out = extractText(response).trim();
-	return out ? parseObservations(out) : observations;
+	const parsed = out ? parseObservations(out) : [];
+	if (parsed.length > 0) return { observations: parsed, fellBack: false };
+	return { observations, fellBack: true };
 }
 
 export function renderSummary(reflections: Reflection[], observations: Observation[]): string {
