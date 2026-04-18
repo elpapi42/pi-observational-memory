@@ -59,7 +59,9 @@ export function rawTokensSinceLastBound(entries: Entry[]): number {
 }
 
 export function rawTokensSinceLastCompaction(entries: Entry[]): number {
-	return rawTokensFromIndex(entries, findLastCompactionIndex(entries) + 1);
+	const compactionIdx = findLastCompactionIndex(entries);
+	if (compactionIdx === -1) return rawTokensFromIndex(entries, 0);
+	return rawTokensFromIndex(entries, liveTailStartIndex(entries));
 }
 
 export function liveTailStartIndex(entries: Entry[]): number {

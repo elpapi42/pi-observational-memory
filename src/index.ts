@@ -194,6 +194,16 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				);
 				return;
 			}
+			const currentEntries = ctx.sessionManager.getBranch() as Parameters<typeof rawTokensSinceLastCompaction>[0];
+			const currentTokens = rawTokensSinceLastCompaction(currentEntries);
+			if (currentTokens < config.compactionThresholdTokens) {
+				compactInFlight = false;
+				if (ctx.hasUI) ctx.ui.notify(
+					"Observational memory: compaction skipped — another compaction already ran during observer wait",
+					"info",
+				);
+				return;
+			}
 			try {
 				ctx.compact({
 					onComplete: () => {
@@ -202,6 +212,10 @@ export default function observationalMemory(pi: ExtensionAPI) {
 					},
 					onError: (error) => {
 						compactInFlight = false;
+						if (error.message === "Compaction cancelled") {
+							// We already notified the user with the real reason before returning { cancel: true }.
+							return;
+						}
 						if (ctx.hasUI) ctx.ui.notify(`Observational memory: ${error.message}`, "error");
 					},
 				});
