@@ -1,9 +1,10 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { SettingsManager } from "@mariozechner/pi-coding-agent";
 import {
-	collectObservationsForCompaction,
+	collectObservationsByCoverage,
 	collectObservationsPendingNextCompaction,
 	findLastBoundIndex,
+	findLastCompactionIndex,
 	firstRawIdAfter,
 	gapRawEntries,
 	getPriorMemoryDetails,
@@ -325,7 +326,9 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			}
 		}
 
-		const deltaObservationData = collectObservationsForCompaction(entries, firstKeptEntryId, priorDetails);
+		const priorCompactionIdx = findLastCompactionIndex(entries);
+		const priorFirstKeptEntryId = priorCompactionIdx >= 0 ? entries[priorCompactionIdx].firstKeptEntryId : undefined;
+		const deltaObservationData = collectObservationsByCoverage(entries, priorFirstKeptEntryId, firstKeptEntryId);
 		if (gapObservationData) deltaObservationData.push(gapObservationData);
 
 		const workingReflections: Reflection[] = priorDetails ? [...priorDetails.reflections] : [];

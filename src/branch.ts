@@ -134,55 +134,60 @@ export function collectObservationsAfter(entries: Entry[], afterIndex: number): 
 	return result;
 }
 
-export function collectObservationsForCompaction(entries: Entry[], newFirstKeptEntryId: string, prior: MemoryDetails | undefined): ObservationEntryData[] {
-	const priorCompactionIdx = findLastCompactionIndex(entries);
-	const newKeptIdx = entries.findIndex((e) => e.id === newFirstKeptEntryId);
-	if (newKeptIdx === -1) return [];
+export function collectObservationsByCoverage(
+	entries: Entry[],
+	priorFirstKeptEntryId: string | undefined,
+	newFirstKeptEntryId: string,
+): ObservationEntryData[] {
+	const idToIdx = new Map<string, number>();
+	for (let i = 0; i < entries.length; i++) idToIdx.set(entries[i].id, i);
 
-	let startIdx: number;
-	if (priorCompactionIdx === -1) {
-		startIdx = 0;
+	const newFKIIdx = idToIdx.get(newFirstKeptEntryId);
+	if (newFKIIdx === undefined) return [];
+
+	let priorFKIIdx: number;
+	if (priorFirstKeptEntryId === undefined) {
+		priorFKIIdx = -1;
 	} else {
-		const priorFirstKept = entries[priorCompactionIdx].firstKeptEntryId;
-		if (!priorFirstKept) throw new Error("prior compaction entry missing firstKeptEntryId");
-		const priorFirstKeptIdx = entries.findIndex((e) => e.id === priorFirstKept);
-		if (priorFirstKeptIdx === -1) throw new Error(`prior firstKeptEntryId "${priorFirstKept}" not found in entries`);
-		startIdx = priorFirstKeptIdx;
+		const idx = idToIdx.get(priorFirstKeptEntryId);
+		if (idx === undefined) throw new Error(`priorFirstKeptEntryId "${priorFirstKeptEntryId}" not found in entries`);
+		priorFKIIdx = idx;
 	}
 
 	const result: ObservationEntryData[] = [];
-
-	for (let i = startIdx; i < newKeptIdx; i++) {
-		const entry = entries[i];
+	for (const entry of entries) {
 		if (!isObservationEntry(entry)) continue;
-		const data = entry.data;
-		if (!isObservationEntryData(data)) continue;
-		result.push(data);
+		if (!isObservationEntryData(entry.data)) continue;
+		const coverIdx = idToIdx.get(entry.data.coversUpToId);
+		if (coverIdx === undefined) continue;
+		if (coverIdx >= priorFKIIdx && coverIdx < newFKIIdx) result.push(entry.data);
 	}
-	void prior;
 	return result;
 }
 
 export function collectObservationsPendingNextCompaction(entries: Entry[]): ObservationEntryData[] {
+	const idToIdx = new Map<string, number>();
+	for (let i = 0; i < entries.length; i++) idToIdx.set(entries[i].id, i);
+
 	const priorCompactionIdx = findLastCompactionIndex(entries);
-	let startIdx: number;
+	let thresholdIdx: number;
 	if (priorCompactionIdx === -1) {
-		startIdx = 0;
+		thresholdIdx = -1;
 	} else {
 		const priorFirstKept = entries[priorCompactionIdx].firstKeptEntryId;
 		if (!priorFirstKept) throw new Error("prior compaction entry missing firstKeptEntryId");
-		const priorFirstKeptIdx = entries.findIndex((e) => e.id === priorFirstKept);
-		if (priorFirstKeptIdx === -1) throw new Error(`prior firstKeptEntryId "${priorFirstKept}" not found in entries`);
-		startIdx = priorFirstKeptIdx;
+		const idx = idToIdx.get(priorFirstKept);
+		if (idx === undefined) throw new Error(`prior firstKeptEntryId "${priorFirstKept}" not found in entries`);
+		thresholdIdx = idx;
 	}
 
 	const result: ObservationEntryData[] = [];
-	for (let i = startIdx; i < entries.length; i++) {
-		const entry = entries[i];
+	for (const entry of entries) {
 		if (!isObservationEntry(entry)) continue;
-		const data = entry.data;
-		if (!isObservationEntryData(data)) continue;
-		result.push(data);
+		if (!isObservationEntryData(entry.data)) continue;
+		const coverIdx = idToIdx.get(entry.data.coversUpToId);
+		if (coverIdx === undefined) continue;
+		if (coverIdx >= thresholdIdx) result.push(entry.data);
 	}
 	return result;
 }
