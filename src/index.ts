@@ -20,7 +20,7 @@ import { runObserver } from "./observer.js";
 import { parseObservations } from "./parse.js";
 import { serializeBranchEntries } from "./serialize.js";
 import { estimateStringTokens } from "./tokens.js";
-import { OBSERVATION_CUSTOM_TYPE, type MemoryDetails, type Observation, type Reflection } from "./types.js";
+import { OBSERVATION_CUSTOM_TYPE, type MemoryDetails, type Observation, type ObservationEntryData, type Reflection } from "./types.js";
 
 export default function observationalMemory(pi: ExtensionAPI) {
 	let config: Config = { ...DEFAULTS };
@@ -245,7 +245,74 @@ export default function observationalMemory(pi: ExtensionAPI) {
 
 		const entries = branchEntries as Parameters<typeof getPriorMemoryDetails>[0];
 		const priorDetails = getPriorMemoryDetails(entries);
+
+		if (observerPromise) {
+			try { await observerPromise; } catch { /* already notified via launchObserverTask */ }
+		}
+
+		let gapObservationData: ObservationEntryData | null = null;
+		const gap = gapRawEntries(entries, firstKeptEntryId);
+		if (gap.length > 0) {
+			const gapChunk = serializeBranchEntries(gap);
+			if (gapChunk.trim()) {
+				const gapFromId = gap[0].id;
+				const gapUpToId = gap[gap.length - 1].id;
+				const priorReflectionContents = priorDetails ? priorDetails.reflections.map((r) => r.content) : [];
+				const priorObservationContents = priorDetails ? priorDetails.observations.map((o) => o.content) : [];
+				const pendingObservations = collectObservationsPendingNextCompaction(entries);
+				const allPriorObservationContents = [
+					...priorObservationContents,
+					...pendingObservations.map((o) => o.content),
+				];
+				const gapTokenEstimate = estimateStringTokens(gapChunk);
+				if (ctx.hasUI) ctx.ui.notify(
+					`Observational memory: sync catch-up observer running on ~${gapTokenEstimate.toLocaleString()}-token gap`,
+					"info",
+				);
+				observerInFlight = true;
+				try {
+					const content = await runObserver({
+						model: resolved.model as any,
+						apiKey: resolved.apiKey,
+						headers: resolved.headers,
+						priorReflections: priorReflectionContents,
+						priorObservations: allPriorObservationContents,
+						chunk: gapChunk,
+						signal,
+					});
+					if (content) {
+						const observationTokens = estimateStringTokens(content);
+						gapObservationData = {
+							content,
+							coversFromId: gapFromId,
+							coversUpToId: gapUpToId,
+							tokenCount: observationTokens,
+						};
+						pi.appendEntry(OBSERVATION_CUSTOM_TYPE, gapObservationData);
+						if (ctx.hasUI && ctx.ui) ctx.ui.notify(
+							`Observational memory: sync catch-up observation recorded (~${observationTokens.toLocaleString()} tokens)`,
+							"info",
+						);
+					} else if (ctx.hasUI && ctx.ui) {
+						ctx.ui.notify(
+							"Observational memory: sync catch-up observer returned empty — proceeding with compaction",
+							"warning",
+						);
+					}
+				} catch (error) {
+					const msg = error instanceof Error ? error.message : String(error);
+					if (ctx.hasUI && ctx.ui) ctx.ui.notify(
+						`Observational memory: sync catch-up observer failed: ${msg}. Proceeding with compaction.`,
+						"warning",
+					);
+				} finally {
+					observerInFlight = false;
+				}
+			}
+		}
+
 		const deltaObservationData = collectObservationsForCompaction(entries, firstKeptEntryId, priorDetails);
+		if (gapObservationData) deltaObservationData.push(gapObservationData);
 
 		const workingReflections: Reflection[] = priorDetails ? [...priorDetails.reflections] : [];
 		const workingObservations: Observation[] = [
@@ -303,55 +370,6 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			observations: finalObservations,
 			reflections: finalReflections,
 		};
-
-		const gap = gapRawEntries(entries, firstKeptEntryId);
-		if (gap.length > 0 && observerInFlight) {
-			if (ctx.hasUI) ctx.ui.notify(
-				`Observational memory: catch-up observer skipped — another observer is in flight. ${gap.length} gap entries will be picked up at the next compaction.`,
-				"warning",
-			);
-		} else if (gap.length > 0) {
-			const gapChunk = serializeBranchEntries(gap);
-			if (gapChunk.trim()) {
-				const gapFromId = gap[0].id;
-				const gapUpToId = gap[gap.length - 1].id;
-				const priorReflectionContents = finalReflections.map((r) => r.content);
-				const priorObservationContents = finalObservations.map((o) => o.content);
-				const gapTokenEstimate = estimateStringTokens(gapChunk);
-				if (ctx.hasUI) ctx.ui.notify(
-					`Observational memory: catch-up observer running on ~${gapTokenEstimate.toLocaleString()}-token gap`,
-					"info",
-				);
-				void launchObserverTask(ctx, "catch-up observer", async () => {
-					const content = await runObserver({
-						model: resolved.model as any,
-						apiKey: resolved.apiKey,
-						headers: resolved.headers,
-						priorReflections: priorReflectionContents,
-						priorObservations: priorObservationContents,
-						chunk: gapChunk,
-					});
-					if (!content) {
-						if (ctx.hasUI && ctx.ui) ctx.ui.notify(
-							"Observational memory: catch-up observer returned empty content",
-							"warning",
-						);
-						return;
-					}
-					const observationTokens = estimateStringTokens(content);
-					pi.appendEntry(OBSERVATION_CUSTOM_TYPE, {
-						content,
-						coversFromId: gapFromId,
-						coversUpToId: gapUpToId,
-						tokenCount: observationTokens,
-					});
-					if (ctx.hasUI && ctx.ui) ctx.ui.notify(
-						`Observational memory: catch-up observation recorded (~${observationTokens.toLocaleString()} tokens)`,
-						"info",
-					);
-				});
-			}
-		}
 
 		if (ctx.hasUI) ctx.ui.notify(
 			`Observational memory: compaction assembled — ${finalObservations.length} observation${finalObservations.length === 1 ? "" : "s"}, ${finalReflections.length} reflection${finalReflections.length === 1 ? "" : "s"}`,
