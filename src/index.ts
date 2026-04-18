@@ -1,86 +1,125 @@
-import { completeSimple, type Message, type TextContent, type ToolCall, type ToolResultMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { convertToLlm, SettingsManager } from "@mariozechner/pi-coding-agent";
-import { DEFAULTS, loadConfig } from "./config.js";
-import type { Config } from "./config.js";
-import { CONTEXT_USAGE_INSTRUCTIONS, OBSERVER_SYSTEM, REFLECTOR_SYSTEM } from "./prompts.js";
-import { estimateRawTailTokens, estimateTokens, extractText } from "./tokens.js";
-import type { MemoryDetails, MemoryState } from "./types.js";
-import { isMemoryDetails } from "./types.js";
-
-function utcDate(epochMs: number): string {
-	if (!Number.isFinite(epochMs)) return "????-??-??";
-	return new Date(epochMs).toISOString().slice(0, 10);
-}
-
-function utcTime(epochMs: number): string {
-	if (!Number.isFinite(epochMs)) return "??:??";
-	return new Date(epochMs).toISOString().slice(11, 16);
-}
-
-function serializeWithTimestamps(messages: Message[]): string {
-	return messages
-		.map((msg): string | null => {
-			const time = utcTime(msg.timestamp);
-			if (msg.role === "user") {
-				const text =
-					typeof msg.content === "string"
-						? msg.content
-						: msg.content
-							.filter((b): b is TextContent => b.type === "text")
-							.map((b) => b.text)
-							.join("\n");
-				return `[User @ ${time} UTC]: ${text}`;
-			}
-			if (msg.role === "assistant") {
-				const parts = msg.content.map((b) => {
-					if (b.type === "text") return b.text;
-					if (b.type === "thinking") return b.redacted ? "" : `[thinking: ${b.thinking}]`;
-					if (b.type === "toolCall") return `[${b.name}(${JSON.stringify(b.arguments)})]`;
-					return "";
-				});
-				const body = parts.filter(Boolean).join("\n");
-				if (!body) return null;
-				return `[Assistant @ ${time} UTC]: ${body}`;
-			}
-			// toolResult
-			const text = msg.content
-				.filter((b): b is TextContent => b.type === "text")
-				.map((b) => b.text)
-				.join("\n");
-			return `[Tool result for ${(msg as ToolResultMessage).toolName} @ ${time} UTC]: ${text}`;
-		})
-		.filter((line): line is string => line !== null)
-		.join("\n\n");
-}
+import { SettingsManager } from "@mariozechner/pi-coding-agent";
+import {
+	collectObservationsAfter,
+	collectObservationsForCompaction,
+	findLastBoundIndex,
+	findLastCompactionIndex,
+	firstRawIdAfter,
+	getPriorMemoryDetails,
+	rawMessagesBetween,
+	rawTokensFromIndex,
+	rawTokensSinceLastBound,
+	rawTokensSinceLastCompaction,
+} from "./branch.js";
+import { renderSummary, runPruner, runReflector } from "./compaction.js";
+import { DEFAULTS, loadConfig, type Config } from "./config.js";
+import { runObserver } from "./observer.js";
+import { parseObservations } from "./parse.js";
+import { serializeConversation } from "./serialize.js";
+import { estimateStringTokens } from "./tokens.js";
+import { OBSERVATION_CUSTOM_TYPE, type MemoryDetails, type Observation, type Reflection } from "./types.js";
 
 export default function observationalMemory(pi: ExtensionAPI) {
 	let config: Config = { ...DEFAULTS };
-	let state: MemoryState = { observations: "", reflections: "" };
+	let configLoaded = false;
+	let observerInFlight = false;
 	let compactInFlight = false;
 
-	pi.on("session_start", (_event, ctx) => {
-		config = loadConfig(ctx.cwd);
-		state = { observations: "", reflections: "" };
-		compactInFlight = false;
+	function ensureConfig(cwd: string): void {
+		if (configLoaded) return;
+		config = loadConfig(cwd);
+		configLoaded = true;
+	}
 
-		const entries = ctx.sessionManager.getBranch();
-		for (let i = entries.length - 1; i >= 0; i--) {
-			const entry = entries[i];
-			if (entry.type === "compaction" && isMemoryDetails(entry.details)) {
-				state.observations = entry.details.observations;
-				state.reflections = entry.details.reflections;
-				break;
+	async function resolveModel(ctx: { model: unknown; modelRegistry: any; hasUI: boolean; ui?: { notify: (m: string, lvl?: string) => void } }) {
+		let model = ctx.model;
+		if (config.compactionModel) {
+			const configured = ctx.modelRegistry.find(config.compactionModel.provider, config.compactionModel.id);
+			if (configured) {
+				model = configured;
+			} else if (ctx.hasUI && ctx.ui) {
+				ctx.ui.notify(
+					`Observational memory: configured model ${config.compactionModel.provider}/${config.compactionModel.id} not found, using session model`,
+					"warning",
+				);
 			}
 		}
+		if (!model) return undefined;
+		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+		if (!auth.ok || !auth.apiKey) return undefined;
+		return { model, apiKey: auth.apiKey as string, headers: auth.headers as Record<string, string> | undefined };
+	}
+
+	pi.on("turn_end", (_event, ctx) => {
+		ensureConfig(ctx.cwd);
+		if (observerInFlight) return;
+
+		const entries = ctx.sessionManager.getBranch() as Parameters<typeof rawTokensSinceLastBound>[0];
+		const tokens = rawTokensSinceLastBound(entries);
+		if (tokens < config.observationThresholdTokens) return;
+
+		const lastBoundIdx = findLastBoundIndex(entries);
+		const coversFromId = firstRawIdAfter(entries, lastBoundIdx);
+		if (!coversFromId) return;
+
+		const leafId = ctx.sessionManager.getLeafId();
+		if (!leafId) return;
+		const coversUpToId = leafId;
+
+		const lastCompactionIdx = findLastCompactionIndex(entries);
+		const priorDetails = getPriorMemoryDetails(entries);
+		const priorReflectionContents = priorDetails ? priorDetails.reflections.map((r) => r.content) : [];
+		const priorObservationContents = priorDetails ? priorDetails.observations.map((o) => o.content) : [];
+		const sinceCompactionObservations = collectObservationsAfter(entries, lastCompactionIdx);
+		const allPriorObservationContents = [
+			...priorObservationContents,
+			...sinceCompactionObservations.map((o) => o.content),
+		];
+
+		const chunk = rawMessagesBetween(entries, coversFromId, coversUpToId);
+		if (chunk.length === 0) return;
+
+		observerInFlight = true;
+		void (async () => {
+			try {
+				const resolved = await resolveModel(ctx as any);
+				if (!resolved) return;
+
+				const content = await runObserver({
+					model: resolved.model as any,
+					apiKey: resolved.apiKey,
+					headers: resolved.headers,
+					priorReflections: priorReflectionContents,
+					priorObservations: allPriorObservationContents,
+					chunk,
+				});
+				if (!content) return;
+
+				const data = {
+					content,
+					coversFromId,
+					coversUpToId,
+					tokenCount: estimateStringTokens(content),
+				};
+				pi.appendEntry(OBSERVATION_CUSTOM_TYPE, data);
+				pi.events.emit("om.observation-generated", { coversFromId, coversUpToId, tokenCount: data.tokenCount });
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				if (ctx.hasUI) ctx.ui.notify(`Observational memory: observer failed: ${msg}`, "warning");
+			} finally {
+				observerInFlight = false;
+			}
+		})();
 	});
 
 	pi.on("agent_end", (_event, ctx) => {
+		ensureConfig(ctx.cwd);
 		if (compactInFlight) return;
 
-		const entries = ctx.sessionManager.getBranch();
-		const tokens = estimateRawTailTokens(entries);
-		if (tokens < config.observationThreshold) return;
+		const entries = ctx.sessionManager.getBranch() as Parameters<typeof rawTokensSinceLastCompaction>[0];
+		const tokens = rawTokensSinceLastCompaction(entries);
+		if (tokens < config.compactionThresholdTokens) return;
 
 		compactInFlight = true;
 		setTimeout(() => {
@@ -108,145 +147,58 @@ export default function observationalMemory(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
-		const { preparation, signal } = event;
-		const { messagesToSummarize, turnPrefixMessages, firstKeptEntryId, tokensBefore } = preparation;
+		ensureConfig(ctx.cwd);
+		const { preparation, branchEntries, signal } = event;
+		const { firstKeptEntryId, tokensBefore } = preparation;
 
-		let model = ctx.model;
-		if (config.compactionModel) {
-			const configured = ctx.modelRegistry.find(config.compactionModel.provider, config.compactionModel.id);
-			if (configured) {
-				model = configured;
-			} else if (ctx.hasUI) {
-				ctx.ui.notify(
-					`Observational memory: configured model ${config.compactionModel.provider}/${config.compactionModel.id} not found, using session model`,
-					"warning",
-				);
-			}
-		}
-		if (!model) return;
+		const resolved = await resolveModel(ctx as any);
+		if (!resolved) return;
 
-		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		if (!auth.ok || !auth.apiKey) return;
+		const entries = branchEntries as Parameters<typeof getPriorMemoryDetails>[0];
+		const priorDetails = getPriorMemoryDetails(entries);
+		const deltaObservationData = collectObservationsForCompaction(entries, firstKeptEntryId, priorDetails);
 
-		const allMessages = [...messagesToSummarize, ...turnPrefixMessages];
-		if (allMessages.length === 0) return;
+		const workingReflections: Reflection[] = priorDetails ? [...priorDetails.reflections] : [];
+		const workingObservations: Observation[] = [
+			...(priorDetails ? priorDetails.observations : []),
+			...deltaObservationData.map((d) => ({ content: d.content, tokenCount: d.tokenCount })),
+		];
 
-		const now = new Date();
-		const dateStr = utcDate(now.getTime());
-		const timeStr = utcTime(now.getTime());
+		const observationTokens = workingObservations.reduce((sum, o) => sum + o.tokenCount, 0);
 
-		const llmMessages = convertToLlm(allMessages);
-		const conversationText = serializeWithTimestamps(llmMessages);
+		let finalReflections = workingReflections;
+		let finalObservations = workingObservations;
 
-		let dateRangeNote = "";
-		if (llmMessages.length > 0) {
-			const timestamps = llmMessages.map((m) => m.timestamp);
-			const firstTs = timestamps.reduce((a, b) => Math.min(a, b));
-			const lastTs = timestamps.reduce((a, b) => Math.max(a, b));
-			const firstMsgDate = utcDate(firstTs);
-			const lastMsgDate = utcDate(lastTs);
-			dateRangeNote =
-				firstMsgDate === lastMsgDate
-					? ` Messages in this batch are from ${firstMsgDate} (UTC).`
-					: ` Messages in this batch span ${firstMsgDate} to ${lastMsgDate} (UTC).`;
-		}
-
-		ctx.ui.notify("Observational memory: running observer...", "info");
-
-		try {
-			const observerOptions = model.reasoning
-				? { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 4096, signal, reasoning: "high" as const }
-				: { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 4096, signal };
-
-			const observerResponse = await completeSimple(
-				model,
-				{
-					systemPrompt: OBSERVER_SYSTEM,
-					messages: [
-						{
-							role: "user" as const,
-							content: [
-								{
-									type: "text" as const,
-									text: `Today is ${dateStr}, current time is ${timeStr} UTC.${dateRangeNote}\n\n<current-reflections>\n${state.reflections || "(none yet)"}\n</current-reflections>\n\n<current-observations>\n${state.observations || "(none yet)"}\n</current-observations>\n\nCompress the following conversation into new observations:\n\n<conversation>\n${conversationText}\n</conversation>`,
-								},
-							],
-							timestamp: Date.now(),
-						},
-					],
-				},
-				observerOptions,
-			);
-
-			const newObservations = extractText(observerResponse);
-			if (!newObservations.trim()) return;
-
-			state.observations = state.observations
-				? `${state.observations}\n\n${newObservations}`
-				: newObservations;
-		} catch (error) {
-			const msg = error instanceof Error ? error.message : String(error);
-			if (ctx.hasUI) ctx.ui.notify(`Observer failed: ${msg}`, "error");
-			return;
-		}
-
-		if (estimateTokens(state.observations) > config.reflectionThreshold) {
-			ctx.ui.notify("Observational memory: running reflector...", "info");
-
+		if (observationTokens >= config.reflectionThresholdTokens) {
+			if (ctx.hasUI) ctx.ui.notify("Observational memory: running reflector + pruner...", "info");
 			try {
-				const reflectorOptions = model.reasoning
-					? { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal, reasoning: "high" as const }
-					: { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal };
-
-				const reflectorResponse = await completeSimple(
-					model,
-					{
-						systemPrompt: REFLECTOR_SYSTEM,
-						messages: [
-							{
-								role: "user" as const,
-								content: [
-									{
-										type: "text" as const,
-										text: `Today is ${dateStr} (UTC).\n\n<current-reflections>\n${state.reflections || "(none yet)"}\n</current-reflections>\n\n<current-observations>\n${state.observations}\n</current-observations>\n\nGarbage-collect these observations. Promote long-lived facts to reflections, prune what's no longer needed, keep what's still active.`,
-									},
-								],
-								timestamp: Date.now(),
-							},
-						],
-					},
-					reflectorOptions,
+				const newReflections = await runReflector(
+					{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal },
+					workingReflections,
+					workingObservations,
 				);
+				finalReflections = [...workingReflections, ...newReflections];
 
-				const output = extractText(reflectorResponse);
-				const reflectionsMatch = output.match(/<reflections>\n?([\s\S]*?)\n?<\/reflections>/);
-				const observationsMatch = output.match(/<observations>\n?([\s\S]*?)\n?<\/observations>/);
-
-				if (reflectionsMatch) state.reflections = reflectionsMatch[1].trim();
-				if (observationsMatch) state.observations = observationsMatch[1].trim();
+				const prunedObservations = await runPruner(
+					{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal },
+					finalReflections,
+					workingObservations,
+				);
+				finalObservations = prunedObservations;
 			} catch (error) {
 				const msg = error instanceof Error ? error.message : String(error);
-				if (ctx.hasUI) ctx.ui.notify(`Reflector failed: ${msg}`, "warning");
+				if (ctx.hasUI) ctx.ui.notify(`Observational memory: reflect/prune failed: ${msg}`, "warning");
 			}
 		}
 
-		let summary = "";
-		if (state.reflections) {
-			summary += `<reflections>\n${state.reflections}\n</reflections>\n\n`;
-		}
-		if (state.observations) {
-			summary += `<observations>\n${state.observations}\n</observations>`;
-		}
-
+		const summary = renderSummary(finalReflections, finalObservations);
 		if (!summary.trim()) return;
-
-		summary += `\n\n${CONTEXT_USAGE_INSTRUCTIONS}`;
 
 		const details: MemoryDetails = {
 			type: "observational-memory",
-			version: 1,
-			observations: state.observations,
-			reflections: state.reflections,
+			version: 2,
+			observations: finalObservations,
+			reflections: finalReflections,
 		};
 
 		return {
@@ -262,22 +214,36 @@ export default function observationalMemory(pi: ExtensionAPI) {
 	pi.registerCommand("om-status", {
 		description: "Show observational memory status",
 		handler: async (_args, ctx) => {
-			const entries = ctx.sessionManager.getBranch();
-			const rawTokens = estimateRawTailTokens(entries);
-			const obsTokens = estimateTokens(state.observations);
-			const refTokens = estimateTokens(state.reflections);
+			ensureConfig(ctx.cwd);
+			const entries = ctx.sessionManager.getBranch() as Parameters<typeof rawTokensSinceLastBound>[0];
+			const sinceBound = rawTokensSinceLastBound(entries);
+			const sinceCompaction = rawTokensSinceLastCompaction(entries);
+
+			const priorDetails = getPriorMemoryDetails(entries);
+			const detailsObsTokens = priorDetails ? priorDetails.observations.reduce((s, o) => s + o.tokenCount, 0) : 0;
+			const detailsRefTokens = priorDetails ? priorDetails.reflections.reduce((s, r) => s + r.tokenCount, 0) : 0;
+
+			const lastCompactionIdx = findLastCompactionIndex(entries);
+			const sinceCompactionObs = collectObservationsAfter(entries, lastCompactionIdx);
+			const treeObsTokens = sinceCompactionObs.reduce((s, o) => s + o.tokenCount, 0);
+
 			const keepRecentTokens = SettingsManager.create(ctx.cwd).getCompactionKeepRecentTokens();
 
 			const lines = [
-				"── Observational Memory ──",
-				`Raw messages:  ~${rawTokens.toLocaleString()} tokens`,
-				`Observations:  ~${obsTokens.toLocaleString()} tokens`,
-				`Reflections:   ~${refTokens.toLocaleString()} tokens`,
+				"── Observational Memory (v2) ──",
+				`Raw since last bound:       ~${sinceBound.toLocaleString()} tokens (observer fires at ${config.observationThresholdTokens.toLocaleString()})`,
+				`Raw since last compaction:  ~${sinceCompaction.toLocaleString()} tokens (compaction fires at ${config.compactionThresholdTokens.toLocaleString()})`,
+				`Observations in tree:       ${sinceCompactionObs.length} entries, ~${treeObsTokens.toLocaleString()} tokens`,
+				`Observations in details:    ${priorDetails?.observations.length ?? 0} entries, ~${detailsObsTokens.toLocaleString()} tokens`,
+				`Reflections in details:     ${priorDetails?.reflections.length ?? 0} entries, ~${detailsRefTokens.toLocaleString()} tokens`,
 				"",
 				"── Parameters ──",
-				`Observation threshold: ${config.observationThreshold.toLocaleString()}`,
-				`Reflection threshold:  ${config.reflectionThreshold.toLocaleString()} (interpreted as observations token budget)`,
-				`Keep recent tokens:    ${keepRecentTokens.toLocaleString()} (pi compaction, how many tokens in raw messages)`,
+				`Observation threshold tokens: ${config.observationThresholdTokens.toLocaleString()}`,
+				`Compaction threshold tokens:  ${config.compactionThresholdTokens.toLocaleString()}`,
+				`Reflection threshold tokens:  ${config.reflectionThresholdTokens.toLocaleString()}`,
+				`Pi keep-recent tokens:      ${keepRecentTokens.toLocaleString()}`,
+				`Observer in flight:         ${observerInFlight}`,
+				`Compact in flight:          ${compactInFlight}`,
 			];
 
 			ctx.ui.notify(lines.join("\n"), "info");
@@ -285,52 +251,54 @@ export default function observationalMemory(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("om-view", {
-		description: "Print full observational memory contents (--full to include raw messages)",
+		description: "Print observational memory details (--full to include raw uncompacted tail)",
 		handler: async (args, ctx) => {
+			ensureConfig(ctx.cwd);
 			const full = args.includes("--full");
+			const entries = ctx.sessionManager.getBranch() as Parameters<typeof getPriorMemoryDetails>[0];
+			const priorDetails = getPriorMemoryDetails(entries);
+			const lastCompactionIdx = findLastCompactionIndex(entries);
+			const sinceCompactionObs = collectObservationsAfter(entries, lastCompactionIdx);
+
 			const sections: string[] = [];
 
-			sections.push("── Reflections ──");
-			sections.push(state.reflections || "(none)");
+			sections.push("── Reflections (from most recent compaction) ──");
+			if (priorDetails && priorDetails.reflections.length > 0) {
+				sections.push(priorDetails.reflections.map((r) => r.content).join("\n"));
+			} else {
+				sections.push("(none)");
+			}
 			sections.push("");
-			sections.push("── Observations ──");
-			sections.push(state.observations || "(none)");
+			sections.push("── Observations (from most recent compaction) ──");
+			if (priorDetails && priorDetails.observations.length > 0) {
+				sections.push(priorDetails.observations.map((o) => o.content).join("\n"));
+			} else {
+				sections.push("(none)");
+			}
+			sections.push("");
+			sections.push("── Observations appended since last compaction (in tree) ──");
+			if (sinceCompactionObs.length > 0) {
+				sections.push(sinceCompactionObs.map((o) => o.content).join("\n"));
+			} else {
+				sections.push("(none)");
+			}
 
 			if (full) {
-				const entries = ctx.sessionManager.getBranch();
-				let startIndex = 0;
-				for (let i = entries.length - 1; i >= 0; i--) {
-					const entry = entries[i];
-					if (entry.type === "compaction") {
-						const keptId = entry.firstKeptEntryId;
-						let found = false;
-						for (let j = 0; j < entries.length; j++) {
-							if (entries[j].id === keptId) {
-								startIndex = j;
-								found = true;
-								break;
-							}
-						}
-						if (!found) startIndex = i + 1;
-						break;
-					}
-				}
-
-				const rawMessages = entries
-					.slice(startIndex)
-					.filter((e): e is typeof e & { type: "message"; message: unknown } => e.type === "message")
-					.map((e) => e.message);
-
+				const tailStart = lastCompactionIdx >= 0 ? lastCompactionIdx + 1 : 0;
+				const tailMessages = rawMessagesBetween(
+					entries,
+					entries[tailStart]?.id ?? entries[0]?.id ?? "",
+					ctx.sessionManager.getLeafId() ?? entries[entries.length - 1]?.id ?? "",
+				);
 				sections.push("");
-				sections.push("── Raw Messages ──");
-				if (rawMessages.length > 0) {
-					sections.push(serializeWithTimestamps(convertToLlm(rawMessages)));
-				} else {
-					sections.push("(none)");
-				}
+				sections.push("── Raw uncompacted tail ──");
+				sections.push(tailMessages.length > 0 ? serializeConversation(tailMessages) : "(none)");
 			}
 
 			ctx.ui.notify(sections.join("\n"), "info");
 		},
 	});
+
+	void parseObservations;
+	void rawTokensFromIndex;
 }
