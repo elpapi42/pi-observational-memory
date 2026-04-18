@@ -28,15 +28,22 @@ export function findLastCompactionIndex(entries: Entry[]): number {
 	return -1;
 }
 
-export function findLastObservationIndex(entries: Entry[]): number {
-	for (let i = entries.length - 1; i >= 0; i--) {
-		if (isObservationEntry(entries[i])) return i;
+export function lastObservationCoverEndIdx(entries: Entry[]): number {
+	const idToIdx = new Map<string, number>();
+	for (let i = 0; i < entries.length; i++) idToIdx.set(entries[i].id, i);
+	let maxIdx = -1;
+	for (let i = 0; i < entries.length; i++) {
+		const entry = entries[i];
+		if (!isObservationEntry(entry)) continue;
+		if (!isObservationEntryData(entry.data)) continue;
+		const coverIdx = idToIdx.get(entry.data.coversUpToId);
+		if (coverIdx !== undefined && coverIdx > maxIdx) maxIdx = coverIdx;
 	}
-	return -1;
+	return maxIdx;
 }
 
 export function findLastBoundIndex(entries: Entry[]): number {
-	return Math.max(findLastCompactionIndex(entries), findLastObservationIndex(entries));
+	return Math.max(lastObservationCoverEndIdx(entries), liveTailStartIndex(entries) - 1);
 }
 
 export function rawTokensFromIndex(entries: Entry[], startIndex: number): number {
