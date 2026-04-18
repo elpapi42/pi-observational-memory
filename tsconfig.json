@@ -13,5 +13,5 @@
     "types": ["node"],
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "src_v2/**/*.ts"]
+  "include": ["src/**/*.ts"]
 }
