@@ -83,6 +83,17 @@ export function firstRawIdAfter(entries: Entry[], afterIndex: number): string | 
 	return undefined;
 }
 
+export function gapRawEntries(entries: Entry[], newFirstKeptEntryId: string): Entry[] {
+	const lastBoundIdx = findLastBoundIndex(entries);
+	const newKeptIdx = entries.findIndex((e) => e.id === newFirstKeptEntryId);
+	if (newKeptIdx === -1) return [];
+	const result: Entry[] = [];
+	for (let i = lastBoundIdx + 1; i < newKeptIdx; i++) {
+		if (RAW_TYPES.has(entries[i].type)) result.push(entries[i]);
+	}
+	return result;
+}
+
 export function rawTailEntriesBetween(entries: Entry[], fromId: string, untilId: string): Entry[] {
 	const fromIdx = entries.findIndex((e) => e.id === fromId);
 	const untilIdx = entries.findIndex((e) => e.id === untilId);

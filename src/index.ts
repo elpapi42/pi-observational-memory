@@ -5,6 +5,7 @@ import {
 	collectObservationsPendingNextCompaction,
 	findLastBoundIndex,
 	firstRawIdAfter,
+	gapRawEntries,
 	getPriorMemoryDetails,
 	liveTailEntries,
 	rawLiveTokens,
@@ -25,7 +26,30 @@ export default function observationalMemory(pi: ExtensionAPI) {
 	let config: Config = { ...DEFAULTS };
 	let configLoaded = false;
 	let observerInFlight = false;
+	let observerPromise: Promise<void> | null = null;
 	let compactInFlight = false;
+
+	function launchObserverTask(
+		ctx: any,
+		label: string,
+		work: () => Promise<void>,
+	): Promise<void> {
+		observerInFlight = true;
+		let promise!: Promise<void>;
+		promise = (async () => {
+			try {
+				await work();
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				if (ctx.hasUI && ctx.ui) ctx.ui.notify(`Observational memory: ${label} failed: ${msg}`, "warning");
+			} finally {
+				observerInFlight = false;
+				if (observerPromise === promise) observerPromise = null;
+			}
+		})();
+		observerPromise = promise;
+		return promise;
+	}
 
 	function ensureConfig(cwd: string): void {
 		if (configLoaded) return;
@@ -82,36 +106,28 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		const chunk = serializeBranchEntries(chunkEntries);
 		if (!chunk.trim()) return;
 
-		observerInFlight = true;
-		void (async () => {
-			try {
-				const resolved = await resolveModel(ctx as any);
-				if (!resolved) return;
+		void launchObserverTask(ctx, "observer", async () => {
+			const resolved = await resolveModel(ctx as any);
+			if (!resolved) return;
 
-				const content = await runObserver({
-					model: resolved.model as any,
-					apiKey: resolved.apiKey,
-					headers: resolved.headers,
-					priorReflections: priorReflectionContents,
-					priorObservations: allPriorObservationContents,
-					chunk,
-				});
-				if (!content) return;
+			const content = await runObserver({
+				model: resolved.model as any,
+				apiKey: resolved.apiKey,
+				headers: resolved.headers,
+				priorReflections: priorReflectionContents,
+				priorObservations: allPriorObservationContents,
+				chunk,
+			});
+			if (!content) return;
 
-				const data = {
-					content,
-					coversFromId,
-					coversUpToId,
-					tokenCount: estimateStringTokens(content),
-				};
-				pi.appendEntry(OBSERVATION_CUSTOM_TYPE, data);
-			} catch (error) {
-				const msg = error instanceof Error ? error.message : String(error);
-				if (ctx.hasUI) ctx.ui.notify(`Observational memory: observer failed: ${msg}`, "warning");
-			} finally {
-				observerInFlight = false;
-			}
-		})();
+			const data = {
+				content,
+				coversFromId,
+				coversUpToId,
+				tokenCount: estimateStringTokens(content),
+			};
+			pi.appendEntry(OBSERVATION_CUSTOM_TYPE, data);
+		});
 	});
 
 	pi.on("agent_end", (_event, ctx) => {
@@ -123,7 +139,14 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		if (tokens < config.compactionThresholdTokens) return;
 
 		compactInFlight = true;
-		setTimeout(() => {
+		setTimeout(async () => {
+			if (observerPromise) {
+				try {
+					await observerPromise;
+				} catch {
+					// errors already surfaced via launchObserverTask
+				}
+			}
 			if (!ctx.isIdle()) {
 				compactInFlight = false;
 				return;
@@ -201,6 +224,34 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			observations: finalObservations,
 			reflections: finalReflections,
 		};
+
+		const gap = gapRawEntries(entries, firstKeptEntryId);
+		if (gap.length > 0 && !observerInFlight) {
+			const gapChunk = serializeBranchEntries(gap);
+			if (gapChunk.trim()) {
+				const gapFromId = gap[0].id;
+				const gapUpToId = gap[gap.length - 1].id;
+				const priorReflectionContents = finalReflections.map((r) => r.content);
+				const priorObservationContents = finalObservations.map((o) => o.content);
+				void launchObserverTask(ctx, "catch-up observer", async () => {
+					const content = await runObserver({
+						model: resolved.model as any,
+						apiKey: resolved.apiKey,
+						headers: resolved.headers,
+						priorReflections: priorReflectionContents,
+						priorObservations: priorObservationContents,
+						chunk: gapChunk,
+					});
+					if (!content) return;
+					pi.appendEntry(OBSERVATION_CUSTOM_TYPE, {
+						content,
+						coversFromId: gapFromId,
+						coversUpToId: gapUpToId,
+						tokenCount: estimateStringTokens(content),
+					});
+				});
+			}
+		}
 
 		return {
 			compaction: {
