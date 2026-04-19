@@ -453,13 +453,13 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				"",
 				"── Activity ──",
 				`Next observation: ~${sinceBound.toLocaleString()} / ${obsThreshold.toLocaleString()} tokens (${obsPct}%)`,
-				`  → at ${obsThreshold.toLocaleString()}, recent conversation is compressed into new observations`,
+				`  → at ${obsThreshold.toLocaleString()} tokens, recent conversation is compressed into new observations`,
 				`Next compaction:  ~${sinceCompaction.toLocaleString()} / ${compThreshold.toLocaleString()} tokens (${compPct}%)`,
-				`  → at ${compThreshold.toLocaleString()}, raw history is replaced by the current reflections and observations,`,
-				`    keeping only the last ${keepRecentTokens.toLocaleString()} tokens of conversation verbatim`,
-				`Next reflection:  ~${observationPoolTokens.toLocaleString()} / ${refThreshold.toLocaleString()} observation tokens (${refPct}%)`,
-				`  → if the observation pool exceeds ${refThreshold.toLocaleString()} when compaction runs, reflections are`,
-				`    distilled from it and redundant observations are pruned away`,
+				`  → at ${compThreshold.toLocaleString()} tokens, raw history is replaced by the updated reflections and`,
+				`    observations, keeping only the last ${keepRecentTokens.toLocaleString()} tokens of conversation verbatim`,
+				`Next reflection:  ~${observationPoolTokens.toLocaleString()} / ${refThreshold.toLocaleString()} tokens (${refPct}%)`,
+				`  → if observations exceed ${refThreshold.toLocaleString()} tokens when compaction runs, reflections are`,
+				`    distilled from them and redundant observations are pruned away`,
 			];
 
 			if (observerInFlight || compactInFlight) {
