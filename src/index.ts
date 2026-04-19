@@ -29,6 +29,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 	let observerInFlight = false;
 	let observerPromise: Promise<void> | null = null;
 	let compactInFlight = false;
+	let compactHookInFlight = false;
 	let resolveFailureNotified = false;
 
 	type ResolveResult =
@@ -229,6 +230,15 @@ export default function observationalMemory(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
+		if (compactHookInFlight) {
+			if (ctx.hasUI) ctx.ui.notify(
+				"Observational memory: another compaction is already in progress; cancelling duplicate",
+				"warning",
+			);
+			return { cancel: true };
+		}
+		compactHookInFlight = true;
+		try {
 		ensureConfig(ctx.cwd);
 		const { preparation, branchEntries, signal } = event;
 		const { firstKeptEntryId, tokensBefore } = preparation;
@@ -244,13 +254,16 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		}
 		resolveFailureNotified = false;
 
-		const entries = branchEntries as Parameters<typeof getPriorMemoryDetails>[0];
-
-		const priorDetails = getPriorMemoryDetails(entries);
+		let entries = branchEntries as Parameters<typeof getPriorMemoryDetails>[0];
 
 		if (observerPromise) {
 			try { await observerPromise; } catch { /* already notified via launchObserverTask */ }
+			// In-flight observer may have appended a new observation entry during the await;
+			// refresh from sessionManager so gap computation and coverage collection see it.
+			entries = ctx.sessionManager.getBranch() as typeof entries;
 		}
+
+		const priorDetails = getPriorMemoryDetails(entries);
 
 		let gapObservationData: ObservationEntryData | null = null;
 		const gap = gapRawEntries(entries, firstKeptEntryId);
@@ -272,16 +285,19 @@ export default function observationalMemory(pi: ExtensionAPI) {
 					"info",
 				);
 				observerInFlight = true;
+				const gapCall = runObserver({
+					model: resolved.model as any,
+					apiKey: resolved.apiKey,
+					headers: resolved.headers,
+					priorReflections: priorReflectionContents,
+					priorObservations: allPriorObservationContents,
+					chunk: gapChunk,
+					signal,
+				});
+				const gapPromise: Promise<void> = gapCall.then(() => undefined, () => undefined);
+				observerPromise = gapPromise;
 				try {
-					const content = await runObserver({
-						model: resolved.model as any,
-						apiKey: resolved.apiKey,
-						headers: resolved.headers,
-						priorReflections: priorReflectionContents,
-						priorObservations: allPriorObservationContents,
-						chunk: gapChunk,
-						signal,
-					});
+					const content = await gapCall;
 					if (content) {
 						const observationTokens = estimateStringTokens(content);
 						gapObservationData = {
@@ -304,11 +320,13 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				} catch (error) {
 					const msg = error instanceof Error ? error.message : String(error);
 					if (ctx.hasUI && ctx.ui) ctx.ui.notify(
-						`Observational memory: sync catch-up observer failed: ${msg}. Proceeding with compaction.`,
+						`Observational memory: sync catch-up observer failed: ${msg}. Cancelling compaction — ${gap.length} unobserved raw entries would be pruned without coverage. Try /compact again.`,
 						"warning",
 					);
+					return { cancel: true };
 				} finally {
 					observerInFlight = false;
+					if (observerPromise === gapPromise) observerPromise = null;
 				}
 			}
 		}
@@ -388,6 +406,9 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				details,
 			},
 		};
+		} finally {
+			compactHookInFlight = false;
+		}
 	});
 
 	pi.registerCommand("om-status", {
