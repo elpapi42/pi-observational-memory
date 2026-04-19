@@ -4,7 +4,7 @@ import { Type } from "@mariozechner/pi-ai";
 import type { Static } from "@sinclair/typebox";
 import { hashId } from "./ids.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
-import { nowTimestamp } from "./serialize.js";
+import { nowTimestamp, truncateRecordContent } from "./serialize.js";
 import type { ObservationRecord, Relevance } from "./types.js";
 
 interface RunObserverArgs {
@@ -66,14 +66,15 @@ export async function runObserver(args: RunObserverArgs): Promise<ObservationRec
 			let added = 0;
 			let duplicates = 0;
 			for (const obs of params.observations) {
-				const id = hashId(obs.content);
+				const content = truncateRecordContent(obs.content);
+				const id = hashId(content);
 				if (accumulated.has(id)) {
 					duplicates++;
 					continue;
 				}
 				accumulated.set(id, {
 					id,
-					content: obs.content,
+					content,
 					timestamp: obs.timestamp,
 					relevance: obs.relevance as Relevance,
 				});

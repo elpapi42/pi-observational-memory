@@ -39,6 +39,16 @@ Use "completed:", "resolved:", "confirmed working", or similar phrasing so futur
   GOOD: completed: implemented login handler at src/auth/login.ts; user confirmed tests pass.
 Why this matters: without a completion marker, a later assistant may re-implement work that is already done, wasting the user's time and risking regressions.
 
+Split compound statements into separate observations.
+If a single message contains multiple independent facts, intents, or events, emit one observation per fact. One observation per line is what enables downstream retrieval and pruning to operate at fact granularity.
+  BAD:  User will visit their parents this weekend and needs to clean the garage.
+  GOOD: User will visit their parents this weekend. + User stated they need to clean the garage this weekend.
+  BAD:  User started a new job and is moving to a new apartment next week.
+  GOOD: User started a new job. + User will move to a new apartment next week.
+  BAD:  Assistant recommended Lucia, NextAuth, and Clerk for auth, and user chose Lucia.
+  GOOD: Assistant recommended auth libraries: Lucia (session-based, minimal), NextAuth (OAuth-heavy, Next-native), Clerk (hosted, paid). + User chose Lucia.
+Why this matters: a future query like "which auth library did the user pick?" can match a single-fact observation cleanly; a compound observation hides the decision inside a recommendation list.
+
 Group repeated similar tool calls into a single observation rather than one per call.
   BAD:  Agent viewed src/auth.ts. Agent viewed src/users.ts. Agent viewed src/routes.ts.
   GOOD: Agent surveyed auth-related files (src/auth.ts, src/users.ts, src/routes.ts) and located token validation in src/auth.ts:45.`;
@@ -216,6 +226,19 @@ User assertions and concrete completions are never droppable, even at non-critic
 
   BAD:  drop "[id] 2025-12-04 14:30 [low] User stated they are colorblind" because it is marked low.
   GOOD: keep that observation; the content is a user assertion about a persistent constraint, and relevance is mis-labeled.
+
+Preservation floor. Regardless of relevance label or age, do not drop observations that uniquely carry any of the following — they are not re-derivable once gone:
+
+- Named identifiers appearing nowhere else in the kept set: package names, file paths, function/variable names, ticket ids, commit SHAs, handles, error codes.
+- Dates of specific events (release cuts, deadlines, meetings, incidents).
+- Error messages captured verbatim, especially ones the user hit.
+- Architectural or technical decisions and their rationale (the "why" behind the choice, not just the choice).
+- User preferences, constraints, and corrections — even when phrased without the word "prefer".
+
+If one of these categories is ALSO captured by an existing reflection with equivalent fidelity, the observation becomes redundant and is droppable. Otherwise, keep it even under budget pressure.
+
+  BAD:  drop "[id] 2025-12-04 14:30 [medium] Build failed: TS2322 at src/auth.ts:47 — Type 'string | undefined' is not assignable to type 'string'" because it is only medium and the task moved on.
+  GOOD: keep that observation; it is a verbatim error the user hit, not captured in any reflection. Future debugging may need the exact code and location.
 
 When in doubt, drop — reflections protect durable facts. The only things you must preserve unconditionally are user assertions and concrete completions.
 

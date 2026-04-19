@@ -3,6 +3,7 @@ import { Type, type Message, type Model } from "@mariozechner/pi-ai";
 import type { Static } from "@sinclair/typebox";
 import { observationsToPromptLines } from "./observer.js";
 import { buildPrunerPassGuidance, CONTEXT_USAGE_INSTRUCTIONS, PRUNER_SYSTEM, REFLECTOR_SYSTEM } from "./prompts.js";
+import { truncateRecordContent } from "./serialize.js";
 import { estimateStringTokens } from "./tokens.js";
 import type { ObservationRecord, Reflection } from "./types.js";
 
@@ -63,7 +64,7 @@ export async function runReflector(
 			let accepted = 0;
 			let duplicates = 0;
 			for (const r of params.reflections) {
-				const content = r.trim();
+				const content = truncateRecordContent(r.trim());
 				if (!content) continue;
 				if (existing.has(content) || added.has(content)) {
 					duplicates++;
