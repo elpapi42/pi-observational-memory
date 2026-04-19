@@ -2,7 +2,7 @@ import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } fr
 import { Type, type Message, type Model } from "@mariozechner/pi-ai";
 import type { Static } from "@sinclair/typebox";
 import { observationsToPromptLines } from "./observer.js";
-import { CONTEXT_USAGE_INSTRUCTIONS, PRUNER_SYSTEM, REFLECTOR_SYSTEM } from "./prompts.js";
+import { buildPrunerPassGuidance, CONTEXT_USAGE_INSTRUCTIONS, PRUNER_SYSTEM, REFLECTOR_SYSTEM } from "./prompts.js";
 import { estimateStringTokens } from "./tokens.js";
 import type { ObservationRecord, Reflection } from "./types.js";
 
@@ -216,8 +216,10 @@ async function runPrunerPass(
 
 	const pressureLine =
 		passContext.deltaTokens > 0
-			? `Pool ~${passContext.poolTokens.toLocaleString()} tokens, target ~${passContext.targetTokens.toLocaleString()} tokens, still need to cut at least ~${passContext.deltaTokens.toLocaleString()} tokens. Pass ${passContext.pass} of up to ${passContext.maxPasses}.`
-			: `Pool ~${passContext.poolTokens.toLocaleString()} tokens, target ~${passContext.targetTokens.toLocaleString()} tokens (already under budget). Pass ${passContext.pass} of up to ${passContext.maxPasses} — drop only clear redundancies.`;
+			? `Pool ~${passContext.poolTokens.toLocaleString()} tokens, target ~${passContext.targetTokens.toLocaleString()} tokens, still need to cut at least ~${passContext.deltaTokens.toLocaleString()} tokens.`
+			: `Pool ~${passContext.poolTokens.toLocaleString()} tokens, target ~${passContext.targetTokens.toLocaleString()} tokens (already under budget) — drop only clear redundancies.`;
+
+	const passGuidance = buildPrunerPassGuidance(passContext.pass, passContext.maxPasses);
 
 	const userText = `CURRENT REFLECTIONS:
 ${joinReflectionsOrEmpty(reflections)}
@@ -226,6 +228,8 @@ CURRENT OBSERVATIONS:
 ${joinObservationsOrEmpty(observations)}
 
 ${pressureLine}
+
+${passGuidance}
 
 Decide which observations to remove from the kept set. Call drop_observations with the ids you want to drop. You may call the tool multiple times as you reason through the pool. When satisfied, stop calling the tool and emit a short plain-text confirmation to end the run.`;
 
