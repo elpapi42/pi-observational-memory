@@ -67,50 +67,6 @@ type RenderableEntry = {
 	summary?: unknown;
 };
 
-function extractPreviewText(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (Array.isArray(content)) {
-		return (content as Array<{ type?: string; text?: string }>)
-			.filter((b) => b?.type === "text" && typeof b.text === "string")
-			.map((b) => b.text as string)
-			.join("");
-	}
-	return "";
-}
-
-export function renderBranchEntryOneLine(entry: RenderableEntry): string {
-	const maxLen = 200;
-	const normalize = (s: string) => s.replace(/[\n\t]/g, " ").trim();
-	const truncate = (s: string) => (s.length > maxLen ? `${s.slice(0, maxLen)}…` : s);
-
-	if (entry.type === "message" && entry.message) {
-		const msg = entry.message as { role: string; content?: unknown; stopReason?: string; toolName?: string; command?: string };
-		if (msg.role === "user") {
-			return `user: ${truncate(normalize(extractPreviewText(msg.content)))}`;
-		}
-		if (msg.role === "assistant") {
-			const text = normalize(extractPreviewText(msg.content));
-			if (!text) return `assistant: ${msg.stopReason === "aborted" ? "(aborted)" : "(no content)"}`;
-			return `assistant: ${truncate(text)}`;
-		}
-		if (msg.role === "toolResult") {
-			return `[tool: ${msg.toolName ?? "tool"}]`;
-		}
-		if (msg.role === "bashExecution") {
-			return `[bash]: ${truncate(normalize(msg.command ?? ""))}`;
-		}
-		return `[${msg.role}]`;
-	}
-	if (entry.type === "custom_message") {
-		return `[${entry.customType ?? "custom"}]: ${truncate(normalize(extractPreviewText(entry.content)))}`;
-	}
-	if (entry.type === "branch_summary") {
-		const summary = typeof entry.summary === "string" ? entry.summary : "";
-		return `[branch summary]: ${truncate(normalize(summary))}`;
-	}
-	return `[${entry.type}]`;
-}
-
 export function serializeBranchEntries(entries: RenderableEntry[]): string {
 	const blocks: string[] = [];
 	for (const entry of entries) {

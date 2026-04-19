@@ -8,7 +8,6 @@ import {
 	firstRawIdAfter,
 	gapRawEntries,
 	getPriorMemoryDetails,
-	liveTailEntries,
 	rawTailEntriesBetween,
 	rawTokensFromIndex,
 	rawTokensSinceLastBound,
@@ -18,7 +17,7 @@ import { renderSummary, runPruner, runReflector } from "./compaction.js";
 import { DEFAULTS, loadConfig, type Config } from "./config.js";
 import { runObserver } from "./observer.js";
 import { parseBlocks, parseObservations } from "./parse.js";
-import { renderBranchEntryOneLine, serializeBranchEntries } from "./serialize.js";
+import { serializeBranchEntries } from "./serialize.js";
 import { estimateStringTokens } from "./tokens.js";
 import { OBSERVATION_CUSTOM_TYPE, type MemoryDetails, type Observation, type ObservationEntryData, type Reflection } from "./types.js";
 
@@ -474,10 +473,9 @@ export default function observationalMemory(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("om-view", {
-		description: "Print observational memory details (--full to include raw uncompacted tail)",
-		handler: async (args, ctx) => {
+		description: "Print observational memory details (reflections + observations)",
+		handler: async (_args, ctx) => {
 			ensureConfig(ctx.cwd);
-			const full = args.includes("--full");
 			const entries = ctx.sessionManager.getBranch() as Parameters<typeof getPriorMemoryDetails>[0];
 			const priorDetails = getPriorMemoryDetails(entries);
 			const pendingObsData = collectObservationsPendingNextCompaction(entries);
@@ -537,16 +535,8 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				sections.push("(none)");
 			}
 
-			if (full) {
-				const tail = liveTailEntries(entries);
-				sections.push("");
-				sections.push(`── Raw uncompacted tail (${tail.length} ${plural(tail.length, "entry", "entries")}) ──`);
-				if (tail.length > 0) {
-					sections.push(tail.map((e) => renderBranchEntryOneLine(e)).join("\n"));
-				} else {
-					sections.push("(none)");
-				}
-			}
+			sections.push("");
+			sections.push("Tip: use /tree to browse the raw messages still live in the session.");
 
 			ctx.ui.notify(sections.join("\n"), "info");
 		},
