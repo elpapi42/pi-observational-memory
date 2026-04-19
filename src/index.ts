@@ -434,8 +434,11 @@ export default function observationalMemory(pi: ExtensionAPI) {
 
 			const obsThreshold = config.observationThresholdTokens;
 			const compThreshold = config.compactionThresholdTokens;
+			const refThreshold = config.reflectionThresholdTokens;
+			const observationPoolTokens = committedObsTokens + pendingObsTokens;
 			const obsPct = Math.min(100, Math.round((sinceBound / obsThreshold) * 100));
 			const compPct = Math.min(100, Math.round((sinceCompaction / compThreshold) * 100));
+			const refPct = Math.min(100, Math.round((observationPoolTokens / refThreshold) * 100));
 
 			const refLabel = committedRefsCount === 1 ? "entry" : "entries";
 			const cObsLabel = committedObsCount === 1 ? "observation" : "observations";
@@ -454,6 +457,9 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				`Next compaction:  ~${sinceCompaction.toLocaleString()} / ${compThreshold.toLocaleString()} tokens (${compPct}%)`,
 				`  → at ${compThreshold.toLocaleString()}, raw history is replaced by the current reflections and observations,`,
 				`    keeping only the last ${keepRecentTokens.toLocaleString()} tokens of conversation verbatim`,
+				`Next reflection:  ~${observationPoolTokens.toLocaleString()} / ${refThreshold.toLocaleString()} observation tokens (${refPct}%)`,
+				`  → if the observation pool exceeds ${refThreshold.toLocaleString()} when compaction runs, reflections are`,
+				`    distilled from it and redundant observations are pruned away`,
 			];
 
 			if (observerInFlight || compactInFlight) {
