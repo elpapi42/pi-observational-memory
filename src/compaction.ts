@@ -3,7 +3,15 @@ import { Type, type Message, type Model } from "@mariozechner/pi-ai";
 import type { Static } from "@sinclair/typebox";
 import { observationsToPromptLines } from "./observer.js";
 import { CONTEXT_USAGE_INSTRUCTIONS, PRUNER_SYSTEM, REFLECTOR_SYSTEM } from "./prompts.js";
+import { estimateStringTokens } from "./tokens.js";
 import type { ObservationRecord, Reflection } from "./types.js";
+
+const PRUNER_MAX_PASSES = 5;
+const PRUNER_TARGET_RATIO = 0.8;
+
+function observationPoolTokens(observations: ObservationRecord[]): number {
+	return observations.reduce((sum, o) => sum + estimateStringTokens(o.content), 0);
+}
 
 interface LlmArgs {
 	model: Model<any>;
@@ -146,15 +154,26 @@ const DropObservationsSchema = Type.Object({
 
 type DropObservationsArgs = Static<typeof DropObservationsSchema>;
 
-export async function runPruner(
+interface PrunerPassContext {
+	poolTokens: number;
+	targetTokens: number;
+	deltaTokens: number;
+	pass: number;
+	maxPasses: number;
+}
+
+interface PrunerPassResult {
+	kept: ObservationRecord[];
+	droppedIds: string[];
+	fellBack: boolean;
+}
+
+async function runPrunerPass(
 	args: LlmArgs,
 	reflections: Reflection[],
 	observations: ObservationRecord[],
-): Promise<PrunerResult> {
-	if (observations.length === 0) {
-		return { observations: [], droppedIds: [], fellBack: false };
-	}
-
+	passContext: PrunerPassContext,
+): Promise<PrunerPassResult> {
 	const idSet = new Set(observations.map((o) => o.id));
 	const dropped = new Set<string>();
 
@@ -195,11 +214,18 @@ export async function runPruner(
 		},
 	};
 
+	const pressureLine =
+		passContext.deltaTokens > 0
+			? `Pool ~${passContext.poolTokens.toLocaleString()} tokens, target ~${passContext.targetTokens.toLocaleString()} tokens, still need to cut at least ~${passContext.deltaTokens.toLocaleString()} tokens. Pass ${passContext.pass} of up to ${passContext.maxPasses}.`
+			: `Pool ~${passContext.poolTokens.toLocaleString()} tokens, target ~${passContext.targetTokens.toLocaleString()} tokens (already under budget). Pass ${passContext.pass} of up to ${passContext.maxPasses} — drop only clear redundancies.`;
+
 	const userText = `CURRENT REFLECTIONS:
 ${joinReflectionsOrEmpty(reflections)}
 
 CURRENT OBSERVATIONS:
 ${joinObservationsOrEmpty(observations)}
+
+${pressureLine}
 
 Decide which observations to remove from the kept set. Call drop_observations with the ids you want to drop. You may call the tool multiple times as you reason through the pool. When satisfied, stop calling the tool and emit a short plain-text confirmation to end the run.`;
 
@@ -235,11 +261,52 @@ Decide which observations to remove from the kept set. Call drop_observations wi
 		}
 		await stream.result();
 	} catch {
-		return { observations, droppedIds: [], fellBack: true };
+		return { kept: observations, droppedIds: [], fellBack: true };
 	}
 
 	const kept = observations.filter((o) => !dropped.has(o.id));
-	return { observations: kept, droppedIds: Array.from(dropped), fellBack: false };
+	return { kept, droppedIds: Array.from(dropped), fellBack: false };
+}
+
+export async function runPruner(
+	args: LlmArgs,
+	reflections: Reflection[],
+	observations: ObservationRecord[],
+	budgetTokens: number,
+): Promise<PrunerResult> {
+	if (observations.length === 0) {
+		return { observations: [], droppedIds: [], fellBack: false };
+	}
+
+	const target = Math.max(1, Math.floor(budgetTokens * PRUNER_TARGET_RATIO));
+	let pool = observations;
+	const allDropped: string[] = [];
+	let fellBack = false;
+
+	for (let pass = 1; pass <= PRUNER_MAX_PASSES; pass++) {
+		const poolTokens = observationPoolTokens(pool);
+		if (poolTokens <= target) break;
+
+		const deltaTokens = poolTokens - target;
+		const result = await runPrunerPass(args, reflections, pool, {
+			poolTokens,
+			targetTokens: target,
+			deltaTokens,
+			pass,
+			maxPasses: PRUNER_MAX_PASSES,
+		});
+
+		if (result.fellBack) {
+			fellBack = true;
+			break;
+		}
+		if (result.droppedIds.length === 0) break;
+
+		pool = result.kept;
+		allDropped.push(...result.droppedIds);
+	}
+
+	return { observations: pool, droppedIds: allDropped, fellBack };
 }
 
 export function renderSummary(reflections: Reflection[], observations: ObservationRecord[]): string {

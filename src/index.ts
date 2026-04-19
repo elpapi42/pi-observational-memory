@@ -387,6 +387,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 					{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal },
 					finalReflections,
 					workingObservations,
+					config.reflectionThresholdTokens,
 				);
 				finalObservations = prunerResult.observations;
 				if (prunerResult.fellBack && ctx.hasUI) {
