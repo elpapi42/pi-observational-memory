@@ -18,7 +18,7 @@ import { renderSummary, runPruner, runReflector } from "./compaction.js";
 import { DEFAULTS, loadConfig, type Config } from "./config.js";
 import { runObserver } from "./observer.js";
 import { parseBlocks, parseObservations } from "./parse.js";
-import { serializeBranchEntries } from "./serialize.js";
+import { renderBranchEntryOneLine, serializeBranchEntries } from "./serialize.js";
 import { estimateStringTokens } from "./tokens.js";
 import { OBSERVATION_CUSTOM_TYPE, type MemoryDetails, type Observation, type ObservationEntryData, type Reflection } from "./types.js";
 
@@ -480,27 +480,59 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			const full = args.includes("--full");
 			const entries = ctx.sessionManager.getBranch() as Parameters<typeof getPriorMemoryDetails>[0];
 			const priorDetails = getPriorMemoryDetails(entries);
-			const pendingObs = collectObservationsPendingNextCompaction(entries);
+			const pendingObsData = collectObservationsPendingNextCompaction(entries);
+
+			const committedRefs = priorDetails ? priorDetails.reflections : [];
+			const committedRefTokens = committedRefs.reduce((s, r) => s + r.tokenCount, 0);
+			const committedRefCount = committedRefs.reduce((n, r) => n + parseBlocks(r.content).length, 0);
+
+			const committedObs = priorDetails ? priorDetails.observations : [];
+			const committedObsTokens = committedObs.reduce((s, o) => s + o.tokenCount, 0);
+			const committedObsCount = committedObs.reduce((n, o) => n + parseBlocks(o.content).length, 0);
+
+			const pendingObsTokens = pendingObsData.reduce((s, o) => s + o.tokenCount, 0);
+			const pendingObsCount = pendingObsData.reduce((n, o) => n + parseBlocks(o.content).length, 0);
+
+			const totalObsCount = committedObsCount + pendingObsCount;
+			const totalTokens = committedRefTokens + committedObsTokens + pendingObsTokens;
+
+			const plural = (n: number, singular: string, plural: string) => (n === 1 ? singular : plural);
 
 			const sections: string[] = [];
 
-			sections.push("── Reflections (from most recent compaction) ──");
-			if (priorDetails && priorDetails.reflections.length > 0) {
-				sections.push(priorDetails.reflections.map((r) => r.content).join("\n"));
+			sections.push(
+				`Memory: ${committedRefCount} ${plural(committedRefCount, "reflection", "reflections")} · ` +
+					`${totalObsCount} ${plural(totalObsCount, "observation", "observations")} ` +
+					`(${committedObsCount} committed, ${pendingObsCount} pending) · ` +
+					`~${totalTokens.toLocaleString()} tokens`,
+			);
+			sections.push("");
+
+			sections.push(
+				`── Reflections (${committedRefCount} ${plural(committedRefCount, "entry", "entries")}, ~${committedRefTokens.toLocaleString()} tokens) ──`,
+			);
+			if (committedRefs.length > 0) {
+				sections.push(committedRefs.flatMap((r) => parseBlocks(r.content)).join("\n\n"));
 			} else {
 				sections.push("(none)");
 			}
+
 			sections.push("");
-			sections.push("── Observations (from most recent compaction) ──");
-			if (priorDetails && priorDetails.observations.length > 0) {
-				sections.push(priorDetails.observations.map((o) => o.content).join("\n"));
+			sections.push(
+				`── Observations — committed (${committedObsCount} ${plural(committedObsCount, "observation", "observations")}, ~${committedObsTokens.toLocaleString()} tokens) ──`,
+			);
+			if (committedObs.length > 0) {
+				sections.push(committedObs.flatMap((o) => parseBlocks(o.content)).join("\n\n"));
 			} else {
 				sections.push("(none)");
 			}
+
 			sections.push("");
-			sections.push("── Observations pending next compaction (in tree) ──");
-			if (pendingObs.length > 0) {
-				sections.push(pendingObs.map((o) => o.content).join("\n"));
+			sections.push(
+				`── Observations — pending (${pendingObsCount} ${plural(pendingObsCount, "observation", "observations")}, ~${pendingObsTokens.toLocaleString()} tokens) ──`,
+			);
+			if (pendingObsData.length > 0) {
+				sections.push(pendingObsData.flatMap((o) => parseBlocks(o.content)).join("\n\n"));
 			} else {
 				sections.push("(none)");
 			}
@@ -508,8 +540,12 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			if (full) {
 				const tail = liveTailEntries(entries);
 				sections.push("");
-				sections.push("── Raw uncompacted tail ──");
-				sections.push(tail.length > 0 ? serializeBranchEntries(tail) : "(none)");
+				sections.push(`── Raw uncompacted tail (${tail.length} ${plural(tail.length, "entry", "entries")}) ──`);
+				if (tail.length > 0) {
+					sections.push(tail.map((e) => renderBranchEntryOneLine(e)).join("\n"));
+				} else {
+					sections.push("(none)");
+				}
 			}
 
 			ctx.ui.notify(sections.join("\n"), "info");
