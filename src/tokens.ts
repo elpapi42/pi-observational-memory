@@ -25,9 +25,3 @@ export function estimateEntryTokens(entry: { type: string; message?: unknown; co
 	return 0;
 }
 
-export function extractText(response: { content: Array<{ type: string; text?: string }> }): string {
-	return response.content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text")
-		.map((c) => c.text)
-		.join("\n");
-}

@@ -1,4 +1,12 @@
-import { OBSERVATION_CUSTOM_TYPE, isMemoryDetails, isObservationEntryData, type MemoryDetails, type ObservationEntryData } from "./types.js";
+import {
+	OBSERVATION_CUSTOM_TYPE,
+	isMemoryDetails,
+	isObservationEntryData,
+	type MemoryDetails,
+	type ObservationEntryData,
+	type ObservationRecord,
+	type Reflection,
+} from "./types.js";
 import { estimateEntryTokens } from "./tokens.js";
 
 type Entry = {
@@ -42,11 +50,7 @@ export function lastObservationCoverEndIdx(entries: Entry[]): number {
 	return maxIdx;
 }
 
-export function findLastBoundIndex(entries: Entry[]): number {
-	return lastObservationCoverEndIdx(entries);
-}
-
-export function rawTokensFromIndex(entries: Entry[], startIndex: number): number {
+function rawTokensFromIndex(entries: Entry[], startIndex: number): number {
 	let total = 0;
 	for (let i = Math.max(0, startIndex); i < entries.length; i++) {
 		if (RAW_TYPES.has(entries[i].type)) total += estimateEntryTokens(entries[i]);
@@ -55,7 +59,7 @@ export function rawTokensFromIndex(entries: Entry[], startIndex: number): number
 }
 
 export function rawTokensSinceLastBound(entries: Entry[]): number {
-	return rawTokensFromIndex(entries, findLastBoundIndex(entries) + 1);
+	return rawTokensFromIndex(entries, lastObservationCoverEndIdx(entries) + 1);
 }
 
 export function rawTokensSinceLastCompaction(entries: Entry[]): number {
@@ -64,7 +68,7 @@ export function rawTokensSinceLastCompaction(entries: Entry[]): number {
 	return rawTokensFromIndex(entries, liveTailStartIndex(entries));
 }
 
-export function liveTailStartIndex(entries: Entry[]): number {
+function liveTailStartIndex(entries: Entry[]): number {
 	const compactionIdx = findLastCompactionIndex(entries);
 	if (compactionIdx === -1) return 0;
 	const firstKept = entries[compactionIdx].firstKeptEntryId;
@@ -72,19 +76,6 @@ export function liveTailStartIndex(entries: Entry[]): number {
 	const firstKeptIdx = entries.findIndex((e) => e.id === firstKept);
 	if (firstKeptIdx === -1) throw new Error(`firstKeptEntryId "${firstKept}" not found in entries`);
 	return firstKeptIdx;
-}
-
-export function rawLiveTokens(entries: Entry[]): number {
-	return rawTokensFromIndex(entries, liveTailStartIndex(entries));
-}
-
-export function liveTailEntries(entries: Entry[]): Entry[] {
-	const start = liveTailStartIndex(entries);
-	const result: Entry[] = [];
-	for (let i = start; i < entries.length; i++) {
-		if (RAW_TYPES.has(entries[i].type)) result.push(entries[i]);
-	}
-	return result;
 }
 
 export function firstRawIdAfter(entries: Entry[], afterIndex: number): string | undefined {
@@ -95,7 +86,7 @@ export function firstRawIdAfter(entries: Entry[], afterIndex: number): string | 
 }
 
 export function gapRawEntries(entries: Entry[], newFirstKeptEntryId: string): Entry[] {
-	const lastBoundIdx = findLastBoundIndex(entries);
+	const lastBoundIdx = lastObservationCoverEndIdx(entries);
 	const newKeptIdx = entries.findIndex((e) => e.id === newFirstKeptEntryId);
 	if (newKeptIdx === -1) return [];
 	const result: Entry[] = [];
@@ -117,21 +108,11 @@ export function rawTailEntriesBetween(entries: Entry[], fromId: string, untilId:
 	return result;
 }
 
-export function getPriorMemoryDetails(entries: Entry[]): MemoryDetails | undefined {
+function getPriorMemoryDetails(entries: Entry[]): MemoryDetails | undefined {
 	const idx = findLastCompactionIndex(entries);
 	if (idx === -1) return undefined;
 	const details = entries[idx].details;
 	return isMemoryDetails(details) ? details : undefined;
-}
-
-export function collectObservationsAfter(entries: Entry[], afterIndex: number): ObservationEntryData[] {
-	const result: ObservationEntryData[] = [];
-	for (let i = afterIndex + 1; i < entries.length; i++) {
-		const entry = entries[i];
-		if (!isObservationEntry(entry)) continue;
-		if (isObservationEntryData(entry.data)) result.push(entry.data);
-	}
-	return result;
 }
 
 export function collectObservationsByCoverage(
@@ -165,7 +146,7 @@ export function collectObservationsByCoverage(
 	return result;
 }
 
-export function collectObservationsPendingNextCompaction(entries: Entry[]): ObservationEntryData[] {
+function collectObservationsPendingNextCompaction(entries: Entry[]): ObservationEntryData[] {
 	const idToIdx = new Map<string, number>();
 	for (let i = 0; i < entries.length; i++) idToIdx.set(entries[i].id, i);
 
@@ -192,11 +173,18 @@ export function collectObservationsPendingNextCompaction(entries: Entry[]): Obse
 	return result;
 }
 
-export function lastRawIdAtOrBefore(entries: Entry[], leafId: string): string | undefined {
-	const leafIdx = entries.findIndex((e) => e.id === leafId);
-	if (leafIdx === -1) return undefined;
-	for (let i = leafIdx; i >= 0; i--) {
-		if (RAW_TYPES.has(entries[i].type)) return entries[i].id;
-	}
-	return undefined;
+export interface MemoryState {
+	reflections: Reflection[];
+	committedObs: ObservationRecord[];
+	pendingObs: ObservationRecord[];
+}
+
+export function getMemoryState(entries: Entry[]): MemoryState {
+	const priorDetails = getPriorMemoryDetails(entries);
+	const pendingData = collectObservationsPendingNextCompaction(entries);
+	return {
+		reflections: priorDetails?.reflections ?? [],
+		committedObs: priorDetails?.observations ?? [],
+		pendingObs: pendingData.flatMap((d) => d.records),
+	};
 }

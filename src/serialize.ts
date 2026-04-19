@@ -8,21 +8,16 @@ function fmtLocal(d: Date): string {
 	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function fmt(epochMs: number): string {
-	if (!Number.isFinite(epochMs)) return "????-??-?? ??:??";
-	return fmtLocal(new Date(epochMs));
-}
-
-function fmtIso(iso: string | undefined): string {
-	if (!iso) return "????-??-?? ??:??";
-	const d = new Date(iso);
+function formatTimestamp(v: number | string | undefined): string {
+	if (v === undefined) return "????-??-?? ??:??";
+	const d = new Date(v);
 	return Number.isNaN(d.getTime()) ? "????-??-?? ??:??" : fmtLocal(d);
 }
 
 export function serializeConversation(messages: Message[]): string {
 	return messages
 		.map((msg): string | null => {
-			const time = fmt(msg.timestamp);
+			const time = formatTimestamp(msg.timestamp);
 			if (msg.role === "user") {
 				const text =
 					typeof msg.content === "string"
@@ -76,7 +71,7 @@ export function serializeBranchEntries(entries: RenderableEntry[]): string {
 			continue;
 		}
 		if (entry.type === "custom_message") {
-			const time = fmtIso(entry.timestamp);
+			const time = formatTimestamp(entry.timestamp);
 			let text = "";
 			if (typeof entry.content === "string") {
 				text = entry.content;
@@ -91,7 +86,7 @@ export function serializeBranchEntries(entries: RenderableEntry[]): string {
 			continue;
 		}
 		if (entry.type === "branch_summary" && typeof entry.summary === "string") {
-			const time = fmtIso(entry.timestamp);
+			const time = formatTimestamp(entry.timestamp);
 			blocks.push(`[Branch summary @ ${time}]: ${entry.summary}`);
 		}
 	}

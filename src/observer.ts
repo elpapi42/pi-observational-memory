@@ -137,10 +137,6 @@ ${conversation}`;
 	return Array.from(accumulated.values());
 }
 
-export function renderObservationForPrompt(record: ObservationRecord): string {
-	return `[${record.id}] ${record.timestamp} [${record.relevance}] ${record.content}`;
-}
-
 export function observationsToPromptLines(records: ObservationRecord[]): string[] {
-	return records.map(renderObservationForPrompt);
+	return records.map((r) => `[${r.id}] ${r.timestamp} [${r.relevance}] ${r.content}`);
 }
