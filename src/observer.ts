@@ -1,11 +1,14 @@
-import { completeSimple } from "@mariozechner/pi-ai";
+import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@mariozechner/pi-agent-core";
+import type { Message, Model } from "@mariozechner/pi-ai";
+import { Type } from "@mariozechner/pi-ai";
+import type { Static } from "@sinclair/typebox";
+import { hashId } from "./ids.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
 import { nowTimestamp } from "./serialize.js";
-import { extractText } from "./tokens.js";
-import type { Observation } from "./types.js";
+import type { ObservationRecord, Relevance } from "./types.js";
 
 interface RunObserverArgs {
-	model: Parameters<typeof completeSimple>[0];
+	model: Model<any>;
 	apiKey: string;
 	headers?: Record<string, string>;
 	priorReflections: string[];
@@ -14,56 +17,130 @@ interface RunObserverArgs {
 	signal?: AbortSignal;
 }
 
+const RelevanceSchema = Type.Union([
+	Type.Literal("low"),
+	Type.Literal("medium"),
+	Type.Literal("high"),
+	Type.Literal("critical"),
+]);
+
+const RecordObservationsSchema = Type.Object({
+	observations: Type.Array(
+		Type.Object({
+			timestamp: Type.String({
+				pattern: "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$",
+				description: "Observation time in local 'YYYY-MM-DD HH:MM' format.",
+			}),
+			content: Type.String({
+				minLength: 1,
+				description: "Single-line plain prose. No markdown, no tags, no embedded timestamp.",
+			}),
+			relevance: RelevanceSchema,
+		}),
+		{ description: "Batch of new observations. May be empty only if the tool is not called at all." },
+	),
+});
+
+type RecordObservationsArgs = Static<typeof RecordObservationsSchema>;
+
 function joinOrEmpty(items: string[]): string {
 	return items.length ? items.join("\n") : "(none yet)";
 }
 
-export async function runObserver(args: RunObserverArgs): Promise<string | undefined> {
+export async function runObserver(args: RunObserverArgs): Promise<ObservationRecord[] | undefined> {
 	const { model, apiKey, headers, priorReflections, priorObservations, chunk, signal } = args;
 	const conversation = chunk.trim();
 	if (!conversation) return undefined;
 
+	const accumulated = new Map<string, ObservationRecord>();
+
+	const recordObservations: AgentTool<typeof RecordObservationsSchema> = {
+		name: "record_observations",
+		label: "Record observations",
+		description:
+			"Record a batch of new observations distilled from the conversation chunk. " +
+			"Call this multiple times as you work through the chunk. Stop calling when coverage is complete, " +
+			"then emit a short plain-text confirmation to end the run.",
+		parameters: RecordObservationsSchema,
+		execute: async (_id, params: RecordObservationsArgs) => {
+			let added = 0;
+			let duplicates = 0;
+			for (const obs of params.observations) {
+				const id = hashId(obs.content);
+				if (accumulated.has(id)) {
+					duplicates++;
+					continue;
+				}
+				accumulated.set(id, {
+					id,
+					content: obs.content,
+					timestamp: obs.timestamp,
+					relevance: obs.relevance as Relevance,
+				});
+				added++;
+			}
+			const ack =
+				`Recorded ${added} new observation${added === 1 ? "" : "s"} ` +
+				(duplicates > 0 ? `(${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped). ` : ". ") +
+				`Total so far this run: ${accumulated.size}. ` +
+				`Continue if the chunk still has uncovered content; otherwise stop calling the tool and emit a short plain-text confirmation.`;
+			return { content: [{ type: "text", text: ack }], details: { added, duplicates, total: accumulated.size } };
+		},
+	};
+
 	const now = nowTimestamp();
 	const userText = `Current local time: ${now}
 
-<current-reflections>
+CURRENT REFLECTIONS:
 ${joinOrEmpty(priorReflections)}
-</current-reflections>
 
-<current-observations>
+CURRENT OBSERVATIONS:
 ${joinOrEmpty(priorObservations)}
-</current-observations>
 
-Compress the following new conversation chunk into observations. Do not restate facts already in current reflections or observations. Prefer the inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies.
+Compress the following new conversation chunk into observations by calling record_observations one or more times. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
 
-<conversation>
-${conversation}
-</conversation>`;
+NEW CONVERSATION CHUNK:
+${conversation}`;
+
+	const prompts: Message[] = [
+		{
+			role: "user",
+			content: [{ type: "text", text: userText }],
+			timestamp: Date.now(),
+		},
+	];
+
+	const context: AgentContext = {
+		systemPrompt: OBSERVER_SYSTEM,
+		messages: [],
+		tools: [recordObservations as AgentTool<any>],
+	};
 
 	const reasoning = (model as { reasoning?: unknown }).reasoning;
-	const opts = reasoning
-		? { apiKey, headers, maxTokens: 4096, signal, reasoning: "high" as const }
-		: { apiKey, headers, maxTokens: 4096, signal };
-
-	const response = await completeSimple(
+	const config: AgentLoopConfig = {
 		model,
-		{
-			systemPrompt: OBSERVER_SYSTEM,
-			messages: [
-				{
-					role: "user" as const,
-					content: [{ type: "text" as const, text: userText }],
-					timestamp: Date.now(),
-				},
-			],
-		},
-		opts,
-	);
+		apiKey,
+		headers,
+		maxTokens: 4096,
+		convertToLlm: (msgs) => msgs as Message[],
+		toolExecution: "sequential",
+		...(reasoning ? { reasoning: "high" as const } : {}),
+	};
 
-	const out = extractText(response).trim();
-	return out || undefined;
+	const stream = agentLoop(prompts, context, config, signal);
+	for await (const _event of stream) {
+		// Drain events; the tool's execute already collects records.
+	}
+	await stream.result();
+
+	if (accumulated.size === 0) return undefined;
+	return Array.from(accumulated.values());
 }
 
-export function observationsToContent(observations: Observation[]): string[] {
-	return observations.map((o) => o.content);
+export function renderObservationForPrompt(record: ObservationRecord): string {
+	return `[${record.id}] ${record.timestamp} [${record.relevance}] ${record.content}`;
+}
+
+export function observationsToPromptLines(records: ObservationRecord[]): string[] {
+	return records.map(renderObservationForPrompt);
 }

@@ -1,116 +1,258 @@
-import { completeSimple } from "@mariozechner/pi-ai";
-import { parseObservations, parseReflections } from "./parse.js";
+import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@mariozechner/pi-agent-core";
+import { Type, type Message, type Model } from "@mariozechner/pi-ai";
+import type { Static } from "@sinclair/typebox";
+import { observationsToPromptLines } from "./observer.js";
 import { CONTEXT_USAGE_INSTRUCTIONS, PRUNER_SYSTEM, REFLECTOR_SYSTEM } from "./prompts.js";
-import { nowTimestamp } from "./serialize.js";
-import { extractText } from "./tokens.js";
-import type { Observation, Reflection } from "./types.js";
+import type { ObservationRecord, Reflection } from "./types.js";
 
 interface LlmArgs {
-	model: Parameters<typeof completeSimple>[0];
+	model: Model<any>;
 	apiKey: string;
 	headers?: Record<string, string>;
 	signal?: AbortSignal;
 }
 
-function joinOrEmpty(items: { content: string }[]): string {
-	return items.length ? items.map((i) => i.content).join("\n") : "(none yet)";
+function joinReflectionsOrEmpty(items: Reflection[]): string {
+	return items.length ? items.join("\n") : "(none yet)";
 }
 
-function llmOptions(args: LlmArgs, maxTokens: number) {
-	const reasoning = (args.model as { reasoning?: unknown }).reasoning;
-	return reasoning
-		? { apiKey: args.apiKey, headers: args.headers, maxTokens, signal: args.signal, reasoning: "high" as const }
-		: { apiKey: args.apiKey, headers: args.headers, maxTokens, signal: args.signal };
+function joinObservationsOrEmpty(items: ObservationRecord[]): string {
+	return items.length ? observationsToPromptLines(items).join("\n") : "(none yet)";
 }
+
+const RecordReflectionsSchema = Type.Object({
+	reflections: Type.Array(
+		Type.String({
+			minLength: 1,
+			description: "Single-line plain prose reflection. No markdown, no tags, no timestamp, no bullets.",
+		}),
+		{
+			minItems: 1,
+			description: "Batch of new reflections. Each string is one reflection.",
+		},
+	),
+});
+
+type RecordReflectionsArgs = Static<typeof RecordReflectionsSchema>;
 
 export async function runReflector(
 	args: LlmArgs,
 	reflections: Reflection[],
-	observations: Observation[],
+	observations: ObservationRecord[],
 ): Promise<Reflection[]> {
-	const now = nowTimestamp();
-	const userText = `Current local time: ${now}
+	const existing = new Set(reflections.map((r) => r.trim()));
+	const added = new Set<string>();
 
-<current-reflections>
-${joinOrEmpty(reflections)}
-</current-reflections>
-
-<current-observations>
-${joinOrEmpty(observations)}
-</current-observations>
-
-Crystallize new long-lived reflections from the observation pool. Output ONLY new reflections (do not restate existing ones). Use the current local time above as the timestamp for each new reflection. Empty output is valid if nothing new is stable enough to crystallize.`;
-
-	const response = await completeSimple(
-		args.model,
-		{
-			systemPrompt: REFLECTOR_SYSTEM,
-			messages: [
-				{
-					role: "user" as const,
-					content: [{ type: "text" as const, text: userText }],
-					timestamp: Date.now(),
-				},
-			],
+	const recordTool: AgentTool<typeof RecordReflectionsSchema> = {
+		name: "record_reflections",
+		label: "Record reflections",
+		description:
+			"Record a batch of new reflections crystallized from the observation pool. " +
+			"May be called multiple times. Stop calling when nothing more is stable enough to crystallize, " +
+			"then emit a short plain-text confirmation.",
+		parameters: RecordReflectionsSchema,
+		execute: async (_id, params: RecordReflectionsArgs) => {
+			let accepted = 0;
+			let duplicates = 0;
+			for (const r of params.reflections) {
+				const content = r.trim();
+				if (!content) continue;
+				if (existing.has(content) || added.has(content)) {
+					duplicates++;
+					continue;
+				}
+				added.add(content);
+				accepted++;
+			}
+			const parts: string[] = [];
+			parts.push(`Recorded ${accepted} new reflection${accepted === 1 ? "" : "s"}.`);
+			if (duplicates) parts.push(`${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped.`);
+			parts.push(`Total new this run: ${added.size}.`);
+			parts.push("Call record_reflections again if more should be crystallized; otherwise stop and emit a short plain-text confirmation.");
+			return {
+				content: [{ type: "text", text: parts.join(" ") }],
+				details: { accepted, duplicates, total: added.size },
+			};
 		},
-		llmOptions(args, 8192),
-	);
+	};
 
-	const out = extractText(response).trim();
-	return out ? parseReflections(out) : [];
+	const userText = `CURRENT REFLECTIONS:
+${joinReflectionsOrEmpty(reflections)}
+
+CURRENT OBSERVATIONS:
+${joinObservationsOrEmpty(observations)}
+
+Crystallize new long-lived reflections from the observation pool. Call record_reflections with batches of new reflections. You may call the tool multiple times as you reason through the pool. Do not restate reflections already in the current reflections list. When done, stop calling the tool and emit a short plain-text confirmation.`;
+
+	const prompts: Message[] = [
+		{
+			role: "user",
+			content: [{ type: "text", text: userText }],
+			timestamp: Date.now(),
+		},
+	];
+
+	const context: AgentContext = {
+		systemPrompt: REFLECTOR_SYSTEM,
+		messages: [],
+		tools: [recordTool as AgentTool<any>],
+	};
+
+	const reasoning = (args.model as { reasoning?: unknown }).reasoning;
+	const config: AgentLoopConfig = {
+		model: args.model as any,
+		apiKey: args.apiKey,
+		headers: args.headers,
+		maxTokens: 4096,
+		convertToLlm: (msgs) => msgs as Message[],
+		toolExecution: "sequential",
+		...(reasoning ? { reasoning: "high" as const } : {}),
+	};
+
+	try {
+		const stream = agentLoop(prompts, context, config, args.signal);
+		for await (const _event of stream) {
+			// Drain events; the tool's execute already collects reflections.
+		}
+		await stream.result();
+	} catch {
+		// Salvage any reflections accepted before the error; downstream pruner still runs.
+	}
+
+	return Array.from(added);
 }
 
 export interface PrunerResult {
-	observations: Observation[];
+	observations: ObservationRecord[];
+	droppedIds: string[];
 	fellBack: boolean;
 }
+
+const DropObservationsSchema = Type.Object({
+	ids: Type.Array(
+		Type.String({
+			pattern: "^[a-f0-9]{12}$",
+			description: "12-character hex observation id from the current-observations list.",
+		}),
+		{
+			minItems: 1,
+			description: "Ids of observations to remove from the kept set.",
+		},
+	),
+	reason: Type.Optional(
+		Type.String({ description: "Optional short note explaining why these observations were dropped." }),
+	),
+});
+
+type DropObservationsArgs = Static<typeof DropObservationsSchema>;
 
 export async function runPruner(
 	args: LlmArgs,
 	reflections: Reflection[],
-	observations: Observation[],
+	observations: ObservationRecord[],
 ): Promise<PrunerResult> {
-	const userText = `<current-reflections>
-${joinOrEmpty(reflections)}
-</current-reflections>
+	if (observations.length === 0) {
+		return { observations: [], droppedIds: [], fellBack: false };
+	}
 
-<current-observations>
-${joinOrEmpty(observations)}
-</current-observations>
+	const idSet = new Set(observations.map((o) => o.id));
+	const dropped = new Set<string>();
 
-Output the COMPLETE kept observation set. Drop redundant, contradicted, or trivial observations. Merge closely-related observations where it improves clarity. Preserve user assertions and concrete completions aggressively.`;
-
-	const response = await completeSimple(
-		args.model,
-		{
-			systemPrompt: PRUNER_SYSTEM,
-			messages: [
-				{
-					role: "user" as const,
-					content: [{ type: "text" as const, text: userText }],
-					timestamp: Date.now(),
-				},
-			],
+	const dropTool: AgentTool<typeof DropObservationsSchema> = {
+		name: "drop_observations",
+		label: "Drop observations",
+		description:
+			"Remove one or more observations from the kept set by id. May be called multiple times. " +
+			"Stop calling when no further drops are warranted, then emit a short plain-text confirmation.",
+		parameters: DropObservationsSchema,
+		execute: async (_id, params: DropObservationsArgs) => {
+			const valid: string[] = [];
+			const unknown: string[] = [];
+			const already: string[] = [];
+			for (const id of params.ids) {
+				if (!idSet.has(id)) {
+					unknown.push(id);
+					continue;
+				}
+				if (dropped.has(id)) {
+					already.push(id);
+					continue;
+				}
+				dropped.add(id);
+				valid.push(id);
+			}
+			const remaining = idSet.size - dropped.size;
+			const parts: string[] = [];
+			parts.push(`Dropped ${valid.length} observation${valid.length === 1 ? "" : "s"}.`);
+			if (unknown.length) parts.push(`Unknown ids ignored: ${unknown.join(", ")}.`);
+			if (already.length) parts.push(`Already dropped: ${already.join(", ")}.`);
+			parts.push(`Remaining kept: ${remaining} of ${idSet.size}.`);
+			parts.push("Call drop_observations again if more should be removed; otherwise stop and emit a short plain-text confirmation.");
+			return {
+				content: [{ type: "text", text: parts.join(" ") }],
+				details: { dropped: valid, unknown, already, remaining },
+			};
 		},
-		llmOptions(args, 16384),
-	);
+	};
 
-	const out = extractText(response).trim();
-	const parsed = out ? parseObservations(out) : [];
-	if (parsed.length > 0) return { observations: parsed, fellBack: false };
-	return { observations, fellBack: true };
+	const userText = `CURRENT REFLECTIONS:
+${joinReflectionsOrEmpty(reflections)}
+
+CURRENT OBSERVATIONS:
+${joinObservationsOrEmpty(observations)}
+
+Decide which observations to remove from the kept set. Call drop_observations with the ids you want to drop. You may call the tool multiple times as you reason through the pool. When satisfied, stop calling the tool and emit a short plain-text confirmation to end the run.`;
+
+	const prompts: Message[] = [
+		{
+			role: "user",
+			content: [{ type: "text", text: userText }],
+			timestamp: Date.now(),
+		},
+	];
+
+	const context: AgentContext = {
+		systemPrompt: PRUNER_SYSTEM,
+		messages: [],
+		tools: [dropTool as AgentTool<any>],
+	};
+
+	const reasoning = (args.model as { reasoning?: unknown }).reasoning;
+	const config: AgentLoopConfig = {
+		model: args.model as any,
+		apiKey: args.apiKey,
+		headers: args.headers,
+		maxTokens: 2048,
+		convertToLlm: (msgs) => msgs as Message[],
+		toolExecution: "sequential",
+		...(reasoning ? { reasoning: "high" as const } : {}),
+	};
+
+	try {
+		const stream = agentLoop(prompts, context, config, args.signal);
+		for await (const _event of stream) {
+			// Drain events; the tool's execute already records drops.
+		}
+		await stream.result();
+	} catch {
+		return { observations, droppedIds: [], fellBack: true };
+	}
+
+	const kept = observations.filter((o) => !dropped.has(o.id));
+	return { observations: kept, droppedIds: Array.from(dropped), fellBack: false };
 }
 
-export function renderSummary(reflections: Reflection[], observations: Observation[]): string {
+export function renderSummary(reflections: Reflection[], observations: ObservationRecord[]): string {
 	if (reflections.length === 0 && observations.length === 0) return "";
 
 	const parts: string[] = [CONTEXT_USAGE_INSTRUCTIONS];
 
 	if (reflections.length > 0) {
-		parts.push(`<reflections>\n${reflections.map((r) => r.content).join("\n")}\n</reflections>`);
+		parts.push(`## Reflections\n${reflections.join("\n")}`);
 	}
 	if (observations.length > 0) {
-		parts.push(`<observations>\n${observations.map((o) => o.content).join("\n")}\n</observations>`);
+		const body = observations.map((o) => `${o.timestamp} [${o.relevance}] ${o.content}`).join("\n");
+		parts.push(`## Observations\n${body}`);
 	}
 
 	return parts.join("\n\n");

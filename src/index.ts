@@ -15,11 +15,32 @@ import {
 } from "./branch.js";
 import { renderSummary, runPruner, runReflector } from "./compaction.js";
 import { DEFAULTS, loadConfig, type Config } from "./config.js";
-import { runObserver } from "./observer.js";
-import { parseBlocks, parseObservations } from "./parse.js";
+import { observationsToPromptLines, runObserver } from "./observer.js";
 import { serializeBranchEntries } from "./serialize.js";
 import { estimateStringTokens } from "./tokens.js";
-import { OBSERVATION_CUSTOM_TYPE, type MemoryDetails, type Observation, type ObservationEntryData, type Reflection } from "./types.js";
+import {
+	OBSERVATION_CUSTOM_TYPE,
+	type MemoryDetails,
+	type ObservationEntryData,
+	type ObservationRecord,
+	type Reflection,
+	type Relevance,
+	RELEVANCE_VALUES,
+} from "./types.js";
+
+function countByRelevance(records: ObservationRecord[]): Record<Relevance, number> {
+	const counts: Record<Relevance, number> = { low: 0, medium: 0, high: 0, critical: 0 };
+	for (const r of records) counts[r.relevance]++;
+	return counts;
+}
+
+function formatRelevanceHistogram(counts: Record<Relevance, number>): string {
+	return RELEVANCE_VALUES
+		.slice()
+		.reverse()
+		.map((r) => `${r}: ${counts[r]}`)
+		.join(" · ");
+}
 
 export default function observationalMemory(pi: ExtensionAPI) {
 	let config: Config = { ...DEFAULTS };
@@ -101,13 +122,14 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		const coversUpToId = leafId;
 
 		const priorDetails = getPriorMemoryDetails(entries);
-		const priorReflectionContents = priorDetails ? priorDetails.reflections.map((r) => r.content) : [];
-		const priorObservationContents = priorDetails ? priorDetails.observations.map((o) => o.content) : [];
-		const pendingObservations = collectObservationsPendingNextCompaction(entries);
-		const allPriorObservationContents = [
-			...priorObservationContents,
-			...pendingObservations.map((o) => o.content),
-		];
+		const priorReflectionContents = priorDetails ? priorDetails.reflections : [];
+		const committedObservationRecords = priorDetails ? priorDetails.observations : [];
+		const pendingObservationData = collectObservationsPendingNextCompaction(entries);
+		const pendingObservationRecords = pendingObservationData.flatMap((d) => d.records);
+		const allPriorObservationLines = observationsToPromptLines([
+			...committedObservationRecords,
+			...pendingObservationRecords,
+		]);
 
 		const chunkEntries = rawTailEntriesBetween(entries, coversFromId, coversUpToId);
 		if (chunkEntries.length === 0) return;
@@ -133,32 +155,32 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			}
 			resolveFailureNotified = false;
 
-			const content = await runObserver({
+			const records = await runObserver({
 				model: resolved.model as any,
 				apiKey: resolved.apiKey,
 				headers: resolved.headers,
 				priorReflections: priorReflectionContents,
-				priorObservations: allPriorObservationContents,
+				priorObservations: allPriorObservationLines,
 				chunk,
 			});
-			if (!content) {
+			if (!records || records.length === 0) {
 				if (ctx.hasUI && ctx.ui) ctx.ui.notify(
-					"Observational memory: observer returned empty content (no observation recorded)",
+					"Observational memory: observer returned no observations",
 					"warning",
 				);
 				return;
 			}
 
-			const observationTokens = estimateStringTokens(content);
-			const data = {
-				content,
+			const observationTokens = records.reduce((sum, r) => sum + estimateStringTokens(r.content), 0);
+			const data: ObservationEntryData = {
+				records,
 				coversFromId,
 				coversUpToId,
 				tokenCount: observationTokens,
 			};
 			pi.appendEntry(OBSERVATION_CUSTOM_TYPE, data);
 			if (ctx.hasUI && ctx.ui) ctx.ui.notify(
-				`Observational memory: observation recorded (~${observationTokens.toLocaleString()} tokens)`,
+				`Observational memory: ${records.length} observation${records.length === 1 ? "" : "s"} recorded (~${observationTokens.toLocaleString()} tokens)`,
 				"info",
 			);
 		});
@@ -270,13 +292,14 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			if (gapChunk.trim()) {
 				const gapFromId = gap[0].id;
 				const gapUpToId = gap[gap.length - 1].id;
-				const priorReflectionContents = priorDetails ? priorDetails.reflections.map((r) => r.content) : [];
-				const priorObservationContents = priorDetails ? priorDetails.observations.map((o) => o.content) : [];
-				const pendingObservations = collectObservationsPendingNextCompaction(entries);
-				const allPriorObservationContents = [
-					...priorObservationContents,
-					...pendingObservations.map((o) => o.content),
-				];
+				const priorReflectionContents = priorDetails ? priorDetails.reflections : [];
+				const committedObservationRecords = priorDetails ? priorDetails.observations : [];
+				const pendingObservationData = collectObservationsPendingNextCompaction(entries);
+				const pendingObservationRecords = pendingObservationData.flatMap((d) => d.records);
+				const allPriorObservationLines = observationsToPromptLines([
+					...committedObservationRecords,
+					...pendingObservationRecords,
+				]);
 				const gapTokenEstimate = estimateStringTokens(gapChunk);
 				if (ctx.hasUI) ctx.ui.notify(
 					`Observational memory: sync catch-up observer running on ~${gapTokenEstimate.toLocaleString()}-token gap`,
@@ -288,25 +311,25 @@ export default function observationalMemory(pi: ExtensionAPI) {
 					apiKey: resolved.apiKey,
 					headers: resolved.headers,
 					priorReflections: priorReflectionContents,
-					priorObservations: allPriorObservationContents,
+					priorObservations: allPriorObservationLines,
 					chunk: gapChunk,
 					signal,
 				});
 				const gapPromise: Promise<void> = gapCall.then(() => undefined, () => undefined);
 				observerPromise = gapPromise;
 				try {
-					const content = await gapCall;
-					if (content) {
-						const observationTokens = estimateStringTokens(content);
+					const records = await gapCall;
+					if (records && records.length > 0) {
+						const observationTokens = records.reduce((sum, r) => sum + estimateStringTokens(r.content), 0);
 						gapObservationData = {
-							content,
+							records,
 							coversFromId: gapFromId,
 							coversUpToId: gapUpToId,
 							tokenCount: observationTokens,
 						};
 						pi.appendEntry(OBSERVATION_CUSTOM_TYPE, gapObservationData);
 						if (ctx.hasUI && ctx.ui) ctx.ui.notify(
-							`Observational memory: sync catch-up observation recorded (~${observationTokens.toLocaleString()} tokens)`,
+							`Observational memory: sync catch-up recorded ${records.length} observation${records.length === 1 ? "" : "s"} (~${observationTokens.toLocaleString()} tokens)`,
 							"info",
 						);
 					} else if (ctx.hasUI && ctx.ui) {
@@ -340,12 +363,12 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		}
 
 		const workingReflections: Reflection[] = priorDetails ? [...priorDetails.reflections] : [];
-		const workingObservations: Observation[] = [
+		const workingObservations: ObservationRecord[] = [
 			...(priorDetails ? priorDetails.observations : []),
-			...deltaObservationData.map((d) => ({ content: d.content, tokenCount: d.tokenCount })),
+			...deltaObservationData.flatMap((d) => d.records),
 		];
 
-		const observationTokens = workingObservations.reduce((sum, o) => sum + o.tokenCount, 0);
+		const observationTokens = workingObservations.reduce((sum, o) => sum + estimateStringTokens(o.content), 0);
 
 		let finalReflections = workingReflections;
 		let finalObservations = workingObservations;
@@ -368,7 +391,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				finalObservations = prunerResult.observations;
 				if (prunerResult.fellBack && ctx.hasUI) {
 					ctx.ui.notify(
-						"Observational memory: pruner output unparseable; kept prior observation set unchanged",
+						"Observational memory: pruner run failed; kept observation set unchanged",
 						"warning",
 					);
 				}
@@ -386,7 +409,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 
 		const details: MemoryDetails = {
 			type: "observational-memory",
-			version: 2,
+			version: 3,
 			observations: finalObservations,
 			reflections: finalReflections,
 		};
@@ -419,15 +442,19 @@ export default function observationalMemory(pi: ExtensionAPI) {
 
 			const priorDetails = getPriorMemoryDetails(entries);
 			const committedObs = priorDetails ? priorDetails.observations : [];
-			const committedObsTokens = committedObs.reduce((s, o) => s + o.tokenCount, 0);
-			const committedObsCount = committedObs.reduce((n, o) => n + parseBlocks(o.content).length, 0);
+			const committedObsTokens = committedObs.reduce((s, r) => s + estimateStringTokens(r.content), 0);
+			const committedObsCount = committedObs.length;
 			const committedRefs = priorDetails ? priorDetails.reflections : [];
-			const committedRefsTokens = committedRefs.reduce((s, r) => s + r.tokenCount, 0);
-			const committedRefsCount = committedRefs.reduce((n, r) => n + parseBlocks(r.content).length, 0);
+			const committedRefsTokens = committedRefs.reduce((s, r) => s + estimateStringTokens(r), 0);
+			const committedRefsCount = committedRefs.length;
 
 			const pendingObsData = collectObservationsPendingNextCompaction(entries);
-			const pendingObsTokens = pendingObsData.reduce((s, o) => s + o.tokenCount, 0);
-			const pendingObsCount = pendingObsData.reduce((n, o) => n + parseBlocks(o.content).length, 0);
+			const pendingObsRecords = pendingObsData.flatMap((d) => d.records);
+			const pendingObsTokens = pendingObsData.reduce((s, d) => s + d.tokenCount, 0);
+			const pendingObsCount = pendingObsRecords.length;
+
+			const allObsRecords = [...committedObs, ...pendingObsRecords];
+			const relevanceHistogram = countByRelevance(allObsRecords);
 
 			const keepRecentTokens = SettingsManager.create(ctx.cwd).getCompactionKeepRecentTokens();
 
@@ -449,6 +476,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				`Observations:`,
 				`  committed    ~${committedObsTokens.toLocaleString()} tokens (${committedObsCount} ${cObsLabel}) — folded into last compaction`,
 				`  pending      ~${pendingObsTokens.toLocaleString()} tokens (${pendingObsCount} ${pObsLabel}) — waiting for next compaction`,
+				`  relevance    ${formatRelevanceHistogram(relevanceHistogram)}`,
 				"",
 				"── Activity ──",
 				`Next observation: ~${sinceBound.toLocaleString()} / ${obsThreshold.toLocaleString()} tokens (${obsPct}%)`,
@@ -481,20 +509,24 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			const pendingObsData = collectObservationsPendingNextCompaction(entries);
 
 			const committedRefs = priorDetails ? priorDetails.reflections : [];
-			const committedRefTokens = committedRefs.reduce((s, r) => s + r.tokenCount, 0);
-			const committedRefCount = committedRefs.reduce((n, r) => n + parseBlocks(r.content).length, 0);
+			const committedRefTokens = committedRefs.reduce((s, r) => s + estimateStringTokens(r), 0);
+			const committedRefCount = committedRefs.length;
 
 			const committedObs = priorDetails ? priorDetails.observations : [];
-			const committedObsTokens = committedObs.reduce((s, o) => s + o.tokenCount, 0);
-			const committedObsCount = committedObs.reduce((n, o) => n + parseBlocks(o.content).length, 0);
+			const committedObsTokens = committedObs.reduce((s, r) => s + estimateStringTokens(r.content), 0);
+			const committedObsCount = committedObs.length;
 
-			const pendingObsTokens = pendingObsData.reduce((s, o) => s + o.tokenCount, 0);
-			const pendingObsCount = pendingObsData.reduce((n, o) => n + parseBlocks(o.content).length, 0);
+			const pendingObsRecords = pendingObsData.flatMap((d) => d.records);
+			const pendingObsTokens = pendingObsData.reduce((s, d) => s + d.tokenCount, 0);
+			const pendingObsCount = pendingObsRecords.length;
 
 			const totalObsCount = committedObsCount + pendingObsCount;
 			const totalTokens = committedRefTokens + committedObsTokens + pendingObsTokens;
+			const relevanceHistogram = countByRelevance([...committedObs, ...pendingObsRecords]);
 
 			const plural = (n: number, singular: string, plural: string) => (n === 1 ? singular : plural);
+			const renderObs = (r: ObservationRecord) =>
+				`[${r.id}] ${r.timestamp} [${r.relevance}] ${r.content}`;
 
 			const sections: string[] = [];
 
@@ -502,7 +534,8 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				`Memory: ${committedRefCount} ${plural(committedRefCount, "reflection", "reflections")} · ` +
 					`${totalObsCount} ${plural(totalObsCount, "observation", "observations")} ` +
 					`(${committedObsCount} committed, ${pendingObsCount} pending) · ` +
-					`~${totalTokens.toLocaleString()} tokens`,
+					`~${totalTokens.toLocaleString()} tokens · ` +
+					`relevance ${formatRelevanceHistogram(relevanceHistogram)}`,
 			);
 			sections.push("");
 
@@ -510,7 +543,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				`── Reflections (${committedRefCount} ${plural(committedRefCount, "entry", "entries")}, ~${committedRefTokens.toLocaleString()} tokens) ──`,
 			);
 			if (committedRefs.length > 0) {
-				sections.push(committedRefs.flatMap((r) => parseBlocks(r.content)).join("\n\n"));
+				sections.push(committedRefs.join("\n\n"));
 			} else {
 				sections.push("(none)");
 			}
@@ -520,7 +553,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 				`── Observations — committed (${committedObsCount} ${plural(committedObsCount, "observation", "observations")}, ~${committedObsTokens.toLocaleString()} tokens) ──`,
 			);
 			if (committedObs.length > 0) {
-				sections.push(committedObs.flatMap((o) => parseBlocks(o.content)).join("\n\n"));
+				sections.push(committedObs.map(renderObs).join("\n"));
 			} else {
 				sections.push("(none)");
 			}
@@ -529,8 +562,8 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			sections.push(
 				`── Observations — pending (${pendingObsCount} ${plural(pendingObsCount, "observation", "observations")}, ~${pendingObsTokens.toLocaleString()} tokens) ──`,
 			);
-			if (pendingObsData.length > 0) {
-				sections.push(pendingObsData.flatMap((o) => parseBlocks(o.content)).join("\n\n"));
+			if (pendingObsRecords.length > 0) {
+				sections.push(pendingObsRecords.map(renderObs).join("\n"));
 			} else {
 				sections.push("(none)");
 			}
@@ -542,6 +575,5 @@ export default function observationalMemory(pi: ExtensionAPI) {
 		},
 	});
 
-	void parseObservations;
 	void rawTokensFromIndex;
 }
