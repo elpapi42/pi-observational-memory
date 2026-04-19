@@ -9,7 +9,6 @@ import {
 	gapRawEntries,
 	getPriorMemoryDetails,
 	liveTailEntries,
-	rawLiveTokens,
 	rawTailEntriesBetween,
 	rawTokensFromIndex,
 	rawTokensSinceLastBound,
@@ -18,7 +17,7 @@ import {
 import { renderSummary, runPruner, runReflector } from "./compaction.js";
 import { DEFAULTS, loadConfig, type Config } from "./config.js";
 import { runObserver } from "./observer.js";
-import { parseObservations } from "./parse.js";
+import { parseBlocks, parseObservations } from "./parse.js";
 import { serializeBranchEntries } from "./serialize.js";
 import { estimateStringTokens } from "./tokens.js";
 import { OBSERVATION_CUSTOM_TYPE, type MemoryDetails, type Observation, type ObservationEntryData, type Reflection } from "./types.js";
@@ -418,34 +417,51 @@ export default function observationalMemory(pi: ExtensionAPI) {
 			const entries = ctx.sessionManager.getBranch() as Parameters<typeof rawTokensSinceLastBound>[0];
 			const sinceBound = rawTokensSinceLastBound(entries);
 			const sinceCompaction = rawTokensSinceLastCompaction(entries);
-			const liveRaw = rawLiveTokens(entries);
 
 			const priorDetails = getPriorMemoryDetails(entries);
-			const detailsObsTokens = priorDetails ? priorDetails.observations.reduce((s, o) => s + o.tokenCount, 0) : 0;
-			const detailsRefTokens = priorDetails ? priorDetails.reflections.reduce((s, r) => s + r.tokenCount, 0) : 0;
+			const committedObs = priorDetails ? priorDetails.observations : [];
+			const committedObsTokens = committedObs.reduce((s, o) => s + o.tokenCount, 0);
+			const committedObsCount = committedObs.reduce((n, o) => n + parseBlocks(o.content).length, 0);
+			const committedRefs = priorDetails ? priorDetails.reflections : [];
+			const committedRefsTokens = committedRefs.reduce((s, r) => s + r.tokenCount, 0);
+			const committedRefsCount = committedRefs.reduce((n, r) => n + parseBlocks(r.content).length, 0);
 
-			const pendingObs = collectObservationsPendingNextCompaction(entries);
-			const treeObsTokens = pendingObs.reduce((s, o) => s + o.tokenCount, 0);
+			const pendingObsData = collectObservationsPendingNextCompaction(entries);
+			const pendingObsTokens = pendingObsData.reduce((s, o) => s + o.tokenCount, 0);
+			const pendingObsCount = pendingObsData.reduce((n, o) => n + parseBlocks(o.content).length, 0);
 
 			const keepRecentTokens = SettingsManager.create(ctx.cwd).getCompactionKeepRecentTokens();
 
+			const obsThreshold = config.observationThresholdTokens;
+			const compThreshold = config.compactionThresholdTokens;
+			const obsPct = Math.min(100, Math.round((sinceBound / obsThreshold) * 100));
+			const compPct = Math.min(100, Math.round((sinceCompaction / compThreshold) * 100));
+
+			const refLabel = committedRefsCount === 1 ? "entry" : "entries";
+			const cObsLabel = committedObsCount === 1 ? "observation" : "observations";
+			const pObsLabel = pendingObsCount === 1 ? "observation" : "observations";
+
 			const lines = [
-				"── State ──",
-				`Raw since last observation: ~${sinceBound.toLocaleString()} tokens (observer fires at ${config.observationThresholdTokens.toLocaleString()})`,
-				`Raw since last compaction:  ~${sinceCompaction.toLocaleString()} tokens (compaction fires at ${config.compactionThresholdTokens.toLocaleString()})`,
-				`Raw live (kept tail + new): ~${liveRaw.toLocaleString()} tokens`,
-				`Observations pending:       ~${treeObsTokens.toLocaleString()} tokens (${pendingObs.length} entries)`,
-				`Observations:               ~${detailsObsTokens.toLocaleString()} tokens (${priorDetails?.observations.length ?? 0} entries)`,
-				`Reflections:                ~${detailsRefTokens.toLocaleString()} tokens`,
-				`Observer in flight:         ${observerInFlight}`,
-				`Compact in flight:          ${compactInFlight}`,
+				"── Memory ──",
+				`Reflections:   ~${committedRefsTokens.toLocaleString()} tokens (${committedRefsCount} ${refLabel})      — durable insights`,
+				`Observations:`,
+				`  committed    ~${committedObsTokens.toLocaleString()} tokens (${committedObsCount} ${cObsLabel}) — folded into last compaction`,
+				`  pending      ~${pendingObsTokens.toLocaleString()} tokens (${pendingObsCount} ${pObsLabel}) — waiting for next compaction`,
 				"",
-				"── Parameters ──",
-				`Observation threshold: ${config.observationThresholdTokens.toLocaleString()} tokens`,
-				`Compaction threshold:  ${config.compactionThresholdTokens.toLocaleString()} tokens`,
-				`Reflection threshold:  ${config.reflectionThresholdTokens.toLocaleString()} tokens`,
-				`Pi kept tail size:     ${keepRecentTokens.toLocaleString()} tokens`,
+				"── Activity ──",
+				`Next observation: ~${sinceBound.toLocaleString()} / ${obsThreshold.toLocaleString()} tokens (${obsPct}%)`,
+				`  → at ${obsThreshold.toLocaleString()}, recent conversation is compressed into new observations`,
+				`Next compaction:  ~${sinceCompaction.toLocaleString()} / ${compThreshold.toLocaleString()} tokens (${compPct}%)`,
+				`  → at ${compThreshold.toLocaleString()}, raw history is replaced by the current reflections and observations,`,
+				`    keeping only the last ${keepRecentTokens.toLocaleString()} tokens of conversation verbatim`,
 			];
+
+			if (observerInFlight || compactInFlight) {
+				lines.push("");
+				lines.push("── In flight ──");
+				if (observerInFlight) lines.push("Observer: running");
+				if (compactInFlight) lines.push("Compaction: running");
+			}
 
 			ctx.ui.notify(lines.join("\n"), "info");
 		},
