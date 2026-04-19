@@ -139,9 +139,9 @@ export function collectObservationsByCoverage(
 	for (const entry of entries) {
 		if (!isObservationEntry(entry)) continue;
 		if (!isObservationEntryData(entry.data)) continue;
-		const coverIdx = idToIdx.get(entry.data.coversUpToId);
-		if (coverIdx === undefined) continue;
-		if (coverIdx >= priorFKIIdx && coverIdx < newFKIIdx) result.push(entry.data);
+		const fromIdx = idToIdx.get(entry.data.coversFromId);
+		if (fromIdx === undefined) continue;
+		if (fromIdx >= priorFKIIdx && fromIdx < newFKIIdx) result.push(entry.data);
 	}
 	return result;
 }
@@ -166,9 +166,9 @@ function collectObservationsPendingNextCompaction(entries: Entry[]): Observation
 	for (const entry of entries) {
 		if (!isObservationEntry(entry)) continue;
 		if (!isObservationEntryData(entry.data)) continue;
-		const coverIdx = idToIdx.get(entry.data.coversUpToId);
-		if (coverIdx === undefined) continue;
-		if (coverIdx >= thresholdIdx) result.push(entry.data);
+		const fromIdx = idToIdx.get(entry.data.coversFromId);
+		if (fromIdx === undefined) continue;
+		if (fromIdx >= thresholdIdx) result.push(entry.data);
 	}
 	return result;
 }
