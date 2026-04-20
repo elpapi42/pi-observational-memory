@@ -3,14 +3,16 @@ import { join } from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 
 export interface Config {
-	observationThreshold: number;
-	reflectionThreshold: number;
+	observationThresholdTokens: number;
+	compactionThresholdTokens: number;
+	reflectionThresholdTokens: number;
 	compactionModel?: { provider: string; id: string };
 }
 
 export const DEFAULTS: Config = {
-	observationThreshold: 50_000,
-	reflectionThreshold: 30_000,
+	observationThresholdTokens: 1_000,
+	compactionThresholdTokens: 50_000,
+	reflectionThresholdTokens: 30_000,
 };
 
 const SETTINGS_KEY = "observational-memory";

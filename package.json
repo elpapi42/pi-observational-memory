@@ -1,6 +1,6 @@
 {
   "name": "pi-observational-memory",
-  "version": "1.0.4",
+  "version": "2.1.0",
   "description": "Observational memory extension for pi — cache-friendly tiered compaction with observations and reflections.",
   "type": "module",
   "license": "MIT",

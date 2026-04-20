@@ -1,52 +1,27 @@
 import { estimateTokens as estimateMessageTokens } from "@mariozechner/pi-coding-agent";
 
-export function estimateTokens(text: string): number {
+export function estimateStringTokens(text: string): number {
 	return Math.ceil(text.length / 4);
 }
 
-export function estimateRawTailTokens(
-	entries: Array<{ type: string; message?: unknown; content?: unknown; firstKeptEntryId?: string; id?: string }>,
-): number {
-	let startIndex = 0;
-	for (let i = entries.length - 1; i >= 0; i--) {
-		if (entries[i].type === "compaction") {
-			const keptId = entries[i].firstKeptEntryId;
-			if (keptId) {
-				for (let j = 0; j < entries.length; j++) {
-					if (entries[j].id === keptId) {
-						startIndex = j;
-						break;
-					}
-				}
-			} else {
-				startIndex = i + 1;
+export function estimateEntryTokens(entry: { type: string; message?: unknown; content?: unknown; summary?: unknown }): number {
+	if (entry.type === "message" && entry.message) {
+		return estimateMessageTokens(entry.message as Parameters<typeof estimateMessageTokens>[0]);
+	}
+	if (entry.type === "custom_message" && entry.content) {
+		const content = entry.content;
+		if (typeof content === "string") return estimateStringTokens(content);
+		if (Array.isArray(content)) {
+			let total = 0;
+			for (const block of content) {
+				if (block.type === "text" && block.text) total += estimateStringTokens(block.text);
 			}
-			break;
+			return total;
 		}
 	}
-
-	let tokens = 0;
-	for (let i = startIndex; i < entries.length; i++) {
-		const entry = entries[i];
-		if (entry.type === "message" && entry.message) {
-			tokens += estimateMessageTokens(entry.message as Parameters<typeof estimateMessageTokens>[0]);
-		} else if (entry.type === "custom_message" && entry.content) {
-			const content = entry.content;
-			if (typeof content === "string") {
-				tokens += Math.ceil(content.length / 4);
-			} else if (Array.isArray(content)) {
-				for (const block of content) {
-					if (block.type === "text" && block.text) tokens += Math.ceil(block.text.length / 4);
-				}
-			}
-		}
+	if (entry.type === "branch_summary" && typeof entry.summary === "string") {
+		return estimateStringTokens(entry.summary);
 	}
-	return tokens;
+	return 0;
 }
 
-export function extractText(response: { content: Array<{ type: string; text?: string }> }): string {
-	return response.content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text")
-		.map((c) => c.text)
-		.join("\n");
-}
