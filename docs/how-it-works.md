@@ -203,33 +203,7 @@ This is the central trade-off versus a "live memory injection" design: the actor
 
 ## Configuration
 
-Observational memory behavior is controlled by two separate configuration surfaces: **Pi's built-in compaction settings** and the **extension's own config**.
-
-### Pi compaction settings
-
-Configured in `~/.pi/agent/settings.json` (or `.pi/settings.json` per project):
-
-```json
-{
-  "compaction": {
-    "enabled": true,
-    "reserveTokens": 16384,
-    "keepRecentTokens": 20000
-  }
-}
-```
-
-| Setting | Default | Effect |
-|---------|---------|--------|
-| `enabled` | `true` | Whether Pi's auto-compaction triggers. Manual `/compact` still works when disabled. |
-| `reserveTokens` | `16384` | Tokens reserved for the LLM response. Pi triggers auto-compaction when context exceeds `contextWindow - reserveTokens`. |
-| `keepRecentTokens` | `20000` | How many tokens of recent conversation are kept verbatim during compaction — these messages are **not** summarized. |
-
-The `keepRecentTokens` setting controls the size of the raw tail the actor sees alongside the compaction summary. Higher means more uncompressed conversation at the cost of less room for the summary. Lower compresses more aggressively, relying more on observations and reflections.
-
-### Extension config
-
-Configured under the `observational-memory` key in the same `settings.json`. Project values override global.
+Observational memory's behavior is shaped by settings in Pi's `settings.json` (globally at `~/.pi/agent/settings.json`, or per-project at `.pi/settings.json`; project values override global). Two namespaces are involved: the extension's own keys under `observational-memory`, and two of Pi's built-in `compaction` keys — `keepRecentTokens` (structural to how the extension works) and `reserveTokens` (the safety-net trigger).
 
 ```json
 {
@@ -237,34 +211,75 @@ Configured under the `observational-memory` key in the same `settings.json`. Pro
     "observationThresholdTokens": 1000,
     "compactionThresholdTokens": 50000,
     "reflectionThresholdTokens": 30000
+  },
+  "compaction": {
+    "enabled": true,
+    "keepRecentTokens": 20000,
+    "reserveTokens": 16384
   }
 }
 ```
 
-| Parameter | Default | Effect |
-|-----------|---------|--------|
-| `observationThresholdTokens` | `1,000` tokens | Raw conversation tokens accumulated since the last `om.observation` or `compaction` entry before the observer fires asynchronously on `turn_end`. |
-| `compactionThresholdTokens` | `50,000` tokens | Raw conversation tokens accumulated since the last `compaction` entry before the extension triggers `ctx.compact()` on `agent_end`. |
-| `reflectionThresholdTokens` | `30,000` tokens | Working observation pool token size at which the reflector + pruner pair runs inside compaction. Below this, both are skipped. |
-| `compactionModel` | session model | Optional `{ "provider": "...", "id": "..." }` to use a different model for observer/reflector/pruner passes. |
+The five settings below are listed in roughly the order they affect a session's life: the observer fires first and often, the extension-trigger cadence comes next, the reflector + pruner gate engages inside compaction, the model choice applies to all three roles, and the Pi-owned compaction settings determine what each compaction actually does to the raw log.
 
-The same model is used for all three roles when `compactionModel` is set. Observer, reflector, and pruner don't need the same capabilities as the main coding agent, so a smaller/cheaper model is usually appropriate.
+### `observationThresholdTokens` — default `1,000`
 
-> Upgrading from `pi-observational-memory@1.x`? The config keys changed: v1's `observationThreshold` is now `compactionThresholdTokens`, v1's `reflectionThreshold` is now `reflectionThresholdTokens`, and `observationThresholdTokens` is new. Old v1 keys are silently ignored — update your `settings.json`.
+Raw conversation tokens accumulated since the last `om.observation` or `compaction` entry (whichever is more recent) before the observer fires asynchronously on `turn_end`. This is also roughly the chunk size each observer call digests — the observer receives the raw text between the last bound and the current leaf.
 
-### How the two interact
+**Effect on behavior.** Lower values produce finer-grained observations and more frequent background LLM calls (higher cost, lower per-call latency). Higher values produce coarser, denser observations at lower cost — but also leave longer stretches of raw conversation with no running summary, which shifts work onto the sync catch-up observer at compaction time. If the observer is already in flight when a new `turn_end` crosses the threshold, the trigger is skipped and tokens accumulate until the next turn.
 
-Pi's auto-compaction and the extension's own trigger are independent paths into the same hook:
+### `compactionThresholdTokens` — default `50,000`
 
-1. **Extension trigger** — after each agent loop ends, the extension checks if raw tokens since the last compaction exceed `compactionThresholdTokens`. If so, it defers a call to `ctx.compact()`.
-2. **Pi auto-compaction** — Pi independently triggers compaction when context approaches the window limit (governed by `reserveTokens`). This can fire before the extension's threshold is reached if the context window is small.
-3. **Manual `/compact`** — the user can trigger compaction at any time.
+Raw conversation tokens accumulated since the last `compaction` entry before the extension proactively calls `ctx.compact()` on `agent_end`. The trigger defers through `setTimeout(0)`, awaits any in-flight observer, re-checks `ctx.isIdle()` and the token count, and only then calls `ctx.compact()`.
 
-In all three cases, Pi calls `session_before_compact`. The extension intercepts this event, runs its assembly logic, and returns the structured payload — fully replacing Pi's default LLM summarizer.
+**Effect on behavior.** Lower values compact more often — more frequent opportunities for the reflector + pruner to crystallize patterns and clean up the pool, but more LLM cost over a session, and more `firstKeptEntryId` churn if the raw tail is short. Higher values let observations accumulate longer; if Pi's auto-compaction (governed by `reserveTokens`) fires first under window pressure, the extension's `session_before_compact` hook still runs the same way, so this threshold is really about *proactive* compaction before window pressure hits.
 
-The split means:
-- **Pi decides** how many recent messages to keep raw (`keepRecentTokens`) and when the context is critically full (`reserveTokens`).
-- **The extension decides** how often the observer fires (`observationThresholdTokens`), when to proactively compact (`compactionThresholdTokens`), when the reflector + pruner pair engages (`reflectionThresholdTokens`), and what model to use (`compactionModel`).
+### `reflectionThresholdTokens` — default `30,000`
 
-Lower `compactionThresholdTokens` values mean more frequent compactions (more chances for the reflector + pruner to crystallize and clean up, but more LLM calls). Lower `observationThresholdTokens` means more frequent observer fires (more granular observations, but more background LLM cost). Lower `reflectionThresholdTokens` means the reflector + pruner pair engages on smaller observation pools (more frequent crystallization vs. letting observations accumulate longer before pruning).
+Working observation pool token size at which the reflector + pruner pair engages inside a compaction. "Working pool" here means `committedObservations + deltaObservations + gapObservation`, measured at hook-entry time.
+
+**Effect on behavior.** Below this gate, the reflector and pruner are both skipped and the working pool is written to the new `compaction.details` unchanged — compaction is **0 LLM calls** (or 1 if the sync catch-up observer ran). At or above the gate, the reflector appends new reflections (never rewrites existing ones) and the pruner runs up to 5 id-based drop passes until the pool fits under `0.8 * reflectionThresholdTokens` — compaction is **≥2 LLM calls**. Lower values crystallize reflections earlier and keep the observation pool tight at the cost of more frequent reflector+pruner runs; higher values let the pool grow before cleanup, making individual compactions cheaper but growing the summary size between cleanups.
+
+### `compactionModel` — default: session model
+
+Optional `{ "provider": "...", "id": "..." }` override for the observer, reflector, and pruner. All three background roles share this setting.
+
+**Effect on behavior.** Setting this to a smaller, faster, or cheaper model lets you offload background memory work without changing the main coding agent's model. These roles are structurally simpler than general coding — the observer summarizes fixed chunks, the reflector distills patterns, the pruner drops ids — so a smaller model is usually appropriate. If the configured model is not found in the registry the extension falls back to the session model (with a warning); if no API key is available for the chosen model the observer is skipped (warning once) and the compaction hook cancels the compaction (surfacing a clear error) rather than silently falling back.
+
+### `keepRecentTokens` — Pi setting under `compaction`; default `20,000`
+
+Tokens of recent conversation Pi keeps **verbatim** during compaction — the raw tail that is *not* replaced by the compaction summary. This defines the `firstKeptEntryId` cutoff Pi passes to `session_before_compact`.
+
+This setting is **structural** to the extension, not merely a tuning knob — it sits at the same level as the three extension thresholds because three of the extension's core behaviors are direct consequences of it:
+
+- **Sync catch-up gap size.** The extension runs a synchronous observer pass over the range `[lastObservationBound, firstKeptEntryId)` at compaction time to cover any raw entries the async observer hasn't yet summarized. If `keepRecentTokens` is small, `firstKeptEntryId` advances further forward and the gap shrinks (even becomes empty); if it's large, the gap can be substantial and the sync catch-up pass does real work.
+- **Pending observation deferral.** Pending observations whose `coversFromId` falls inside the kept tail (at or after `firstKeptEntryId`) are deferred to the next compaction cycle — their raw source is still live, so they'll be collected next time their coverage falls into the pre-tail range. Larger `keepRecentTokens` means more deferrals; smaller means fewer.
+- **Raw tail the agent still sees.** After compaction, the actor sees the compaction summary *plus* the raw tail between `firstKeptEntryId` and the leaf. Higher `keepRecentTokens` preserves more literal conversation; lower forces more continuity through observations and reflections.
+
+**Effect on behavior.** Higher values leave more conversation verbatim post-compaction — good for short-horizon recall, but less room in context for the summary and potentially more deferred observations. Lower values compress more aggressively, reduce the sync-catch-up workload, and rely more heavily on observations + reflections to carry context across the compaction boundary.
+
+### `reserveTokens` — Pi setting under `compaction`; default `16,384`
+
+Tokens Pi reserves for the LLM response. Pi auto-compacts when the context exceeds `contextWindow − reserveTokens`.
+
+**Effect on behavior.** For the extension, this is the safety net. If the extension's own `compactionThresholdTokens` hasn't been crossed yet when window pressure hits, Pi will force compaction anyway, and the extension's `session_before_compact` hook runs just the same. Raising `reserveTokens` makes Pi compact earlier (more conservative); lowering it gives the extension's proactive trigger more runway before Pi's safety net kicks in.
+
+### `compaction.enabled` — Pi setting; default `true`
+
+Whether Pi's auto-compaction triggers at all. Manual `/compact` and the extension's own trigger still work when this is `false`, but Pi's window-pressure safety net does not — so setting this to `false` means you rely entirely on the extension's threshold (and manual compactions) to keep the context bounded.
+
+### How Pi and the extension cooperate
+
+Pi's auto-compaction and the extension's own trigger are independent paths into the same hook. There are three ways compaction can start:
+
+1. **Extension trigger** — raw tokens since the last compaction exceed `compactionThresholdTokens`, the agent is idle, and no observer is in flight.
+2. **Pi auto-compaction** — context approaches `contextWindow − reserveTokens` (safety net).
+3. **Manual `/compact`** — user-triggered.
+
+In all three cases Pi fires `session_before_compact`, and the extension's hook fully replaces Pi's default LLM summarizer — no code path uses Pi's prose summarizer when this extension is installed.
+
+The split of responsibilities:
+
+- **Pi decides** the `firstKeptEntryId` cutoff via `keepRecentTokens` and the safety-net trigger via `reserveTokens`.
+- **The extension decides** how often the observer fires (`observationThresholdTokens`), when to proactively compact (`compactionThresholdTokens`), when the reflector + pruner pair engages (`reflectionThresholdTokens`), and what model runs the three background roles (`compactionModel`).
 

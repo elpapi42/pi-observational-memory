@@ -85,9 +85,7 @@ That's it. The extension hooks into Pi's lifecycle automatically. No config file
 
 ## Configuration
 
-### Extension settings
-
-Settings live under the `observational-memory` key in Pi's `settings.json` — globally at `~/.pi/agent/settings.json`, or per-project at `.pi/settings.json`. Project values override global.
+Observational memory's behavior is shaped by settings in Pi's `settings.json` — globally at `~/.pi/agent/settings.json`, or per-project at `.pi/settings.json`. Project values override global. Two namespaces matter: the extension's own keys under `observational-memory`, and one of Pi's built-in compaction keys (`keepRecentTokens`) that is structural to how the extension works.
 
 ```json
 {
@@ -95,22 +93,34 @@ Settings live under the `observational-memory` key in Pi's `settings.json` — g
     "observationThresholdTokens": 1000,
     "compactionThresholdTokens": 50000,
     "reflectionThresholdTokens": 30000
+  },
+  "compaction": {
+    "keepRecentTokens": 20000
   }
 }
 ```
 
-| Setting | Default | What it controls |
-|---|---|---|
-| `observationThresholdTokens` | `1,000` | Raw conversation tokens accumulated since the last observation or compaction before the observer fires asynchronously |
-| `compactionThresholdTokens` | `50,000` | Raw conversation tokens accumulated since the last compaction before the extension triggers compaction via `ctx.compact()` |
-| `reflectionThresholdTokens` | `30,000` | Working observation pool token size at which the reflector + pruner pair runs inside compaction (below this, both are skipped) |
-| `compactionModel` | session model | Optional — use a cheaper model for observer/reflector/pruner passes |
+### `observationThresholdTokens` — default `1,000`
 
-> Upgrading from `pi-observational-memory@1.x`? The config keys changed: v1's `observationThreshold` is now `compactionThresholdTokens`, v1's `reflectionThreshold` is now `reflectionThresholdTokens`, and `observationThresholdTokens` is new. Old v1 keys are silently ignored — update your `settings.json`.
+Raw conversation tokens that accumulate since the last observation (or compaction, whichever is more recent) before the observer fires asynchronously on `turn_end`. This is also roughly the size of the chunk each observer call digests.
 
-### Using a cheaper model for compaction
+Lower values mean finer-grained observations and more frequent background LLM calls. Higher values mean coarser, denser observations at lower cost, but also longer stretches of raw conversation with no running summary — if a compaction hits in that window, the sync catch-up observer at compaction time picks up the slack.
 
-The observer, reflector, and pruner don't need the same capabilities as your coding agent. Offload them to something fast and cheap:
+### `compactionThresholdTokens` — default `50,000`
+
+Raw conversation tokens that accumulate since the last compaction before the extension proactively calls `ctx.compact()` on `agent_end`. The trigger waits until the agent is idle and any in-flight observer has completed.
+
+Lower values compact more often — more chances for the reflector + pruner to crystallize and clean up, but more LLM cost over a session. Higher values let observations pool up longer; if Pi's own auto-compaction fires first under window pressure (see `reserveTokens`), the extension's hook still handles the summary.
+
+### `reflectionThresholdTokens` — default `30,000`
+
+Working observation pool token size (committed + delta observations, measured at compaction time) at which the reflector + pruner pair engages inside a compaction. Below this gate, both are skipped and the pool carries through unchanged — compaction is **0 LLM calls**. At or above it, the reflector appends new reflections and the pruner drops ids across up to 5 passes until the pool fits under ~80% of this budget — compaction is **≥2 LLM calls**.
+
+Lower values crystallize reflections earlier and keep the observation pool tight. Higher values let the pool grow before cleaning it up — cheaper per compaction, but larger summaries in the interim.
+
+### `compactionModel` — default: session model
+
+Optional `{ "provider": "...", "id": "..." }` override for the observer, reflector, and pruner. All three background roles share this setting — they don't need the same capabilities as your main coding agent, so pointing them at a cheaper, faster model is usually the right move.
 
 ```json
 {
@@ -120,26 +130,33 @@ The observer, reflector, and pruner don't need the same capabilities as your cod
 }
 ```
 
-The same model is used for all three roles.
+### `keepRecentTokens` — Pi setting under `compaction`; default `20,000`
 
-### Pi compaction settings
+Tokens of recent conversation Pi keeps **verbatim** during compaction — the raw tail that is *not* replaced by the compaction summary. This defines the `firstKeptEntryId` cutoff Pi passes to `session_before_compact`.
 
-The extension works alongside Pi's built-in compaction settings in the same `settings.json`:
+This setting is structural to the extension, not just a tuning knob:
 
-```json
-{
-  "compaction": {
-    "keepRecentTokens": 20000
-  }
-}
-```
+- It determines the **raw gap** the sync catch-up observer has to cover at each compaction (entries between the last observation bound and `firstKeptEntryId` — raw content about to be pruned that no observation covers yet).
+- It determines which **pending observations get deferred** to the next cycle (those whose chunks straddle `firstKeptEntryId`; they'll be collected when their `coversFromId` falls inside the next cycle's range).
+- It determines how much **raw conversation the agent still sees** alongside the compaction summary.
 
-| Setting | Default | What it controls |
-|---|---|---|
-| `keepRecentTokens` | `20,000` | Tokens of recent conversation kept verbatim (not summarized) |
-| `reserveTokens` | `16,384` | Headroom for LLM response; Pi auto-compacts when context exceeds `window - reserveTokens` |
+Higher values leave more conversation verbatim (smaller gap, fewer deferred observations, but less context room for the summary). Lower values compress more aggressively and rely more heavily on observations and reflections to carry continuity.
 
-**How they interact:** Pi decides *when* to keep messages raw and *when* to auto-compact under window pressure. The extension decides *how* to compact (mechanical concatenation of reflections + observations instead of a flat LLM-written summary) and *when to proactively trigger* compaction before the window fills. Both paths end up at the same `session_before_compact` hook.
+### `reserveTokens` — Pi setting under `compaction`; default `16,384`
+
+Tokens Pi reserves for the LLM response. Pi auto-compacts when the context exceeds `contextWindow − reserveTokens`. For the extension this is the safety net: if `compactionThresholdTokens` hasn't been crossed yet when window pressure hits, Pi will trigger compaction anyway, and the extension's `session_before_compact` hook runs the same way.
+
+### How Pi and the extension cooperate
+
+Pi and the extension are independent triggers into the same `session_before_compact` hook:
+
+1. **Extension trigger** — raw tokens since the last compaction exceed `compactionThresholdTokens`, the agent is idle, and no observer is in flight.
+2. **Pi auto-compaction** — context approaches `contextWindow − reserveTokens`.
+3. **Manual `/compact`** — user-triggered.
+
+The extension's hook fully replaces Pi's default LLM summarizer regardless of which side triggered. Pi owns *when* to keep messages raw (`keepRecentTokens`) and *when* to force-compact under window pressure (`reserveTokens`); the extension owns *how* to compact (mechanical summary assembly), *when to proactively trigger* (`compactionThresholdTokens`), *how often observations are captured* (`observationThresholdTokens`), *when reflection + pruning engage* (`reflectionThresholdTokens`), and *which model* drives observer/reflector/pruner (`compactionModel`).
+
+> Upgrading from `pi-observational-memory@1.x`? The config keys changed: v1's `observationThreshold` is now `compactionThresholdTokens`, v1's `reflectionThreshold` is now `reflectionThresholdTokens`, and `observationThresholdTokens` is new. Old v1 keys are silently ignored — update your `settings.json`.
 
 ## Commands
 
