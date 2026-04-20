@@ -49,7 +49,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			if (runtime.observerPromise) {
 				try { await runtime.observerPromise; } catch { /* already notified via launchObserverTask */ }
 				// In-flight observer may have appended a new observation entry during the await;
-				// refresh from sessionManager so gap computation and coverage collection see it.
+				// refresh from sessionManager so gap computation and coverage collection see it
 				entries = ctx.sessionManager.getBranch() as typeof entries;
 			}
 
