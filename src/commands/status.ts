@@ -34,6 +34,11 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			const obsThreshold = runtime.config.observationThresholdTokens;
 			const compThreshold = runtime.config.compactionThresholdTokens;
 			const refThreshold = runtime.config.reflectionThresholdTokens;
+			// Approximation: the real compaction gate excludes pending obs whose coversFromId falls inside
+			// the new keep-recent tail (deferred to next cycle) and adds any sync-catch-up gap obs produced
+			// at compaction entry. We over-count by the tail slice and can't predict the gap obs here.
+			// Precise version would simulate the new firstKeptEntryId by walking back keepRecentTokens from
+			// the branch tail and split pending into pre-tail vs tail-covering.
 			const observationPoolTokens = committedObsTokens + pendingObsTokens;
 			const obsPct = Math.min(100, Math.round((sinceBound / obsThreshold) * 100));
 			const compPct = Math.min(100, Math.round((sinceCompaction / compThreshold) * 100));
