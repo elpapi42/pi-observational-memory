@@ -1,12 +1,31 @@
-# How Observational Memory Works
+# How it works
 
-## The Problem
+This is the technical reference for observational memory's runtime behavior. If you haven't read **[concepts.md](concepts.md)** yet, do that first — this doc assumes the vocabulary.
 
-Pi agents lose context when the conversation grows beyond the model's context window. Pi handles this through **compaction** — summarizing older messages so recent ones fit. The default compaction produces a flat LLM-written summary that loses structure, priority, and temporal ordering. Worse, each subsequent compaction summarizes a summary of a summary, and specific decisions, timestamps, and completion states get flattened with each cycle.
+## Contents
 
-This extension replaces the LLM-written summary with a structured, mostly-asynchronous memory system. The compaction summary becomes a deterministic concatenation of two pools — **reflections** (stable long-lived facts) and **observations** (timestamped events) — both produced incrementally as the session progresses.
+- [The problem](#the-problem)
+- [The solution at a glance](#the-solution-at-a-glance)
+- [The session lifecycle](#the-session-lifecycle)
+- [Inside the observer](#inside-the-observer)
+- [Inside the compaction hook](#inside-the-compaction-hook)
+- [Inside the reflector + pruner](#inside-the-reflector--pruner)
+- [Content format](#content-format)
+- [Relevance tiers](#relevance-tiers)
+- [State persistence](#state-persistence)
+- [Cache-friendliness](#cache-friendliness)
+- [Async race handling](#async-race-handling)
+- [Properties (what's invariant)](#properties-whats-invariant)
 
-## The Solution: Three Tiers, Mostly Async
+---
+
+## The problem
+
+Long agent sessions outgrow the context window. **Compaction** — replacing older messages with a summary so the recent tail still fits — is how every agent framework keeps the session alive past that point. The hard part is the *shape* of that summary, and how well it carries the session forward through many compactions in a row.
+
+This extension provides a structured, mostly-asynchronous memory system. The compaction summary is built incrementally as the session progresses, and at compaction time it's assembled by a deterministic concatenation of two pools — **reflections** (stable long-lived facts) and **observations** (timestamped events). What survives one compaction survives all of them, byte-identical: there's no fresh LLM rewrite each cycle to drift from.
+
+## The solution at a glance
 
 ```mermaid
 flowchart TD
@@ -56,71 +75,140 @@ flowchart TD
 
 The actor LLM only ever sees the most recent compaction summary as a normal `compactionSummary` message. Observations and reflections are never injected into the live message stream. The conversation prefix stays stable between compactions, which preserves prefix caching.
 
-## The Three Tiers
+## The session lifecycle
 
-### 1. Observer (continuous, async)
+Three Pi hooks drive everything:
 
-Fires on `turn_end`. Cheap. Runs in the background.
+| Hook | When it fires | What this extension does |
+|---|---|---|
+| `turn_end` | After each agent turn completes | Maybe fire the observer (async, fire-and-forget) |
+| `agent_end` | Once after the full agent loop ends | Maybe trigger compaction (deferred via `setTimeout(0)`) |
+| `session_before_compact` | Right before compaction runs | Build the new summary deterministically |
 
-After each agent turn, the extension walks the current branch and counts raw tokens since the **last bound** — defined as the more recent of the last `om.observation` tree entry or the last `compaction` entry. When this exceeds `observationThresholdTokens` (default 1000), an observer LLM call fires asynchronously.
+Two hooks are **deliberately not registered**: `session_start` and `session_tree`. With pure on-demand recompute (counters are walked from the branch on every check), there's no closure cache to rebuild on session lifecycle or branch navigation.
 
-The observer receives:
-- All current reflections from the most recent compaction's `details` (committed reflections).
-- All current observations: the committed observations in the most recent compaction's `details`, plus every pending `om.observation` appended since (each already-recorded observation is shown to the observer as `[id] YYYY-MM-DD HH:MM [relevance] content`, so the model can deduplicate).
-- The new chunk of raw conversation (filtered to message entries between the last bound and the current leaf, with inline `[Role @ timestamp]:` headers).
-- A current local time fallback for observations that don't have an obvious message timestamp.
+## Inside the observer
 
-The observer uses a `record_observations` tool it may call multiple times as it works through the chunk. Each observation has four fields: `timestamp` (`YYYY-MM-DD HH:MM`), `content` (single-line plain prose), and `relevance` (one of `low`, `medium`, `high`, `critical`). An `id` is computed as the first 12 hex chars of a SHA-256 over the content — duplicates within a run collapse automatically.
+The observer is the only continuously-running tier. It fires on `turn_end`.
 
-The full batch is written to the tree as one `om.observation` `custom` entry with `{ records: ObservationRecord[], coversFromId, coversUpToId, tokenCount }`. `coversFromId` is the first raw entry id after the last bound at trigger time; `coversUpToId` is the leaf at trigger time. Together these form a range the next compaction uses to decide which observations are in its delta.
+### Trigger logic
 
-Observer is fire-and-forget. The user never waits on it. A concurrency flag (`observerInFlight`) plus a shared `observerPromise` prevent two observers from racing — if a turn ends while one is still running, the new trigger is skipped and the next turn picks up the accumulated tokens. The compaction trigger and hook both `await observerPromise` before doing any work, so nothing observable can be in flight when the tree walk for a compaction runs.
+1. Recompute "raw tokens since last bound" from the current branch. **"Last bound"** is the more recent of the most recent `om.observation` entry and the most recent `compaction` entry. (Walking only to the last `om.observation` would re-count raw entries already baked into a prior compaction summary; the "more recent of the two" rule prevents that.)
+2. If under `observationThresholdTokens` (default 1000), skip.
+3. If `observerInFlight` is `true`, skip.
+4. Otherwise, set `observerInFlight = true` and fire the observer task.
 
-### 2. Compaction Trigger (every ~50k raw tokens)
+A skipped trigger is harmless — the counter keeps growing and the next `turn_end` will catch up.
 
-Fires on `agent_end`. Synchronous intent, deferred via `setTimeout(0)` so `ctx.compact()` runs outside the agent loop (mid-loop compaction is unsafe in Pi).
+### Observer task
 
-The extension recomputes raw tokens since the most recent `compaction` entry on the branch. If it exceeds `compactionThresholdTokens` (default 50000) and the agent is idle, `ctx.compact()` is called. This kicks off Pi's compaction flow, which then fires the `session_before_compact` event.
+1. Capture `coversFromId` (id of the first raw entry after the last bound) and `coversUpToId` (current leaf id at fire time). Entries that land *during* the LLM call are deferred to the next observer.
+2. Build the LLM prompt: prior reflections + prior observations (so the observer doesn't restate facts already captured) plus the raw chunk in `[coversFromId, coversUpToId]`, rendered as serialized conversation.
+3. Run the observer LLM. It calls `record_observations` one or more times, emitting batches of `{ timestamp, content, relevance }`. The observer can also choose to emit zero observations if the chunk carried no new information.
+4. Write a single `om.observation` `custom` entry with `{ records, coversFromId, coversUpToId, tokenCount }` in `data`.
+5. Clear `observerInFlight`.
 
-### 3. Compaction Assembly (`session_before_compact`)
+### What the observer emits
 
-This is where the summary is built. The extension owns this hook entirely — Pi's default LLM summarizer is bypassed. A `compactHookInFlight` flag cancels any duplicate re-entry into the hook.
+The observer is a structured event recorder, not a summarizer in the traditional sense. It emits **one observation per fact**, splitting compound statements rather than flattening them. The observer's prompt has explicit rules for:
 
-1. **Await in-flight observer.** If an async observer is still running, the hook waits for it (`await observerPromise`) and refreshes the branch from the session manager so any newly-appended `om.observation` entry is visible to the rest of the hook.
+- **Preserving user assertions exactly** ("User stated they have two kids" — not "User wondered if they have two kids", which would lose the assertion).
+- **Preserving unusual phrasing in quotes** so future runs can recognize the user's terminology.
+- **Using precise action verbs** ("User installed the zod package via pnpm" — not "User got the library").
+- **Framing state changes as supersession** ("User will use React Query (switching from SWR)") so the old state is explicit.
+- **Marking concrete completions** ("completed: implemented login handler at src/auth/login.ts; user confirmed tests pass") so future runs know not to redo the work.
+- **Splitting compound statements** into separate observations so retrieval and pruning operate at fact granularity.
 
-2. **Sync catch-up observer (gap coverage).** Because `keepRecentTokens` can leave raw entries between the last observation bound and the new `firstKeptEntryId` — entries that are about to be pruned from the raw log — the hook serializes that gap range and runs the observer synchronously over it. If it produces observations, they're appended as an `om.observation` entry immediately and added to the delta collected in the next step. If the gap observer fails, the hook **cancels the compaction** (proceeding would silently erase the gap), surfaces the reason to the UI, and asks the user to retry `/compact`.
+These rules are what make observations downstream-stable across reflector and pruner round-trips.
 
-3. **Collect the delta.** `collectObservationsByCoverage` returns every `om.observation` whose `coversFromId` falls in the range `[priorFirstKeptEntryId, newFirstKeptEntryId)`. Using `coversFromId` (not tree position) is what makes the walk precise: an observation whose chunk straddled the new `firstKeptEntryId` is *not* included — it'll be collected by the next compaction when its `coversFromId` finally falls inside that cycle's range. The just-appended gap observation is concatenated into the delta here. If the final delta is empty, the hook cancels the compaction (nothing to add on top of the prior state).
+## Inside the compaction hook
 
-4. **Merge with prior state.** The cumulative state lives in `compaction.details = { type: "observational-memory", version: 3, reflections: [], observations: [] }`. Reflections are carried forward. Committed observations (from the prior `details.observations`) are unioned with delta observation records to form the working observation pool.
+The compaction hook owns the new summary. It runs synchronously during `session_before_compact`.
 
-5. **Gate the reflector + pruner.** If the working observation pool exceeds `reflectionThresholdTokens` (default 30000), run two LLM agents as an inseparable pair:
-   - **Reflector.** Calls `record_reflections` (append-only) one or more times to add new reflection lines crystallized from the working pool. Never modifies or removes existing reflections. Duplicates against both `reflections` and within-run adds are silently discarded.
-   - **Pruner.** Calls `drop_observations` with ids to remove. Runs up to 5 passes with a per-pass strategy tier (1 = clear-cut duplicates and superseded entries; 2 = topic compression — drop lows covered by recent highs, and mediums covered by reflections; 3+ = aggressive age compression of the older half). Each pass targets `0.8 * reflectionThresholdTokens`; passes stop early when the pool fits, when a pass returns zero drops, or on LLM failure (in which case the last good kept set is retained). The pruner *cannot* merge, rewrite, or add observations — only drop by id, which keeps kept content byte-identical to what the observer originally wrote.
+### Trigger paths
 
-   Below the gate, both calls are skipped and the working sets carry through unchanged. This means compaction is **0 LLM calls** in early sessions, **1 LLM call** when only a gap observer fires, and **≥2 LLM calls** (reflector + one-or-more pruner passes) in steady state.
+The hook runs whenever Pi's `session_before_compact` fires. Three paths can fire it:
 
-6. **Render the summary.** Mechanical concatenation:
-   ```
-   <CONTEXT_USAGE_INSTRUCTIONS preamble>
+1. **Extension trigger** — raw tokens since the last compaction exceed `compactionThresholdTokens` *and* the agent is idle *and* no observer is in flight. Fired from `agent_end`. This is the proactive path; deferring to `agent_end` minimizes the chance of compaction interrupting an active turn.
+2. **Window-pressure trigger** — Pi's safety net, when context approaches `contextWindow − reserveTokens`.
+3. **Manual `/compact`** — user-triggered.
 
-   ## Reflections
-   <reflection line>
-   <reflection line>
+The hook runs the same way regardless of which path fired it.
 
-   ## Observations
-   YYYY-MM-DD HH:MM [relevance] ...
-   YYYY-MM-DD HH:MM [relevance] ...
-   ```
-   No LLM is involved at this step. Sections are omitted if empty.
+### Hook steps, in order
 
-7. **Return to Pi.** The hook returns `{ compaction: { summary, firstKeptEntryId, tokensBefore, details } }`. Pi appends a `compaction` entry with these fields. The summary becomes a `compactionSummary` message in the next turn's context; `details` becomes the cumulative state read by the next compaction.
+When `session_before_compact` fires, the hook:
 
-## Content Format
+**1. Awaits any in-flight observer and refreshes the branch.** A belt-and-braces re-await catches the case where an observer fired between the trigger's await and the hook running (e.g., a user-initiated `/compact` while an observer was running). After awaiting, the hook re-reads `ctx.sessionManager.getBranch()` so any just-appended `om.observation` entry is visible.
 
-Observations and reflections share a strict "single-line plain prose" rule, but their surrounding fields differ:
+**2. Detects and closes any raw gap.** Even after awaiting the observer, the `keepRecentTokens` window may have advanced *past* the last observation bound, leaving a gap of raw entries between the last `coversUpToId` and the new `firstKeptEntryId`. These are about to be pruned out of context but no observation covers them yet.
 
-**Observation** — structured record with separate fields; rendered as `YYYY-MM-DD HH:MM [relevance] content`:
+The **sync catch-up observer** fills this gap. It runs the same observer LLM synchronously over the gap range and appends a fresh `om.observation`. If this fails, **compaction is cancelled** rather than silently losing information — the next `/compact` (or the next trigger) will retry.
+
+**3. Collects the delta.** Walks the session tree and gathers all `om.observation` records whose `coversFromId` falls inside `[priorFirstKeptEntryId, newFirstKeptEntryId)`. This is **coverage-based**, not tree-position-based. The distinction matters when a pending observation's chunk straddles the upcoming `firstKeptEntryId` — the whole observation is deferred to the next compaction cycle (when its `coversFromId` will fall inside that cycle's range) rather than being half-counted in this one.
+
+**4. Merges with prior compaction state.** Reflections from the most recent prior `compaction.details` are carried forward as-is. Committed observations (from the prior `details.observations`) are unioned with the delta to form the **working observation pool**.
+
+**5. Gates the reflector + pruner.** If the working pool exceeds `reflectionThresholdTokens` (default 30000), runs both LLM agents as an inseparable pair. (See [Inside the reflector + pruner](#inside-the-reflector--pruner) below.) Below the gate, both are skipped and the working sets carry through unchanged.
+
+This means compaction is:
+- **0 LLM calls** in early sessions or when the pool is small.
+- **1 LLM call** when only the sync catch-up observer fires.
+- **≥2 LLM calls** (reflector + one or more pruner passes) in steady state.
+
+**6. Renders the summary.** Mechanical concatenation:
+
+```
+<CONTEXT_USAGE_INSTRUCTIONS preamble>
+
+## Reflections
+<reflection line>
+<reflection line>
+
+## Observations
+YYYY-MM-DD HH:MM [relevance] ...
+YYYY-MM-DD HH:MM [relevance] ...
+```
+
+No LLM is involved at this step. Sections are omitted if empty.
+
+**7. Returns the payload to Pi.** `{ compaction: { summary, firstKeptEntryId, tokensBefore, details } }`. Pi appends a `compaction` entry with these fields. The summary becomes a `compactionSummary` message in the next turn's context; `details` becomes the cumulative state read by the *next* compaction.
+
+## Inside the reflector + pruner
+
+When the working observation pool exceeds the gate, two LLM agents run in sequence. They are **always run together** — see [Properties](#properties-whats-invariant) for why.
+
+### Reflector
+
+- Reads the current reflections + the full working observation pool.
+- Calls `record_reflections` (append-only) one or more times to add new reflection lines crystallized from the pool.
+- Never modifies or removes existing reflections. Duplicates against both `reflections` and within-run adds are silently discarded.
+- Stops when nothing more is stable enough to crystallize.
+
+A reflection is supposed to name a **durable pattern** (identity, hard constraint, durable preference, architectural decision), not a specific event. The reflector's prompt makes the distinction explicit and gives examples of good vs bad reflections.
+
+### Pruner
+
+- Reads the (now augmented) reflections + the full working observation pool.
+- Calls `drop_observations` with ids to remove. **Cannot** merge, rewrite, or add observations — only drop by id. This is what keeps kept content byte-identical to what the observer originally wrote.
+- Runs up to **5 passes** with a per-pass strategy tier:
+  - **Pass 1** — clear-cut drops only. Exact duplicates, near-duplicates (keep the higher-relevance or more recent one), entries directly superseded by a newer one, routine `low` tool-call acks.
+  - **Pass 2** — topic compression. Drop `low` observations covered by recent `medium`/`high`, drop `medium` observations whose substance is now in a reflection, collapse repeated tool-call sequences.
+  - **Pass 3+** — aggressive age compression. In the older half of the pool, drop all but outcome-bearing entries. Keep the most recent ~30% at higher detail.
+- Each pass targets `0.8 * reflectionThresholdTokens`. Passes stop early when:
+  - The pool fits under the target, OR
+  - A pass returns zero drops (the pruner refuses to force drops it doesn't believe in), OR
+  - The LLM fails (the last good kept set is retained).
+
+The pruner has **hard floors** that override pass strategies: `critical` observations are never dropped, user assertions are never dropped (even at `low`), and any observation carrying a unique named identifier, dated event, verbatim error, or rationale for a decision is kept unless an existing reflection captures the same information.
+
+## Content format
+
+Observations and reflections share a strict "single-line plain prose" rule, but their surrounding fields differ.
+
+### Observation
+
+A structured record with separate fields. Rendered as `YYYY-MM-DD HH:MM [relevance] content`.
 
 ```
 ObservationRecord = {
@@ -133,153 +221,169 @@ ObservationRecord = {
 
 Example: `2026-01-15 14:50 [medium] GraphQL migration completed; user confirmed queries working.`
 
-**Reflection** — just a string of plain prose. No timestamp, no relevance tag, no prefix of any kind. A reflection names a durable pattern, not a specific event, so temporal metadata would be misleading.
+### Reflection
+
+Just a string of plain prose. No timestamp, no relevance tag, no prefix. A reflection names a durable pattern, not a specific event, so temporal metadata would be misleading.
 
 Example: `User works at Acme Corp building Acme Dashboard on Next.js 15.`
 
-The `content` string in both is strictly plain prose — no emojis, no priority markers, no `[tags]`, no Markdown bullets, no code fences, no embedded structured fields. Timestamp and relevance live in dedicated fields rather than inside the content so the record survives pruner round-trips verbatim.
+### Strict format rules
 
-This strictness exists for three reasons:
-1. The pruner must emit ids only, which means kept observations retain their original content, timestamp, and relevance byte-identically. Storing those as fields (rather than as prefixes to be re-parsed) is what guarantees this.
+The `content` string in both is strictly plain prose:
+- No emojis
+- No priority markers
+- No `[tags]`
+- No Markdown bullets
+- No code fences
+- No embedded structured fields ("key: value", JSON, etc.)
+
+Timestamp and relevance live in **dedicated fields**, not inside the content. This strictness exists for three reasons:
+
+1. The pruner must emit ids only, which means kept observations retain their original content, timestamp, and relevance byte-identically. Storing those as fields rather than as prefixes-to-be-re-parsed is what guarantees this.
 2. The summary renderer is mechanical — formatting drift in any single entry would visibly leak into the actor's context.
 3. Emoji and tag conventions drift across model versions; plain prose is stable.
 
 Observation content is also capped at 10,000 characters; longer strings are truncated with a ` … [truncated N chars]` tail to keep the pool bounded even if the observer misbehaves.
 
-### Relevance tiers
+## Relevance tiers
 
-Relevance is assigned by the observer and used by the pruner to decide drop priority:
+Relevance is assigned by the observer at write time and used by the pruner to decide drop priority.
 
-- **critical** — user identity, explicit corrections, concrete completions. Never dropped, regardless of age or budget pressure.
-- **high** — non-trivial technical decisions, architectural direction, unresolved blockers, key constraints. Dropped only when clearly superseded or covered by an existing reflection.
-- **medium** — task-level context. The default when the observer isn't sure whether a fact is durable.
-- **low** — routine tool-call acks, repetitive status updates, content re-derivable from recent messages. Dropped first under pressure.
+| Tier | What it means | Drop behavior |
+|---|---|---|
+| **`critical`** | User identity, explicit corrections, concrete completions | **Never dropped**, regardless of age or budget pressure |
+| **`high`** | Non-trivial technical decisions, architectural direction, unresolved blockers, key constraints | Dropped only when clearly superseded or covered by an existing reflection |
+| **`medium`** | Task-level context. The default when the observer isn't sure | Dropped when redundant with reflections or other observations, or when the task moved on |
+| **`low`** | Routine tool-call acks, repetitive status updates, content re-derivable from recent messages | Dropped first under pressure |
 
-The pruner also honours a content-level floor: user assertions and concrete completion markers are never dropped even when tagged `low`, and any observation carrying a unique named identifier, dated event, verbatim error, or rationale for a decision is kept unless an existing reflection already captures the same information.
+The pruner also honors a **content-level floor** that overrides the relevance tier:
 
-## State Persistence
+- User assertions are never dropped, even when tagged `low`. ("User stated they are colorblind" stays even if mis-labeled.)
+- Any observation carrying a unique named identifier, dated event, verbatim error, or rationale for a decision is kept unless an existing reflection already captures the same information.
 
-The Pi session tree is the only source of truth. There is no external database, no on-disk sidecar, no closure cache that needs rebuilding.
+## State persistence
+
+The Pi session tree is the **only** source of truth. There is no external database, no on-disk sidecar, no closure cache that needs rebuilding.
 
 Two entry types carry state:
 
-- **`om.observation`** (`custom` entry, `customType: "om.observation"`) — written by the observer. Holds `{ records: ObservationRecord[], coversFromId, coversUpToId, tokenCount }` in `data`. Append-only. Used by the next compaction's coverage-based walk.
-- **`compaction.details`** (typed payload on the `compaction` entry) — holds `{ type: "observational-memory", version: 3, observations: ObservationRecord[], reflections: Reflection[] }`. Cumulative branch-local state. Each new compaction reads the most recent prior `details` (the "committed" pool) and writes its own.
+### `om.observation`
 
-Committed vs pending. `getMemoryState(branch)` returns three things derived from the entries:
-- `reflections` — from the most recent `compaction.details.reflections`.
-- `committedObs` — from the most recent `compaction.details.observations` (observations folded into the last compaction).
-- `pendingObs` — all records in `om.observation` entries whose `coversFromId` falls at or after the prior compaction's `firstKeptEntryId` (observations recorded since the last compaction — waiting for the next one).
+A `custom` entry with `customType: "om.observation"`. Written by the observer.
 
-Both `/om-status` and `/om-view` use this split; compaction assembly uses essentially the same partition but via `collectObservationsByCoverage` so it can also exclude any pending observation whose chunk straddles the upcoming `firstKeptEntryId` (those are deferred to the next cycle).
-
-In-memory closure state is minimal: the loaded config and a small set of concurrency handles — `observerInFlight`, `observerPromise` (for awaiting a live observer), `compactInFlight` (trigger side), `compactHookInFlight` (hook side, cancels duplicate re-entry), and `resolveFailureNotified` (so a missing API key is only warned about once). Token counters (raw tokens since last bound, raw tokens since last compaction) are recomputed on every check from a branch walk — there is no incremental cache to invalidate.
-
-This means session resume, branch switching, and tree navigation are all transparent — there is no state to rebuild, because there is no cached state.
-
-## Async Race Handling
-
-The observer is fire-and-forget, so observations can land at awkward moments relative to compaction. The extension handles this with three cooperating mechanisms:
-
-1. **`observerInFlight` + `observerPromise`** — the observer is guarded by a flag and exposes a promise handle. If a `turn_end` fires while one is running, the new trigger is skipped; the accumulated raw tokens just get picked up by the next trigger after the in-flight observer completes. No data is lost; observations batch together.
-
-2. **Compaction trigger awaits the observer.** When raw tokens since the last compaction cross `compactionThresholdTokens`, the trigger `setTimeout(0)`s a task that first awaits `observerPromise`, then re-checks `ctx.isIdle()` and the token count (another compaction may have happened during the wait), and only then calls `ctx.compact()`. This means `ctx.compact()` is never called with an observer still writing to the tree.
-
-3. **`session_before_compact` awaits again and refreshes the branch.** A belt-and-braces re-await in the hook catches the case where an observer fired between the trigger's await and the hook running (e.g., a user-initiated `/compact`). After awaiting, the hook re-reads `ctx.sessionManager.getBranch()` so any just-appended `om.observation` entry is visible.
-
-After those awaits, one last source of uncovered raw tokens remains: the `keepRecentTokens` window may have advanced *past* the last observation bound, leaving a gap of raw entries between the last `coversUpToId` and the new `firstKeptEntryId`. The sync catch-up observer closes that gap. Failure of this step cancels the compaction rather than silently losing information — the next `/compact` (or next trigger) will retry.
-
-Delta collection is coverage-based (`coversFromId` inside `[priorFirstKeptEntryId, newFirstKeptEntryId)`), not tree-position-based. This matters specifically when a pending observation's chunk straddles the upcoming `firstKeptEntryId`: the whole observation is deferred to the next compaction cycle (when its `coversFromId` will fall inside that cycle's range) rather than being half-counted in this one.
-
-There is no separate reflection race: reflector and pruner run synchronously inside `session_before_compact`, on whatever data the branch holds at that moment, and the `compactHookInFlight` flag cancels any duplicate hook re-entry.
-
-## Cache-Friendliness
-
-A deliberate design constraint: the actor LLM's prompt prefix should stay stable between compactions. If we injected fresh observations into every turn (e.g., as a system-prompt suffix or a tail message), each new observation would invalidate the prefix cache and every turn would pay a cold-cache cost.
-
-Instead, observations live in silent tree entries that the actor never sees. Reflections live inside `compaction.details`. Both surface to the actor only at the next compaction, packaged into the new `compactionSummary` message — at which point the prefix shifts exactly once and then stays stable until the next compaction.
-
-This is the central trade-off versus a "live memory injection" design: the actor sees memory updates only at compaction boundaries, but caching keeps working between them.
-
-## Configuration
-
-Observational memory's behavior is shaped by settings in Pi's `settings.json` (globally at `~/.pi/agent/settings.json`, or per-project at `.pi/settings.json`; project values override global). Two namespaces are involved: the extension's own keys under `observational-memory`, and two of Pi's built-in `compaction` keys — `keepRecentTokens` (structural to how the extension works) and `reserveTokens` (the safety-net trigger).
-
-```json
-{
-  "observational-memory": {
-    "observationThresholdTokens": 1000,
-    "compactionThresholdTokens": 50000,
-    "reflectionThresholdTokens": 30000
-  },
-  "compaction": {
-    "enabled": true,
-    "keepRecentTokens": 20000,
-    "reserveTokens": 16384
-  }
+```
+data: {
+  records: ObservationRecord[]   // observations from this chunk
+  coversFromId: string           // first raw entry covered
+  coversUpToId: string           // last raw entry covered
+  tokenCount: number             // estimated token count
 }
 ```
 
-The five settings below are listed in roughly the order they affect a session's life: the observer fires first and often, the extension-trigger cadence comes next, the reflector + pruner gate engages inside compaction, the model choice applies to all three roles, and the Pi-owned compaction settings determine what each compaction actually does to the raw log.
+Append-only. Used by the next compaction's coverage-based delta walk.
 
-### `observationThresholdTokens` — default `1,000`
+### `compaction.details`
 
-Raw conversation tokens accumulated since the last `om.observation` or `compaction` entry (whichever is more recent) before the observer fires asynchronously on `turn_end`. This is also roughly the chunk size each observer call digests — the observer receives the raw text between the last bound and the current leaf.
+A typed payload on the `compaction` entry. Written by the compaction hook.
 
-**Effect on behavior.** Lower values produce finer-grained observations and more frequent background LLM calls (higher cost, lower per-call latency). Higher values produce coarser, denser observations at lower cost — but also leave longer stretches of raw conversation with no running summary, which shifts work onto the sync catch-up observer at compaction time. If the observer is already in flight when a new `turn_end` crosses the threshold, the trigger is skipped and tokens accumulate until the next turn.
+```
+details: {
+  type: "observational-memory"
+  version: 3
+  observations: ObservationRecord[]   // post-pruner kept set
+  reflections: string[]               // cumulative, append-only across compactions
+}
+```
 
-### `compactionThresholdTokens` — default `50,000`
+Cumulative branch-local state. Each new compaction reads the most recent prior `details` (the "committed" pool) and writes its own.
 
-Raw conversation tokens accumulated since the last `compaction` entry before the extension proactively calls `ctx.compact()` on `agent_end`. The trigger defers through `setTimeout(0)`, awaits any in-flight observer, re-checks `ctx.isIdle()` and the token count, and only then calls `ctx.compact()`.
+### Committed vs pending
 
-**Effect on behavior.** Lower values compact more often — more frequent opportunities for the reflector + pruner to crystallize patterns and clean up the pool, but more LLM cost over a session, and more `firstKeptEntryId` churn if the raw tail is short. Higher values let observations accumulate longer; if Pi's auto-compaction (governed by `reserveTokens`) fires first under window pressure, the extension's `session_before_compact` hook still runs the same way, so this threshold is really about *proactive* compaction before window pressure hits.
+These two entry types are how the `/om-status` and `/om-view` commands distinguish state:
 
-### `reflectionThresholdTokens` — default `30,000`
+- **Committed observations** = the `observations` array inside the most recent `compaction.details`. They've been counted, possibly pruned, and are visible to the actor through the current compaction summary.
+- **Pending observations** = `om.observation` entries written since the last compaction. They're in the tree but haven't been folded into a summary yet.
 
-Working observation pool token size at which the reflector + pruner pair engages inside a compaction. "Working pool" here means `committedObservations + deltaObservations + gapObservation`, measured at hook-entry time.
+### Branch isolation
 
-**Effect on behavior.** Below this gate, the reflector and pruner are both skipped and the working pool is written to the new `compaction.details` unchanged — compaction is **0 LLM calls** (or 1 if the sync catch-up observer ran). At or above the gate, the reflector appends new reflections (never rewrites existing ones) and the pruner runs up to 5 id-based drop passes until the pool fits under `0.8 * reflectionThresholdTokens` — compaction is **≥2 LLM calls**. Lower values crystallize reflections earlier and keep the observation pool tight at the cost of more frequent reflector+pruner runs; higher values let the pool grow before cleanup, making individual compactions cheaper but growing the summary size between cleanups.
+Counters are recomputed from the branch on every check (pure on-demand). If you `/tree` to a different branch, each branch carries its own `compaction.details` chain and its own pending `om.observation` entries — memory is naturally branch-local without any extra bookkeeping.
 
-### `compactionModel` — default: session model
+## Cache-friendliness
 
-Optional `{ "provider": "...", "id": "..." }` override for the observer, reflector, and pruner. All three background roles share this setting.
+A deliberate design constraint: **the actor LLM's prompt prefix should stay stable between compactions**.
 
-**Effect on behavior.** Setting this to a smaller, faster, or cheaper model lets you offload background memory work without changing the main coding agent's model. These roles are structurally simpler than general coding — the observer summarizes fixed chunks, the reflector distills patterns, the pruner drops ids — so a smaller model is usually appropriate. If the configured model is not found in the registry the extension falls back to the session model (with a warning); if no API key is available for the chosen model the observer is skipped (warning once) and the compaction hook cancels the compaction (surfacing a clear error) rather than silently falling back.
+If observations were injected into every turn (e.g., as a system-prompt suffix or a tail message), each new observation would invalidate the prefix cache and every turn would pay a cold-cache cost.
 
-### `keepRecentTokens` — Pi setting under `compaction`; default `20,000`
+Instead:
+- Observations live in silent tree entries (`om.observation` `custom` type) that the actor never sees.
+- Reflections live inside `compaction.details`, also hidden from the actor.
+- Both surface to the actor only at the next compaction, packaged into the new `compactionSummary` message.
 
-Tokens of recent conversation Pi keeps **verbatim** during compaction — the raw tail that is *not* replaced by the compaction summary. This defines the `firstKeptEntryId` cutoff Pi passes to `session_before_compact`.
+The prefix shifts exactly once per compaction and then stays stable until the next one. This is the central trade-off versus a "live memory injection" design: the actor sees memory updates only at compaction boundaries, but caching keeps working between them.
 
-This setting is **structural** to the extension, not merely a tuning knob — it sits at the same level as the three extension thresholds because three of the extension's core behaviors are direct consequences of it:
+## Async race handling
 
-- **Sync catch-up gap size.** The extension runs a synchronous observer pass over the range `[lastObservationBound, firstKeptEntryId)` at compaction time to cover any raw entries the async observer hasn't yet summarized. If `keepRecentTokens` is small, `firstKeptEntryId` advances further forward and the gap shrinks (even becomes empty); if it's large, the gap can be substantial and the sync catch-up pass does real work.
-- **Pending observation deferral.** Pending observations whose `coversFromId` falls inside the kept tail (at or after `firstKeptEntryId`) are deferred to the next compaction cycle — their raw source is still live, so they'll be collected next time their coverage falls into the pre-tail range. Larger `keepRecentTokens` means more deferrals; smaller means fewer.
-- **Raw tail the agent still sees.** After compaction, the actor sees the compaction summary *plus* the raw tail between `firstKeptEntryId` and the leaf. Higher `keepRecentTokens` preserves more literal conversation; lower forces more continuity through observations and reflections.
+Three concurrency flags guard the system:
 
-**Effect on behavior.** Higher values leave more conversation verbatim post-compaction — good for short-horizon recall, but less room in context for the summary and potentially more deferred observations. Lower values compress more aggressively, reduce the sync-catch-up workload, and rely more heavily on observations + reflections to carry context across the compaction boundary.
+| Flag | What it guards |
+|---|---|
+| `observerInFlight` | Prevents two observers from racing on the same chunk |
+| `compactInFlight` | Prevents the proactive trigger from firing twice |
+| `compactHookInFlight` | Prevents the hook from re-entering itself |
 
-### `reserveTokens` — Pi setting under `compaction`; default `16,384`
+### Late-landing observations
 
-Tokens Pi reserves for the LLM response. Pi auto-compacts when the context exceeds `contextWindow − reserveTokens`.
+Observer is fired-and-forgotten. Late observations land in the tree at whatever index Pi assigns them. The next compaction's coverage-based walk (by `coversFromId`) picks them up regardless of where they landed in the tree, so a late landing cannot be dropped or double-counted.
 
-**Effect on behavior.** For the extension, this is the safety net. If the extension's own `compactionThresholdTokens` hasn't been crossed yet when window pressure hits, Pi will force compaction anyway, and the extension's `session_before_compact` hook runs just the same. Raising `reserveTokens` makes Pi compact earlier (more conservative); lowering it gives the extension's proactive trigger more runway before Pi's safety net kicks in.
+### The two-await pattern at compaction time
 
-### `compaction.enabled` — Pi setting; default `true`
+Both the trigger and the hook await `observerPromise`:
 
-Whether Pi's auto-compaction triggers at all. Manual `/compact` and the extension's own trigger still work when this is `false`, but Pi's window-pressure safety net does not — so setting this to `false` means you rely entirely on the extension's threshold (and manual compactions) to keep the context bounded.
+1. **`turn_end` may launch an observer.** No data is lost; observations batch together.
+2. **The compaction trigger awaits the observer first.** When raw tokens since the last compaction cross `compactionThresholdTokens`, the trigger `setTimeout(0)`s a task that awaits `observerPromise`, then re-checks `ctx.isIdle()` and the token count (another compaction may have happened during the wait), and only then calls `ctx.compact()`. `ctx.compact()` is never called with an observer still writing to the tree.
+3. **`session_before_compact` awaits again and refreshes the branch.** A belt-and-braces re-await catches the case where an observer fired between the trigger's await and the hook running (e.g., a user-initiated `/compact`). After awaiting, the hook re-reads the branch so any just-appended `om.observation` entry is visible.
 
-### How Pi and the extension cooperate
+After those awaits, one last source of uncovered raw tokens remains: the `keepRecentTokens` window may have advanced *past* the last observation bound. The sync catch-up observer closes that gap. Failure cancels the compaction rather than silently losing information.
 
-Pi's auto-compaction and the extension's own trigger are independent paths into the same hook. There are three ways compaction can start:
+### No reflection race
 
-1. **Extension trigger** — raw tokens since the last compaction exceed `compactionThresholdTokens`, the agent is idle, and no observer is in flight.
-2. **Pi auto-compaction** — context approaches `contextWindow − reserveTokens` (safety net).
-3. **Manual `/compact`** — user-triggered.
+Reflector and pruner run **synchronously** inside `session_before_compact`, on whatever data the branch holds at that moment. The `compactHookInFlight` flag cancels any duplicate hook re-entry. There is no separate reflection race to handle.
 
-In all three cases Pi fires `session_before_compact`, and the extension's hook fully replaces Pi's default LLM summarizer — no code path uses Pi's prose summarizer when this extension is installed.
+## Properties (what's invariant)
 
-The split of responsibilities:
+These are the load-bearing invariants of the system. If you're modifying the extension, don't break these.
 
-- **Pi decides** the `firstKeptEntryId` cutoff via `keepRecentTokens` and the safety-net trigger via `reserveTokens`.
-- **The extension decides** how often the observer fires (`observationThresholdTokens`), when to proactively compact (`compactionThresholdTokens`), when the reflector + pruner pair engages (`reflectionThresholdTokens`), and what model runs the three background roles (`compactionModel`).
+### Pruner output is byte-identical to observer output
 
+The pruner can only emit observation **ids** to drop. Kept observations retain their original `content`, `timestamp`, and `relevance` exactly as the observer wrote them. This is what makes the "what survives one compaction survives all of them verbatim" property hold — there is no paraphrase pass, ever.
+
+### Pruner sees the full observation set, not just the delta
+
+Each compaction is a chance to re-evaluate older observations against newer reflections. An observation that was kept three compactions ago can still be dropped now if a later reflection has captured its substance.
+
+### Reflector and pruner share a single gate
+
+Both run, or neither runs. Pruning is only safe once the long-lived facts in the pool have been crystallized into reflections — running pruner without reflector would lose information. Running reflector without pruner would let the pool grow forever.
+
+### Reflections accumulate without bound
+
+There is no reflection-pruning pass. Long-running sessions will see steady growth in the reflection block of every compaction summary. The design accepts this as the cost of preserving long-term memory and assumes session lifetime is bounded enough that growth stays manageable.
+
+### No closure state survives recomputes
+
+Counters are walked on every check from the current branch. The only closure state is concurrency flags (`observerInFlight`, `compactInFlight`, `compactHookInFlight`) and a promise handle for awaiting an in-flight observer. None of it is correctness-critical — wiping it would not cause memory loss, only momentary concurrency confusion.
+
+### Observations are disjoint by construction
+
+The `observerInFlight` flag prevents two observers from racing on the same chunk. Combined with the deferred coverage of in-flight ranges (`coversUpToId` is captured at fire time, not completion time), this means the unfiltered tree walk at compaction cannot produce duplicate observations.
+
+### The Pi tree is the only source of truth
+
+No external database, no on-disk sidecar, no in-memory authority that needs syncing. If you `/tree` to a branch, that branch's `compaction.details` and pending `om.observation` entries are exactly what observational memory will see — no extra bookkeeping is required.
+
+---
+
+## Where to go next
+
+- **[concepts.md](concepts.md)** — vocabulary reference if any term above was unclear.
+- **[configuration.md](configuration.md)** — every setting, what it trades off, and tuning recipes.
