@@ -112,6 +112,16 @@ Settings live in Pi's `settings.json` — globally at `~/.pi/agent/settings.json
 }
 ```
 
+To run the background memory work (observer, reflector, pruner) on a cheaper / faster model than your main coding agent — often the single biggest cost lever the extension exposes — add `compactionModel`:
+
+```json
+{
+  "observational-memory": {
+    "compactionModel": { "provider": "openrouter", "id": "google/gemma-4-31b-it" }
+  }
+}
+```
+
 The five settings most worth knowing:
 
 | Setting | Default | What it controls |

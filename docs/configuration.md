@@ -56,7 +56,25 @@ Every setting at its default value:
 }
 ```
 
-You don't need any of these to start — defaults work well for most sessions. The settings below are listed roughly in the order they affect a session's life: the observer fires first and most often, the extension-trigger cadence comes next, the reflector + pruner gate engages inside compaction, the model choice applies to all three roles, and the Pi-owned settings determine the structural details of each compaction.
+You don't need any of these to start — defaults work well for most sessions.
+
+One setting doesn't have a default and is easy to miss: **`compactionModel`**. Left unset, the observer / reflector / pruner all use the session model. Pointing them at a cheaper or faster model instead is usually the single biggest token-cost lever the extension exposes. A realistic settings file that overrides it looks like this:
+
+```json
+{
+  "observational-memory": {
+    "observationThresholdTokens": 1000,
+    "compactionThresholdTokens": 50000,
+    "reflectionThresholdTokens": 30000,
+    "compactionModel": { "provider": "openrouter", "id": "google/gemma-4-31b-it" }
+  },
+  "compaction": {
+    "keepRecentTokens": 20000
+  }
+}
+```
+
+The settings below are listed roughly in the order they affect a session's life: the observer fires first and most often, the extension-trigger cadence comes next, the reflector + pruner gate engages inside compaction, the model choice applies to all three roles, and the Pi-owned settings determine the structural details of each compaction.
 
 ---
 
