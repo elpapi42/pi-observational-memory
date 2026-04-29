@@ -58,13 +58,18 @@ export class Runtime {
 
 	launchObserverTask(ctx: LaunchCtx, label: string, work: () => Promise<void>): Promise<void> {
 		this.observerInFlight = true;
+		// Capture ctx properties synchronously — after `await work()` the extension ctx
+		// may be stale (e.g. after ctx.newSession/fork/switchSession/reload), and accessing
+		// ctx.hasUI or ctx.ui on a stale proxy throws.
+		const hasUI = ctx.hasUI;
+		const ui = ctx.ui;
 		let promise!: Promise<void>;
 		promise = (async () => {
 			try {
 				await work();
 			} catch (error) {
 				const msg = error instanceof Error ? error.message : String(error);
-				if (ctx.hasUI && ctx.ui) ctx.ui.notify(`Observational memory: ${label} failed: ${msg}`, "warning");
+				if (hasUI && ui) ui.notify(`Observational memory: ${label} failed: ${msg}`, "warning");
 			} finally {
 				this.observerInFlight = false;
 				if (this.observerPromise === promise) this.observerPromise = null;

@@ -42,11 +42,16 @@ export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): voi
 			"info",
 		);
 
+		// Capture ctx properties synchronously — the async work below may outlive
+		// the extension ctx (stale after session replacement/reload).
+		const hasUI = ctx.hasUI;
+		const ui = ctx.ui;
+
 		void runtime.launchObserverTask(ctx, "observer", async () => {
 			const resolved = await runtime.resolveModel(ctx as any);
 			if (!resolved.ok) {
-				if (!runtime.resolveFailureNotified && ctx.hasUI && ctx.ui) {
-					ctx.ui.notify(
+				if (!runtime.resolveFailureNotified && hasUI && ui) {
+					ui.notify(
 						`Observational memory: observer skipped — ${resolved.reason}`,
 						"warning",
 					);
@@ -65,7 +70,7 @@ export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): voi
 				chunk,
 			});
 			if (!records || records.length === 0) {
-				if (ctx.hasUI && ctx.ui) ctx.ui.notify(
+				if (hasUI && ui) ui.notify(
 					"Observational memory: observer returned no observations",
 					"warning",
 				);
@@ -80,7 +85,7 @@ export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): voi
 				tokenCount: observationTokens,
 			};
 			pi.appendEntry(OBSERVATION_CUSTOM_TYPE, data);
-			if (ctx.hasUI && ctx.ui) ctx.ui.notify(
+			if (hasUI && ui) ui.notify(
 				`Observational memory: ${records.length} observation${records.length === 1 ? "" : "s"} recorded (~${observationTokens.toLocaleString()} tokens)`,
 				"info",
 			);
