@@ -6,6 +6,7 @@ import {
 	RECALL_OBSERVATION_TOOL_NAME,
 	formatRecallCallForTui,
 	formatRecallHeaderForTui,
+	formatRecallRenderedResultForTui,
 	formatRecallResultForTui,
 	recallObservationTool,
 } from "../src/tools/recall-observation.js";
@@ -120,12 +121,17 @@ describe("recall tool execution", () => {
 
 		const header = formatRecallHeaderForTui(result.details);
 		const collapsed = formatRecallResultForTui(result, false);
+		const renderedCollapsed = formatRecallRenderedResultForTui(result, false);
 		const expanded = formatRecallResultForTui(result, true);
 
-		expect(header).toContain("✓ recall abc123def456 · 1 match · 2 source entries");
-		expect(formatRecallCallForTui(observationId, header)).toBe(header);
-		expect(collapsed).not.toContain("✓ recall abc123def456");
+		expect(header).toContain("✓ recalled · 1 match · 2 source entries");
+		expect(formatRecallCallForTui(observationId)).toBe("recall abc123def456");
+		expect(collapsed).not.toContain("✓ recalled");
+		expect(collapsed).not.toContain("recall abc123def456");
 		expect(collapsed.startsWith(`[high] 2026-05-02 10:00 · ${fullObservationContent}`)).toBe(true);
+		expect(renderedCollapsed.startsWith(`\n✓ recalled · 1 match · 2 source entries`)).toBe(true);
+		expect(renderedCollapsed).toContain(`\n\n[high] 2026-05-02 10:00 · ${fullObservationContent}`);
+		expect(renderedCollapsed).not.toContain("recall abc123def456");
 		expect(collapsed).toContain(`[high] 2026-05-02 10:00 · ${fullObservationContent}`);
 		expect(collapsed).toContain("\n\n  • User · 2026-05-02 10:00 · entry source-user · ~");
 		expect(collapsed).toContain("  • Assistant · 2026-05-02 10:01 · entry source-assistant · ~");
@@ -140,6 +146,39 @@ describe("recall tool execution", () => {
 		expect(expanded).toContain('[read({"path":"src/tools/recall-observation.ts"})]');
 		expect(expanded).not.toContain("    [User @ 2026-05-02 10:00]:");
 		expect(expanded).not.toContain("    [Assistant @ 2026-05-02 10:01]:");
+	});
+
+	it("renders a static recall call and pi-fork-style result body without invalidating", async () => {
+		const { result } = await executeRecall(observationId, [
+			sourceEntry(),
+			obsEntry("obs-entry", [{ ...baseObservation, sourceEntryIds: ["source-user"] }]),
+		]);
+		const state = {};
+		const invalidate = vi.fn();
+		const context = { state, invalidate } as never;
+
+		const callComponent = recallObservationTool.renderCall?.({ id: observationId }, undefined as never, context);
+		const callText = callComponent?.render(200).join("\n") ?? "";
+		expect(callText).toContain("recall abc123def456");
+		expect(callText).not.toContain("1 match");
+
+		const resultComponent = recallObservationTool.renderResult?.(
+			result,
+			{ expanded: false, isPartial: false },
+			undefined as never,
+			context,
+		);
+
+		expect(invalidate).not.toHaveBeenCalled();
+		expect(callComponent?.render(200).join("\n") ?? "").toContain("recall abc123def456");
+		expect(callComponent?.render(200).join("\n") ?? "").not.toContain("1 match");
+		const renderedResult = resultComponent?.render(200) ?? [];
+		expect(renderedResult[0].trim()).toBe("");
+		const renderedText = renderedResult.join("\n");
+		expect(renderedText).toContain("✓ recalled · 1 match · 1 source entry");
+		expect(renderedText).not.toContain("recall abc123def456");
+		expect(renderedResult[2].trim()).toBe("");
+		expect(renderedResult[3].trim()).toBe("[high] 2026-05-02 10:00 · User confirmed exact source ids are required.");
 	});
 
 	it("returns invalid_id for malformed ids", async () => {

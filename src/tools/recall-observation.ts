@@ -287,13 +287,12 @@ function statusSummary(details: RecallObservationToolDetails): string {
 }
 
 export function formatRecallHeaderForTui(details: RecallObservationToolDetails): string {
-	const parts = [`${statusIcon(details)} recall ${details.observationId}`];
+	const parts = [`${statusIcon(details)} ${statusSummary(details)}`];
 	if (details.matches.length > 0) parts.push(plural(details.matches.length, "match", "matches"));
 	const sources = sourceEntriesFromDetails(details);
 	if (sources.length > 0) parts.push(plural(sources.length, "source entry", "source entries"));
 	const tokens = sources.reduce((sum, source) => sum + source.tokens, 0);
 	if (tokens > 0) parts.push(tokenSummary(tokens));
-	if (details.status !== "ok" || details.collision) parts.push(statusSummary(details));
 	return parts.join(" · ");
 }
 
@@ -365,13 +364,17 @@ export function formatRecallResultForTui(result: AgentToolResult<RecallObservati
 	return lines.join("\n").trimEnd();
 }
 
-export function formatRecallCallForTui(id: string | undefined, headerLine?: string): string {
-	return headerLine ?? `recall ${id ?? "..."}`;
+export function formatRecallCallForTui(id: string | undefined): string {
+	return `recall ${id ?? "..."}`;
 }
 
-type RecallRenderState = {
-	headerLine?: string;
-};
+export function formatRecallRenderedResultForTui(result: AgentToolResult<RecallObservationToolDetails>, expanded: boolean): string {
+	const body = formatRecallResultForTui(result, expanded);
+	const header = result.details ? formatRecallHeaderForTui(result.details) : undefined;
+	if (header && body) return `\n${header}\n\n${body}`;
+	if (header) return `\n${header}`;
+	return body ? `\n${body}` : "";
+}
 
 export const recallObservationTool = defineTool({
 	name: RECALL_OBSERVATION_TOOL_NAME,
@@ -389,21 +392,11 @@ export const recallObservationTool = defineTool({
 			description: "12-character lowercase hex observational-memory observation id.",
 		}),
 	}),
-	renderCall(args, _theme, context) {
-		const state = context.state as RecallRenderState;
-		return new Text(formatRecallCallForTui(args.id, state.headerLine), 0, 0);
+	renderCall(args) {
+		return new Text(formatRecallCallForTui(args.id), 0, 0);
 	},
-	renderResult(result, options, _theme, context) {
-		const typedResult = result as AgentToolResult<RecallObservationToolDetails>;
-		const state = context.state as RecallRenderState;
-		if (typedResult.details) {
-			const headerLine = formatRecallHeaderForTui(typedResult.details);
-			if (state.headerLine !== headerLine) {
-				state.headerLine = headerLine;
-				context.invalidate();
-			}
-		}
-		return new Text(formatRecallResultForTui(typedResult, options.expanded), 0, 0);
+	renderResult(result, options) {
+		return new Text(formatRecallRenderedResultForTui(result as AgentToolResult<RecallObservationToolDetails>, options.expanded), 0, 0);
 	},
 	async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 		const observationId = params.id;
