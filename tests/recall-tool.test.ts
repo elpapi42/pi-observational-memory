@@ -5,6 +5,7 @@ import {
 	RECALL_OBSERVATION_SOURCE_CHAR_LIMIT,
 	RECALL_OBSERVATION_TOOL_NAME,
 	formatRecallCallForTui,
+	formatRecallHeaderForTui,
 	formatRecallResultForTui,
 	recallObservationTool,
 } from "../src/tools/recall-observation.js";
@@ -117,10 +118,14 @@ describe("recall tool execution", () => {
 			]),
 		]);
 
+		const header = formatRecallHeaderForTui(result.details);
 		const collapsed = formatRecallResultForTui(result, false);
 		const expanded = formatRecallResultForTui(result, true);
 
-		expect(collapsed).toContain("✓ recall abc123def456 · 1 match · 2 source entries");
+		expect(header).toContain("✓ recall abc123def456 · 1 match · 2 source entries");
+		expect(formatRecallCallForTui(observationId, header)).toBe(header);
+		expect(collapsed).not.toContain("✓ recall abc123def456");
+		expect(collapsed.startsWith(`[high] 2026-05-02 10:00 · ${fullObservationContent}`)).toBe(true);
 		expect(collapsed).toContain(`[high] 2026-05-02 10:00 · ${fullObservationContent}`);
 		expect(collapsed).toContain("\n\n  • User · 2026-05-02 10:00 · entry source-user · ~");
 		expect(collapsed).toContain("  • Assistant · 2026-05-02 10:01 · entry source-assistant · ~");
