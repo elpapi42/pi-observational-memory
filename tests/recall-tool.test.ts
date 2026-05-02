@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import observationalMemory from "../src/index.js";
 import {
-	RECALL_OBSERVATION_SOURCE_CHAR_LIMIT,
 	RECALL_OBSERVATION_TOOL_NAME,
 	formatRecallCallForTui,
 	formatRecallHeaderForTui,
@@ -128,19 +127,20 @@ describe("recall tool execution", () => {
 		expect(formatRecallCallForTui(observationId)).toBe("recall abc123def456");
 		expect(collapsed).not.toContain("✓ recalled");
 		expect(collapsed).not.toContain("recall abc123def456");
-		expect(collapsed.startsWith(`[high] 2026-05-02 10:00 · ${fullObservationContent}`)).toBe(true);
+		expect(collapsed.startsWith(`✓ observation · 2026-05-02 10:00 · [high] · ${fullObservationContent}`)).toBe(true);
 		expect(renderedCollapsed.startsWith(`\n✓ recalled · 1 match · 2 source entries`)).toBe(true);
-		expect(renderedCollapsed).toContain(`\n\n[high] 2026-05-02 10:00 · ${fullObservationContent}`);
+		expect(renderedCollapsed).toContain(`\n\n✓ observation · 2026-05-02 10:00 · [high] · ${fullObservationContent}`);
 		expect(renderedCollapsed).not.toContain("recall abc123def456");
-		expect(collapsed).toContain(`[high] 2026-05-02 10:00 · ${fullObservationContent}`);
-		expect(collapsed).toContain("\n\n  • User · 2026-05-02 10:00 · entry source-user · ~");
-		expect(collapsed).toContain("  • Assistant · 2026-05-02 10:01 · entry source-assistant · ~");
+		expect(collapsed).toContain(`✓ observation · 2026-05-02 10:00 · [high] · ${fullObservationContent}`);
+		expect(collapsed).toContain("\n\n✓ user · 2026-05-02 10:00 · entry source-user · ~");
+		expect(collapsed).toContain("✓ assistant · 2026-05-02 10:01 · entry source-assistant · ~");
+		expect(collapsed).not.toContain("•");
 		expect(collapsed).toContain("tool calls: read");
 		expect(collapsed).not.toContain("Please preserve exact sources.");
 		expect(collapsed).not.toContain("I will inspect the code.");
 		expect(collapsed).toContain("(Ctrl+O to expand)");
 
-		expect(expanded).toContain(`[high] 2026-05-02 10:00 · ${fullObservationContent}`);
+		expect(expanded).toContain(`✓ observation · 2026-05-02 10:00 · [high] · ${fullObservationContent}`);
 		expect(expanded).toContain("    Please preserve exact sources.");
 		expect(expanded).toContain("    I will inspect the code.");
 		expect(expanded).toContain('[read({"path":"src/tools/recall-observation.ts"})]');
@@ -178,7 +178,7 @@ describe("recall tool execution", () => {
 		expect(renderedText).toContain("✓ recalled · 1 match · 1 source entry");
 		expect(renderedText).not.toContain("recall abc123def456");
 		expect(renderedResult[2].trim()).toBe("");
-		expect(renderedResult[3].trim()).toBe("[high] 2026-05-02 10:00 · User confirmed exact source ids are required.");
+		expect(renderedResult[3].trim()).toBe("✓ observation · 2026-05-02 10:00 · [high] · User confirmed exact source ids are required.");
 	});
 
 	it("returns invalid_id for malformed ids", async () => {
@@ -255,19 +255,19 @@ describe("recall tool execution", () => {
 		expect(result.content[0].text).toContain("has no source entries associated");
 	});
 
-	it("returns too_large with no partial source content when rendered evidence exceeds the bound", async () => {
-		const longSource = `start-${"x".repeat(RECALL_OBSERVATION_SOURCE_CHAR_LIMIT)}-end`;
+	it("returns full source content even when rendered evidence is large", async () => {
+		const longSource = `start-${"x".repeat(20_000)}-end`;
 		const { result } = await executeRecall(observationId, [
 			sourceEntry("source-large", longSource),
 			obsEntry("obs-entry", [{ ...baseObservation, sourceEntryIds: ["source-large"] }]),
 		]);
 
-		expect(result.details.status).toBe("too_large");
-		expect(result.details.sourceCharacterLimit).toBe(RECALL_OBSERVATION_SOURCE_CHAR_LIMIT);
-		expect(result.details.sourceCharacterCount).toBeGreaterThan(RECALL_OBSERVATION_SOURCE_CHAR_LIMIT);
-		expect(result.content[0].text).toContain("too large to return safely");
-		expect(result.content[0].text).toContain("No partial source content was returned");
-		expect(result.content[0].text).not.toContain("start-");
-		expect(result.content[0].text).not.toContain("-end");
+		expect(result.details.status).toBe("ok");
+		expect(result.details.sourceCharacterCount).toBeGreaterThan(20_000);
+		expect(result.content[0].text).toContain("start-");
+		expect(result.content[0].text).toContain("-end");
+		expect(result.content[0].text).not.toContain("too large to return safely");
+		expect(formatRecallResultForTui(result, false)).toContain("✓ observation · 2026-05-02 10:00 · [high]");
+		expect(formatRecallResultForTui(result, false)).toContain("✓ user · 2026-05-02 10:00 · entry source-large · ~");
 	});
 });

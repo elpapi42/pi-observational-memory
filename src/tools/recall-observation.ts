@@ -14,7 +14,6 @@ import { estimateEntryTokens } from "../tokens.js";
 import type { ObservationRecord } from "../types.js";
 
 export const RECALL_OBSERVATION_TOOL_NAME = "recall";
-export const RECALL_OBSERVATION_SOURCE_CHAR_LIMIT = 20_000;
 
 const OBSERVATION_ID_PATTERN = /^[a-f0-9]{12}$/;
 
@@ -23,8 +22,7 @@ type RecallObservationToolStatus =
 	| "invalid_id"
 	| "not_found"
 	| "no_source"
-	| "source_unavailable"
-	| "too_large";
+	| "source_unavailable";
 
 type ObservationDetails = Pick<ObservationRecord, "id" | "content" | "timestamp" | "relevance">;
 
@@ -53,7 +51,6 @@ export type RecallObservationToolDetails = {
 	observationId: string;
 	collision: boolean;
 	matches: RecallObservationMatchDetails[];
-	sourceCharacterLimit: number;
 	sourceCharacterCount?: number;
 	message?: string;
 };
@@ -135,16 +132,6 @@ function sourceEntryDetails(entry: Entry, includeContent: boolean): RecallSource
 		qualifiers,
 		...(includeContent && content ? { content } : {}),
 	};
-}
-
-function stripSourceContent(matches: RecallObservationMatchDetails[]): RecallObservationMatchDetails[] {
-	return matches.map((match) => ({
-		...match,
-		sourceEntries: match.sourceEntries?.map((source) => {
-			const { content: _content, ...withoutContent } = source;
-			return withoutContent;
-		}),
-	}));
 }
 
 function observationDetails(observation: ObservationRecord): ObservationDetails {
@@ -237,25 +224,11 @@ function renderFoundResult(result: Extract<RecallObservationSourcesResult, { sta
 	}
 
 	const text = sections.join("\n\n");
-	if (text.length > RECALL_OBSERVATION_SOURCE_CHAR_LIMIT) {
-		const message = `Source evidence for observation ${result.observationId} is too large to return safely (${text.length.toLocaleString()} characters; limit ${RECALL_OBSERVATION_SOURCE_CHAR_LIMIT.toLocaleString()}). No partial source content was returned.`;
-		return textResult(message, {
-			status: "too_large",
-			observationId: result.observationId,
-			collision: result.collision,
-			matches: stripSourceContent(detailsMatches),
-			sourceCharacterLimit: RECALL_OBSERVATION_SOURCE_CHAR_LIMIT,
-			sourceCharacterCount,
-			message,
-		});
-	}
-
 	return textResult(text, {
 		status: aggregateStatus(result.matches),
 		observationId: result.observationId,
 		collision: result.collision,
 		matches: detailsMatches,
-		sourceCharacterLimit: RECALL_OBSERVATION_SOURCE_CHAR_LIMIT,
 		sourceCharacterCount,
 	});
 }
@@ -280,10 +253,9 @@ function statusIcon(details: RecallObservationToolDetails): string {
 function statusSummary(details: RecallObservationToolDetails): string {
 	if (details.status === "invalid_id") return "invalid id";
 	if (details.status === "not_found") return "not found";
-	if (details.status === "too_large") return "too large";
 	if (details.status === "source_unavailable") return "source unavailable";
 	if (details.status === "no_source") return "no source";
-	return details.collision ? "id collision" : "recalled";
+	return details.collision ? "recalled · id collision" : "recalled";
 }
 
 export function formatRecallHeaderForTui(details: RecallObservationToolDetails): string {
@@ -296,13 +268,17 @@ export function formatRecallHeaderForTui(details: RecallObservationToolDetails):
 	return parts.join(" · ");
 }
 
+function sourceLabel(source: RecallSourceEntryDetails): string {
+	return source.origin ? `${source.origin[0].toLowerCase()}${source.origin.slice(1)}` : "entry";
+}
+
 function sourceMetadataLine(source: RecallSourceEntryDetails): string {
 	const qualifiers = source.qualifiers.length > 0 ? ` · ${source.qualifiers.join(" · ")}` : "";
-	return `  • ${source.origin} · ${source.timestamp} · entry ${source.id} · ${tokenSummary(source.tokens)}${qualifiers}`;
+	return `✓ ${sourceLabel(source)} · ${source.timestamp} · entry ${source.id} · ${tokenSummary(source.tokens)}${qualifiers}`;
 }
 
 function observationLine(observation: ObservationDetails): string {
-	return `[${observation.relevance}] ${observation.timestamp} · ${observation.content}`;
+	return `✓ observation · ${observation.timestamp} · [${observation.relevance}] · ${observation.content}`;
 }
 
 function indentContent(content: string): string {
@@ -320,7 +296,7 @@ function unavailableSourceLine(match: RecallObservationMatchDetails): string {
 	if (match.nonSourceEntryIds && match.nonSourceEntryIds.length > 0) {
 		parts.push(`non-source: ${match.nonSourceEntryIds.join(", ")}`);
 	}
-	return `  • source unavailable${parts.length > 0 ? ` · ${parts.join(" · ")}` : ""}`;
+	return `× source unavailable${parts.length > 0 ? ` · ${parts.join(" · ")}` : ""}`;
 }
 
 function matchLines(match: RecallObservationMatchDetails, expanded: boolean): string[] {
@@ -336,7 +312,7 @@ function matchLines(match: RecallObservationMatchDetails, expanded: boolean): st
 		return lines;
 	}
 	if (match.status === "source_unavailable") return [...lines, unavailableSourceLine(match)];
-	return [...lines, "  • no source · legacy/unattributed observation"];
+	return [...lines, "× no source · legacy/unattributed observation"];
 }
 
 export function formatRecallResultForTui(result: AgentToolResult<RecallObservationToolDetails>, expanded: boolean): string {
@@ -407,7 +383,6 @@ export const recallObservationTool = defineTool({
 				observationId,
 				collision: false,
 				matches: [],
-				sourceCharacterLimit: RECALL_OBSERVATION_SOURCE_CHAR_LIMIT,
 				message,
 			});
 		}
@@ -421,7 +396,6 @@ export const recallObservationTool = defineTool({
 				observationId,
 				collision: false,
 				matches: [],
-				sourceCharacterLimit: RECALL_OBSERVATION_SOURCE_CHAR_LIMIT,
 				message,
 			});
 		}
