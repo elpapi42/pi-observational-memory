@@ -9,7 +9,7 @@ import {
 } from "./types.js";
 import { estimateEntryTokens } from "./tokens.js";
 
-type Entry = {
+export type Entry = {
 	type: string;
 	id: string;
 	timestamp?: string;
@@ -25,9 +25,49 @@ type Entry = {
 
 const RAW_TYPES = new Set(["message", "custom_message", "branch_summary"]);
 
+export function isSourceEntry(entry: Entry): boolean {
+	return RAW_TYPES.has(entry.type);
+}
+
 function isObservationEntry(entry: Entry): boolean {
 	return entry.type === "custom" && entry.customType === OBSERVATION_CUSTOM_TYPE;
 }
+
+export type RecallObservationMatch =
+	| {
+			status: "ok";
+			observation: ObservationRecord;
+			observationEntryId: string;
+			sourceEntryIds: string[];
+			sourceEntries: Entry[];
+		}
+	| {
+			status: "no_source";
+			observation: ObservationRecord;
+			observationEntryId: string;
+		}
+	| {
+			status: "source_unavailable";
+			observation: ObservationRecord;
+			observationEntryId: string;
+			sourceEntryIds: string[];
+			missingSourceEntryIds: string[];
+			nonSourceEntryIds: string[];
+		};
+
+export type RecallObservationSourcesResult =
+	| {
+			status: "not_found";
+			observationId: string;
+			matches: [];
+			collision: false;
+		}
+	| {
+			status: "found";
+			observationId: string;
+			matches: RecallObservationMatch[];
+			collision: boolean;
+		};
 
 export function findLastCompactionIndex(entries: Entry[]): number {
 	for (let i = entries.length - 1; i >= 0; i--) {
@@ -103,9 +143,87 @@ export function rawTailEntriesBetween(entries: Entry[], fromId: string, untilId:
 
 	const result: Entry[] = [];
 	for (let i = fromIdx; i <= untilIdx; i++) {
-		if (RAW_TYPES.has(entries[i].type)) result.push(entries[i]);
+		if (isSourceEntry(entries[i])) result.push(entries[i]);
 	}
 	return result;
+}
+
+function uniqueIds(ids: string[]): string[] {
+	return Array.from(new Set(ids));
+}
+
+function resolveSourceEntries(entries: Entry[], sourceEntryIds: string[]): {
+	status: "ok" | "source_unavailable";
+	sourceEntryIds: string[];
+	sourceEntries: Entry[];
+	missingSourceEntryIds: string[];
+	nonSourceEntryIds: string[];
+} {
+	const requested = uniqueIds(sourceEntryIds);
+	const requestedSet = new Set(requested);
+	const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+	const missingSourceEntryIds = requested.filter((id) => !entriesById.has(id));
+	const nonSourceEntryIds = requested.filter((id) => {
+		const entry = entriesById.get(id);
+		return entry !== undefined && !isSourceEntry(entry);
+	});
+	if (missingSourceEntryIds.length > 0 || nonSourceEntryIds.length > 0) {
+		return {
+			status: "source_unavailable",
+			sourceEntryIds: requested,
+			sourceEntries: [],
+			missingSourceEntryIds,
+			nonSourceEntryIds,
+		};
+	}
+
+	const sourceEntries = entries.filter((entry) => requestedSet.has(entry.id));
+	return {
+		status: "ok",
+		sourceEntryIds: sourceEntries.map((entry) => entry.id),
+		sourceEntries,
+		missingSourceEntryIds: [],
+		nonSourceEntryIds: [],
+	};
+}
+
+export function recallObservationSources(entries: Entry[], observationId: string): RecallObservationSourcesResult {
+	const matches: RecallObservationMatch[] = [];
+	for (const entry of entries) {
+		if (!isObservationEntry(entry)) continue;
+		if (!isObservationEntryData(entry.data)) continue;
+		for (const observation of entry.data.records) {
+			if (observation.id !== observationId) continue;
+			if (!observation.sourceEntryIds || observation.sourceEntryIds.length === 0) {
+				matches.push({ status: "no_source", observation, observationEntryId: entry.id });
+				continue;
+			}
+
+			const resolved = resolveSourceEntries(entries, observation.sourceEntryIds);
+			if (resolved.status === "source_unavailable") {
+				matches.push({
+					status: "source_unavailable",
+					observation,
+					observationEntryId: entry.id,
+					sourceEntryIds: resolved.sourceEntryIds,
+					missingSourceEntryIds: resolved.missingSourceEntryIds,
+					nonSourceEntryIds: resolved.nonSourceEntryIds,
+				});
+				continue;
+			}
+
+			matches.push({
+				status: "ok",
+				observation,
+				observationEntryId: entry.id,
+				sourceEntryIds: resolved.sourceEntryIds,
+				sourceEntries: resolved.sourceEntries,
+			});
+		}
+	}
+
+	if (matches.length === 0) return { status: "not_found", observationId, matches: [], collision: false };
+	return { status: "found", observationId, matches, collision: matches.length > 1 };
 }
 
 function getPriorMemoryDetails(entries: Entry[]): MemoryDetails | undefined {

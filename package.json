@@ -1,6 +1,6 @@
 {
   "name": "pi-observational-memory",
-  "version": "2.1.3",
+  "version": "2.2.3",
   "description": "Observational memory extension for pi — cache-friendly tiered compaction with observations and reflections.",
   "type": "module",
   "license": "MIT",
@@ -30,18 +30,20 @@
     "README.md"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-agent-core": "*",
     "@mariozechner/pi-ai": "*",
-    "@mariozechner/pi-agent-core": "*"
+    "@mariozechner/pi-coding-agent": "*"
   },
   "devDependencies": {
-    "@mariozechner/pi-ai": "^0.66.1",
     "@mariozechner/pi-agent-core": "^0.66.1",
+    "@mariozechner/pi-ai": "^0.66.1",
     "@mariozechner/pi-coding-agent": "^0.66.1",
     "@types/node": "^22.0.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.5"
   }
 }

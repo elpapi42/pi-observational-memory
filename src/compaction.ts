@@ -323,7 +323,7 @@ export function renderSummary(reflections: Reflection[], observations: Observati
 		parts.push(`## Reflections\n${reflections.join("\n")}`);
 	}
 	if (observations.length > 0) {
-		const body = observations.map((o) => `${o.timestamp} [${o.relevance}] ${o.content}`).join("\n");
+		const body = observationsToPromptLines(observations).join("\n");
 		parts.push(`## Observations\n${body}`);
 	}
 

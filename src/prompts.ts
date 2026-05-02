@@ -97,7 +97,7 @@ Your job is to compress a chunk of recent conversation into timestamped, rated o
 You receive:
 - Current reflections (long-lived facts already crystallized).
 - Current observations (already-recorded observations, each shown as "[id] YYYY-MM-DD HH:MM [relevance] content").
-- A new chunk of conversation with inline message timestamps formatted as "[User @ YYYY-MM-DD HH:MM]:", "[Assistant @ ...]:", "[Tool result for <name> @ ...]:".
+- A new chunk of conversation with source entry labels and inline message timestamps. Each source block starts with "[Source entry id: <id>]" followed by content formatted as "[User @ YYYY-MM-DD HH:MM]:", "[Assistant @ ...]:", "[Tool result for <name> @ ...]:", custom messages, or branch summaries.
 - A current local time fallback for observations that have no obvious message timestamp.
 
 How you work:
@@ -110,6 +110,9 @@ How you work:
 What to emit:
 - Produce NEW observations for the new chunk only. Do not restate facts already present in reflections or current observations unless something has materially changed.
 - Use the timestamp from the relevant conversation message. Fall back to current local time ONLY when no message timestamp applies.
+- For every observation, include sourceEntryIds: the smallest exact set of "[Source entry id: ...]" ids that directly support the observation.
+- Never invent source entry ids. Use only ids printed in the chunk. If an observation spans multiple turns or tool results, include every supporting source entry id.
+- Observations with missing, empty, or invalid sourceEntryIds will be rejected and not recorded, so do not call record_observations until you can cite valid source ids.
 - Group repeated similar tool calls into a single observation rather than one per call.
 - Skip routine, low-information events. It is fine to emit zero observations if the chunk carries no new information — in that case, simply do not call the tool and end with a plain-text confirmation.
 
@@ -267,6 +270,8 @@ export function buildPrunerPassGuidance(pass: number, maxPasses: number): string
 export const CONTEXT_USAGE_INSTRUCTIONS = `These are condensed memories from earlier in this session.
 
 - Reflections: stable, long-lived facts about the user, project, decisions, and constraints.
-- Observations: timestamped events from the conversation history, in chronological order.
+- Observations: timestamped events from the conversation history, in chronological order. Observation lines include ids in brackets.
 
-Treat these as past records. When entries conflict, the most recent observation reflects the latest known state. Work that prior observations describe as completed should not be redone unless the user explicitly asks to revisit it.`;
+Treat these as past records. When entries conflict, the most recent observation reflects the latest known state. Work that prior observations describe as completed should not be redone unless the user explicitly asks to revisit it.
+
+When exact source context is needed for precision or traceability, use the recall_observation tool with the relevant observation id. Do not use recall as broad search or inject raw source unless it is needed.`;

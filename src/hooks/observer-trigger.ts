@@ -8,7 +8,7 @@ import {
 } from "../branch.js";
 import { observationsToPromptLines, runObserver } from "../observer.js";
 import type { Runtime } from "../runtime.js";
-import { serializeBranchEntries } from "../serialize.js";
+import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import { estimateStringTokens } from "../tokens.js";
 import { OBSERVATION_CUSTOM_TYPE, type ObservationEntryData } from "../types.js";
 
@@ -34,8 +34,8 @@ export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): voi
 
 		const chunkEntries = rawTailEntriesBetween(entries, coversFromId, coversUpToId);
 		if (chunkEntries.length === 0) return;
-		const chunk = serializeBranchEntries(chunkEntries);
-		if (!chunk.trim()) return;
+		const { text: chunk, sourceEntryIds } = serializeSourceAddressedBranchEntries(chunkEntries);
+		if (!chunk.trim() || sourceEntryIds.length === 0) return;
 
 		if (ctx.hasUI) ctx.ui.notify(
 			`Observational memory: observer running on ~${tokens.toLocaleString()}-token chunk`,
@@ -63,6 +63,7 @@ export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): voi
 				priorReflections: reflections,
 				priorObservations: priorObservationLines,
 				chunk,
+				allowedSourceEntryIds: sourceEntryIds,
 			});
 			if (!records || records.length === 0) {
 				if (ctx.hasUI && ctx.ui) ctx.ui.notify(

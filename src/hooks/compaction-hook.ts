@@ -8,7 +8,7 @@ import {
 import { renderSummary, runPruner, runReflector } from "../compaction.js";
 import { observationsToPromptLines, runObserver } from "../observer.js";
 import type { Runtime } from "../runtime.js";
-import { serializeBranchEntries } from "../serialize.js";
+import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import { estimateStringTokens } from "../tokens.js";
 import {
 	OBSERVATION_CUSTOM_TYPE,
@@ -58,8 +58,8 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			let gapObservationData: ObservationEntryData | null = null;
 			const gap = gapRawEntries(entries, firstKeptEntryId);
 			if (gap.length > 0) {
-				const gapChunk = serializeBranchEntries(gap);
-				if (gapChunk.trim()) {
+				const { text: gapChunk, sourceEntryIds } = serializeSourceAddressedBranchEntries(gap);
+				if (gapChunk.trim() && sourceEntryIds.length > 0) {
 					const gapFromId = gap[0].id;
 					const gapUpToId = gap[gap.length - 1].id;
 					const priorObservationLines = observationsToPromptLines([
@@ -79,6 +79,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 						priorReflections: memoryState.reflections,
 						priorObservations: priorObservationLines,
 						chunk: gapChunk,
+						allowedSourceEntryIds: sourceEntryIds,
 						signal,
 					});
 					const gapPromise: Promise<void> = gapCall.then(() => undefined, () => undefined);

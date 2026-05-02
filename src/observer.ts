@@ -14,6 +14,7 @@ interface RunObserverArgs {
 	priorReflections: string[];
 	priorObservations: string[];
 	chunk: string;
+	allowedSourceEntryIds: string[];
 	signal?: AbortSignal;
 }
 
@@ -36,6 +37,15 @@ const RecordObservationsSchema = Type.Object({
 				description: "Single-line plain prose. No markdown, no tags, no embedded timestamp.",
 			}),
 			relevance: RelevanceSchema,
+			sourceEntryIds: Type.Array(
+				Type.String({ minLength: 1 }),
+				{
+					minItems: 1,
+					description:
+						"Exact source entry ids from the chunk that directly support this observation. " +
+						"Use only ids shown in '[Source entry id: ...]' labels; never invent ids.",
+				},
+			),
 		}),
 		{ description: "Batch of new observations. May be empty only if the tool is not called at all." },
 	),
@@ -47,8 +57,25 @@ function joinOrEmpty(items: string[]): string {
 	return items.length ? items.join("\n") : "(none yet)";
 }
 
+export function normalizeSourceEntryIds(
+	sourceEntryIds: readonly string[] | undefined,
+	allowedSourceEntryIds: readonly string[],
+): string[] | undefined {
+	if (!sourceEntryIds || sourceEntryIds.length === 0) return undefined;
+	const allowedOrder = new Map<string, number>();
+	for (let i = 0; i < allowedSourceEntryIds.length; i++) allowedOrder.set(allowedSourceEntryIds[i], i);
+
+	const seen = new Set<string>();
+	for (const id of sourceEntryIds) {
+		if (!allowedOrder.has(id)) return undefined;
+		seen.add(id);
+	}
+	if (seen.size === 0) return undefined;
+	return Array.from(seen).sort((a, b) => (allowedOrder.get(a) ?? 0) - (allowedOrder.get(b) ?? 0));
+}
+
 export async function runObserver(args: RunObserverArgs): Promise<ObservationRecord[] | undefined> {
-	const { model, apiKey, headers, priorReflections, priorObservations, chunk, signal } = args;
+	const { model, apiKey, headers, priorReflections, priorObservations, chunk, allowedSourceEntryIds, signal } = args;
 	const conversation = chunk.trim();
 	if (!conversation) return undefined;
 
@@ -65,7 +92,13 @@ export async function runObserver(args: RunObserverArgs): Promise<ObservationRec
 		execute: async (_id, params: RecordObservationsArgs) => {
 			let added = 0;
 			let duplicates = 0;
+			let rejected = 0;
 			for (const obs of params.observations) {
+				const sourceEntryIds = normalizeSourceEntryIds(obs.sourceEntryIds, allowedSourceEntryIds);
+				if (!sourceEntryIds) {
+					rejected++;
+					continue;
+				}
 				const content = truncateRecordContent(obs.content);
 				const id = hashId(content);
 				if (accumulated.has(id)) {
@@ -77,15 +110,20 @@ export async function runObserver(args: RunObserverArgs): Promise<ObservationRec
 					content,
 					timestamp: obs.timestamp,
 					relevance: obs.relevance as Relevance,
+					sourceEntryIds,
 				});
 				added++;
 			}
+			const rejectedPart = rejected > 0
+				? ` ${rejected} observation${rejected === 1 ? "" : "s"} rejected for missing or invalid sourceEntryIds.`
+				: "";
 			const ack =
 				`Recorded ${added} new observation${added === 1 ? "" : "s"} ` +
-				(duplicates > 0 ? `(${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped). ` : ". ") +
-				`Total so far this run: ${accumulated.size}. ` +
+				(duplicates > 0 ? `(${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped).` : ".") +
+				rejectedPart +
+				` Total so far this run: ${accumulated.size}. ` +
 				`Continue if the chunk still has uncovered content; otherwise stop calling the tool and emit a short plain-text confirmation.`;
-			return { content: [{ type: "text", text: ack }], details: { added, duplicates, total: accumulated.size } };
+			return { content: [{ type: "text", text: ack }], details: { added, duplicates, rejected, total: accumulated.size } };
 		},
 	};
 

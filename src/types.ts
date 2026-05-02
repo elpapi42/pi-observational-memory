@@ -9,6 +9,7 @@ export interface ObservationRecord {
 	content: string;
 	timestamp: string;
 	relevance: Relevance;
+	sourceEntryIds?: string[];
 }
 
 export type Reflection = string;
@@ -34,11 +35,19 @@ function isRelevance(v: unknown): v is Relevance {
 function isObservationRecord(v: unknown): v is ObservationRecord {
 	if (!v || typeof v !== "object") return false;
 	const o = v as Record<string, unknown>;
+	if (
+		typeof o.id !== "string" ||
+		typeof o.content !== "string" ||
+		typeof o.timestamp !== "string" ||
+		!isRelevance(o.relevance)
+	) {
+		return false;
+	}
+	if (o.sourceEntryIds === undefined) return true;
 	return (
-		typeof o.id === "string" &&
-		typeof o.content === "string" &&
-		typeof o.timestamp === "string" &&
-		isRelevance(o.relevance)
+		Array.isArray(o.sourceEntryIds) &&
+		o.sourceEntryIds.length > 0 &&
+		o.sourceEntryIds.every((id) => typeof id === "string" && id.length > 0)
 	);
 }
 
