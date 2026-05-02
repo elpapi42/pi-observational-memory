@@ -32,7 +32,7 @@ describe("renderSummary", () => {
 
 	it("includes concise on-demand recall guidance in compact memory instructions", () => {
 		expect(CONTEXT_USAGE_INSTRUCTIONS).toContain("Observation lines include ids in brackets.");
-		expect(CONTEXT_USAGE_INSTRUCTIONS).toContain("recall_observation");
+		expect(CONTEXT_USAGE_INSTRUCTIONS).toContain("recall tool");
 		expect(CONTEXT_USAGE_INSTRUCTIONS).toContain("Do not use recall as broad search");
 	});
 });

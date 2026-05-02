@@ -4,6 +4,8 @@ import observationalMemory from "../src/index.js";
 import {
 	RECALL_OBSERVATION_SOURCE_CHAR_LIMIT,
 	RECALL_OBSERVATION_TOOL_NAME,
+	formatRecallCallForTui,
+	formatRecallResultForTui,
 	recallObservationTool,
 } from "../src/tools/recall-observation.js";
 import type { ObservationRecord } from "../src/types.js";
@@ -55,7 +57,7 @@ async function executeRecall(id: string, entries: unknown[]) {
 	return { result, ...fake };
 }
 
-describe("recall_observation tool registration", () => {
+describe("recall tool registration", () => {
 	it("is registered from the extension entrypoint without removing existing registrations", () => {
 		const pi = {
 			on: vi.fn(),
@@ -72,13 +74,14 @@ describe("recall_observation tool registration", () => {
 	});
 
 	it("defines prompt metadata so the actor can discover the narrow recall tool", () => {
-		expect(recallObservationTool.name).toBe("recall_observation");
+		expect(recallObservationTool.name).toBe("recall");
+		expect(formatRecallCallForTui(observationId)).toBe("recall abc123def456");
 		expect(recallObservationTool.promptSnippet).toContain("observation id");
 		expect(recallObservationTool.promptGuidelines?.join("\n")).toContain("not general search");
 	});
 });
 
-describe("recall_observation tool execution", () => {
+describe("recall tool execution", () => {
 	it("returns a simple source list for a source-attributed observation and uses only getBranch", async () => {
 		const { result, getBranch, getEntries } = await executeRecall(observationId, [
 			sourceEntry(),
@@ -91,6 +94,47 @@ describe("recall_observation tool execution", () => {
 		expect(result.content[0].text).toBe("[User @ 2026-05-02 10:00]: Please preserve exact sources.");
 		expect(getBranch).toHaveBeenCalledTimes(1);
 		expect(getEntries).not.toHaveBeenCalled();
+	});
+
+	it("formats collapsed and expanded TUI output from metadata without truncating observation content", async () => {
+		const fullObservationContent = "User wants recalled observation content shown fully in collapsed and expanded TUI views, without truncation.";
+		const assistantSource = messageEntry({
+			id: "source-assistant",
+			message: {
+				role: "assistant",
+				timestamp: "2026-05-02 10:01",
+				content: [
+					{ type: "text", text: "I will inspect the code." },
+					{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "src/tools/recall-observation.ts" } },
+				],
+			},
+		});
+		const { result } = await executeRecall(observationId, [
+			sourceEntry(),
+			assistantSource,
+			obsEntry("obs-entry", [
+				{ ...baseObservation, content: fullObservationContent, sourceEntryIds: ["source-user", "source-assistant"] },
+			]),
+		]);
+
+		const collapsed = formatRecallResultForTui(result, false);
+		const expanded = formatRecallResultForTui(result, true);
+
+		expect(collapsed).toContain("✓ recall abc123def456 · 1 match · 2 source entries");
+		expect(collapsed).toContain(`[high] 2026-05-02 10:00 · ${fullObservationContent}`);
+		expect(collapsed).toContain("\n\n  • User · 2026-05-02 10:00 · entry source-user · ~");
+		expect(collapsed).toContain("  • Assistant · 2026-05-02 10:01 · entry source-assistant · ~");
+		expect(collapsed).toContain("tool calls: read");
+		expect(collapsed).not.toContain("Please preserve exact sources.");
+		expect(collapsed).not.toContain("I will inspect the code.");
+		expect(collapsed).toContain("(Ctrl+O to expand)");
+
+		expect(expanded).toContain(`[high] 2026-05-02 10:00 · ${fullObservationContent}`);
+		expect(expanded).toContain("    Please preserve exact sources.");
+		expect(expanded).toContain("    I will inspect the code.");
+		expect(expanded).toContain('[read({"path":"src/tools/recall-observation.ts"})]');
+		expect(expanded).not.toContain("    [User @ 2026-05-02 10:00]:");
+		expect(expanded).not.toContain("    [Assistant @ 2026-05-02 10:01]:");
 	});
 
 	it("returns invalid_id for malformed ids", async () => {

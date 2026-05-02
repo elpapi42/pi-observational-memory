@@ -274,4 +274,4 @@ export const CONTEXT_USAGE_INSTRUCTIONS = `These are condensed memories from ear
 
 Treat these as past records. When entries conflict, the most recent observation reflects the latest known state. Work that prior observations describe as completed should not be redone unless the user explicitly asks to revisit it.
 
-When exact source context is needed for precision or traceability, use the recall_observation tool with the relevant observation id. Do not use recall as broad search or inject raw source unless it is needed.`;
+When exact source context is needed for precision or traceability, use the recall tool with the relevant observation id. Do not use recall as broad search or inject raw source unless it is needed.`;
