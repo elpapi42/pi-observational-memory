@@ -3,12 +3,13 @@ import { Type, type Message, type Model } from "@mariozechner/pi-ai";
 import type { Static } from "@sinclair/typebox";
 import { hashId } from "./ids.js";
 import { observationsToPromptLines } from "./observer.js";
-import { buildPrunerPassGuidance, CONTEXT_USAGE_INSTRUCTIONS, PRUNER_SYSTEM, REFLECTOR_SYSTEM } from "./prompts.js";
+import { buildPrunerPassGuidance, buildReflectorPassGuidance, CONTEXT_USAGE_INSTRUCTIONS, PRUNER_SYSTEM, REFLECTOR_SYSTEM } from "./prompts.js";
 import { truncateRecordContent } from "./serialize.js";
 import { estimateStringTokens } from "./tokens.js";
 import { reflectionContent, reflectionToPromptLine } from "./types.js";
 import type { MemoryReflection, ObservationRecord, ReflectionRecord } from "./types.js";
 
+const REFLECTOR_MAX_PASSES = 3;
 const PRUNER_MAX_PASSES = 5;
 const PRUNER_TARGET_RATIO = 0.8;
 
@@ -21,6 +22,7 @@ interface LlmArgs {
 	apiKey: string;
 	headers?: Record<string, string>;
 	signal?: AbortSignal;
+	agentLoop?: typeof agentLoop;
 }
 
 function joinReflectionsOrEmpty(items: MemoryReflection[]): string {
@@ -119,72 +121,205 @@ export function normalizeSupportingObservationIds(
 	return Array.from(seen).sort((a, b) => (allowedOrder.get(a) ?? 0) - (allowedOrder.get(b) ?? 0));
 }
 
-export async function runReflector(
+export interface ReflectorPassContext {
+	pass: number;
+	maxPasses: number;
+	minSupportingObservationIds: number;
+}
+
+export type ReflectionProposal = {
+	content: string;
+	supportingObservationIds?: readonly string[];
+};
+
+export interface ApplyReflectionProposalsResult {
+	reflections: MemoryReflection[];
+	accepted: number;
+	added: number;
+	merged: number;
+	promoted: number;
+	duplicates: number;
+	unsupported: number;
+}
+
+function reflectorPassContext(pass: number): ReflectorPassContext {
+	return {
+		pass,
+		maxPasses: REFLECTOR_MAX_PASSES,
+		minSupportingObservationIds: pass === 1 ? 2 : 1,
+	};
+}
+
+function reflectionContentKey(reflection: MemoryReflection): string {
+	return reflectionContent(reflection).trim();
+}
+
+function normalizeReflectionProposalContent(content: string): string | undefined {
+	const normalized = truncateRecordContent(content.trim());
+	if (!normalized || /[\r\n]/.test(normalized)) return undefined;
+	return normalized;
+}
+
+function mergeSupportingObservationIds(
+	existing: readonly string[],
+	incoming: readonly string[],
+	allowedObservationIds: readonly string[],
+): string[] | undefined {
+	const allowed = new Set(allowedObservationIds);
+	const historicalExisting = existing.filter((id) => !allowed.has(id));
+	const currentExisting = existing.filter((id) => allowed.has(id));
+	const normalizedCurrent = normalizeSupportingObservationIds([...currentExisting, ...incoming], allowedObservationIds);
+	if (!normalizedCurrent) return undefined;
+	return [...historicalExisting, ...normalizedCurrent];
+}
+
+export function renderReflectionsForReflectorPrompt(reflections: MemoryReflection[]): string {
+	return joinReflectionsOrEmpty(reflections);
+}
+
+export function applyReflectionProposals(
+	reflections: MemoryReflection[],
+	proposals: readonly ReflectionProposal[],
+	allowedObservationIds: readonly string[],
+	passContext: Pick<ReflectorPassContext, "minSupportingObservationIds">,
+): ApplyReflectionProposalsResult {
+	const next = [...reflections];
+	let accepted = 0;
+	let added = 0;
+	let merged = 0;
+	let promoted = 0;
+	let duplicates = 0;
+	let unsupported = 0;
+
+	for (const proposal of proposals) {
+		const content = normalizeReflectionProposalContent(proposal.content);
+		if (!content) {
+			unsupported++;
+			continue;
+		}
+		const supportingObservationIds = normalizeSupportingObservationIds(
+			proposal.supportingObservationIds,
+			allowedObservationIds,
+		);
+		if (!supportingObservationIds || supportingObservationIds.length < passContext.minSupportingObservationIds) {
+			unsupported++;
+			continue;
+		}
+
+		const existingIndex = next.findIndex((reflection) => reflectionContentKey(reflection) === content);
+		if (existingIndex >= 0) {
+			const existing = next[existingIndex];
+			if (typeof existing === "string") {
+				next[existingIndex] = {
+					id: hashId(content),
+					content,
+					supportingObservationIds,
+				};
+				accepted++;
+				promoted++;
+				continue;
+			}
+
+			const mergedSupport = mergeSupportingObservationIds(
+				existing.supportingObservationIds,
+				supportingObservationIds,
+				allowedObservationIds,
+			);
+			if (!mergedSupport) {
+				unsupported++;
+				continue;
+			}
+			const hasNewSupport = mergedSupport.length !== existing.supportingObservationIds.length;
+			if (existing.legacy === true) {
+				next[existingIndex] = {
+					id: existing.id,
+					content: existing.content,
+					supportingObservationIds: mergedSupport,
+				};
+				accepted++;
+				promoted++;
+				continue;
+			}
+			if (hasNewSupport) {
+				next[existingIndex] = {
+					...existing,
+					supportingObservationIds: mergedSupport,
+				};
+				accepted++;
+				merged++;
+			} else {
+				duplicates++;
+			}
+			continue;
+		}
+
+		next.push({
+			id: hashId(content),
+			content,
+			supportingObservationIds,
+		});
+		accepted++;
+		added++;
+	}
+
+	return { reflections: next, accepted, added, merged, promoted, duplicates, unsupported };
+}
+
+async function runReflectorPass(
 	args: LlmArgs,
 	reflections: MemoryReflection[],
 	observations: ObservationRecord[],
-): Promise<ReflectionRecord[]> {
-	const existing = new Set(reflections.map((r) => reflectionContent(r).trim()));
+	passContext: ReflectorPassContext,
+): Promise<{ reflections: MemoryReflection[]; failed: boolean }> {
 	const allowedObservationIds = observations.map((o) => o.id);
-	const added = new Map<string, ReflectionRecord>();
+	let currentReflections = reflections;
 
 	const recordTool: AgentTool<typeof RecordReflectionsSchema> = {
 		name: "record_reflections",
 		label: "Record reflections",
 		description:
-			"Record a batch of new reflections crystallized from the observation pool. " +
-			"May be called multiple times. Stop calling when nothing more is stable enough to crystallize, " +
+			"Record a batch of reflections crystallized from the observation pool. " +
+			"May be called multiple times. Stop calling when nothing more is stable enough to crystallize for this pass, " +
 			"then emit a short plain-text confirmation.",
 		parameters: RecordReflectionsSchema,
 		execute: async (_id, params: RecordReflectionsArgs) => {
-			let accepted = 0;
-			let duplicates = 0;
-			let unsupported = 0;
-			for (const proposal of params.reflections) {
-				const content = truncateRecordContent(proposal.content.trim());
-				if (!content || /[\r\n]/.test(content)) {
-					unsupported++;
-					continue;
-				}
-				const supportingObservationIds = normalizeSupportingObservationIds(
-					proposal.supportingObservationIds,
-					allowedObservationIds,
-				);
-				if (!supportingObservationIds) {
-					unsupported++;
-					continue;
-				}
-				if (existing.has(content) || added.has(content)) {
-					duplicates++;
-					continue;
-				}
-				added.set(content, {
-					id: hashId(content),
-					content,
-					supportingObservationIds,
-				});
-				accepted++;
-			}
+			const result = applyReflectionProposals(
+				currentReflections,
+				params.reflections,
+				allowedObservationIds,
+				passContext,
+			);
+			currentReflections = result.reflections;
 			const parts: string[] = [];
-			parts.push(`Recorded ${accepted} new reflection${accepted === 1 ? "" : "s"}.`);
-			if (duplicates) parts.push(`${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped.`);
-			if (unsupported) parts.push(`${unsupported} unsupported proposal${unsupported === 1 ? "" : "s"} rejected for invalid supporting observation ids.`);
-			parts.push(`Total new this run: ${added.size}.`);
-			parts.push("Call record_reflections again if more should be crystallized; otherwise stop and emit a short plain-text confirmation.");
+			parts.push(`Accepted ${result.accepted} reflection proposal${result.accepted === 1 ? "" : "s"}.`);
+			if (result.added) parts.push(`${result.added} new.`);
+			if (result.merged) parts.push(`${result.merged} merged into existing reflections.`);
+			if (result.promoted) parts.push(`${result.promoted} promoted from legacy/no-provenance memory.`);
+			if (result.duplicates) parts.push(`${result.duplicates} duplicate/no-op proposal${result.duplicates === 1 ? "" : "s"} skipped.`);
+			if (result.unsupported) {
+				parts.push(
+					`${result.unsupported} unsupported proposal${result.unsupported === 1 ? "" : "s"} rejected for invalid supporting observation ids or this pass's minimum support requirement.`,
+				);
+			}
+			parts.push("Call record_reflections again if more should be crystallized for this pass; otherwise stop and emit a short plain-text confirmation.");
 			return {
 				content: [{ type: "text", text: parts.join(" ") }],
-				details: { accepted, duplicates, unsupported, total: added.size },
+				details: result,
 			};
 		},
 	};
 
+	const passGuidance = buildReflectorPassGuidance(passContext.pass, passContext.maxPasses);
 	const userText = `CURRENT REFLECTIONS:
-${joinReflectionsOrEmpty(reflections)}
+${renderReflectionsForReflectorPrompt(reflections)}
 
 CURRENT OBSERVATIONS:
 ${joinObservationsOrEmpty(observations)}
 
-Crystallize new long-lived reflections from the observation pool. Call record_reflections with batches of new reflection proposals, each with the exact supporting observation ids. You may call the tool multiple times as you reason through the pool. Do not restate reflections already in the current reflections list. When done, stop calling the tool and emit a short plain-text confirmation.`;
+REFLECTOR PASS GUIDANCE:
+${passGuidance}
+
+Crystallize long-lived reflections from the full observation pool for this pass. Call record_reflections with batches of reflection proposals, each with the exact supporting observation ids. You may call the tool multiple times as you reason through the pool. To strengthen or promote an existing reflection, repeat the exact existing reflection content with valid supporting observation ids. Do not lightly reword existing reflections. When done, stop calling the tool and emit a short plain-text confirmation.`;
 
 	const prompts: Message[] = [
 		{
@@ -212,16 +347,33 @@ Crystallize new long-lived reflections from the observation pool. Call record_re
 	};
 
 	try {
-		const stream = agentLoop(prompts, context, config, args.signal);
+		const loop = args.agentLoop ?? agentLoop;
+		const stream = loop(prompts, context, config, args.signal);
 		for await (const _event of stream) {
-			// Drain events; the tool's execute already collects reflections.
+			// Drain events; the tool's execute already updates reflections.
 		}
 		await stream.result();
 	} catch {
-		// Salvage any reflections accepted before the error; downstream pruner still runs.
+		return { reflections: currentReflections, failed: true };
 	}
 
-	return Array.from(added.values());
+	return { reflections: currentReflections, failed: false };
+}
+
+export async function runReflector(
+	args: LlmArgs,
+	reflections: MemoryReflection[],
+	observations: ObservationRecord[],
+): Promise<MemoryReflection[]> {
+	let currentReflections = reflections;
+
+	for (let pass = 1; pass <= REFLECTOR_MAX_PASSES; pass++) {
+		const result = await runReflectorPass(args, currentReflections, observations, reflectorPassContext(pass));
+		currentReflections = result.reflections;
+		if (result.failed) break;
+	}
+
+	return currentReflections;
 }
 
 export interface PrunerResult {

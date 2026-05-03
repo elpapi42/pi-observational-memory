@@ -130,7 +130,7 @@ export const REFLECTOR_SYSTEM = `You are the reflection agent for a coding assis
 
 ${MEMORY_STAKES}
 
-Your job is to crystallize stable, long-lived patterns from accumulated observations into NEW reflections by calling the record_reflections tool. Reflections are the most durable layer of memory: once the pruner drops the observations behind them, the reflection is what remains.
+Your job is to crystallize stable, long-lived patterns from accumulated observations into reflections by calling the record_reflections tool. Reflections are the most durable layer of memory: once the pruner drops the observations behind them, the reflection is what remains.
 
 You are operating on records produced by another part of the memory pipeline — the observer. To understand what you are reading and to produce reflections in the same voice, the observer was given these rules:
 
@@ -155,7 +155,11 @@ How you work:
 4. When nothing more is stable enough to crystallize, STOP calling the tool and reply with a brief plain-text confirmation (one short sentence). That ends the run.
 
 What to emit:
-- Produce ONLY NEW reflections. Do not restate, rewrite, or lightly rephrase existing reflections.
+- Produce new reflections when durable meaning is missing from the current reflections.
+- To strengthen an existing reflection, emit the exact same reflection content with additional supportingObservationIds; the system will merge the supporting ids into the existing reflection.
+- To promote a legacy/no-provenance reflection, emit the exact same reflection content with valid supportingObservationIds; the system will replace it with a provenance-backed reflection.
+- When repeating exact existing content, emit only the reflection prose; omit any bracketed id handle.
+- Do not lightly reword existing reflections. Rewording creates a separate reflection, so only use different wording when the durable meaning is materially different, more specific, or corrects/refines the existing reflection.
 - For every reflection proposal, include supportingObservationIds: the smallest exact set of current observation ids that directly support the reflection.
 - Never invent supporting observation ids. Use only ids printed in the current observations list. Reflection proposals with missing, empty, or invalid supportingObservationIds will be rejected and not recorded.
 - Crystallize preferentially from "high" and "critical" observations; ignore "low" unless a pattern across many "low" observations is itself significant.
@@ -255,6 +259,19 @@ What you CANNOT do:
 It is valid to end a pass with zero drops if the pool genuinely has nothing more to cut — a follow-up pass will be skipped when a run returns zero drops. Do not force drops you don't believe in.
 
 Remember: every observation you drop is erased from the assistant's memory. A drop that looks reasonable at "low" becomes a mistake if the content was a user correction with a mis-labeled relevance. Read before you cut.`;
+
+type ReflectorPassTier = 1 | 2 | 3;
+
+const REFLECTOR_PASS_STRATEGIES: Record<ReflectorPassTier, string> = {
+	1: `Pass strategy — multi-observation synthesis. Find broad durable patterns, repeated preferences, recurring constraints, stable work style, and project-level themes supported by multiple observations. Every reflection recorded in this pass must cite at least 2 distinct supportingObservationIds. Do not create one-off event summaries; leave important single-observation facts for the atomic durable facts pass. If an existing reflection already captures the pattern, repeat the exact same content only when adding support ids materially strengthens it.`,
+	2: `Pass strategy — atomic durable facts. Capture important durable facts that may be supported by a single authoritative observation: explicit user preferences, hard constraints, corrections, decisions, completed milestones, project facts, release or rollback caveats, and other load-bearing facts future agents must not forget. Do not duplicate reflections created in earlier passes; repeat exact existing content only to add missing support or promote no-provenance legacy memory.`,
+	3: `Pass strategy — final safety review. Review the full observation pool against the current reflections, including reflections created in earlier passes, and catch durable information still missing. Look especially for high or critical observations, explicit user assertions, corrections, constraints, decisions, completed work, and important technical context. Do not create reflections just to increase coverage; only record a reflection if the durable meaning is not already captured with sufficient fidelity.`,
+};
+
+export function buildReflectorPassGuidance(pass: number, maxPasses: number): string {
+	const tier = (Math.min(3, Math.max(1, pass)) as ReflectorPassTier);
+	return `Pass ${pass} of up to ${maxPasses}. ${REFLECTOR_PASS_STRATEGIES[tier]}`;
+}
 
 type PrunerPassTier = 1 | 2 | 3;
 

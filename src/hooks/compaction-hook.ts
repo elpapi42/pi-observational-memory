@@ -144,12 +144,11 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			if (observationTokens >= runtime.config.reflectionThresholdTokens) {
 				if (ctx.hasUI) ctx.ui.notify("Observational memory: running reflector + pruner...", "info");
 				try {
-					const newReflections = await runReflector(
+					finalReflections = await runReflector(
 						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal },
 						workingReflections,
 						workingObservations,
 					);
-					finalReflections = [...workingReflections, ...newReflections];
 
 					const prunerResult = await runPruner(
 						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal },
