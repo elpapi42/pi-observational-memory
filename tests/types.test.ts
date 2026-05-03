@@ -65,12 +65,19 @@ const reflectionRecord = {
 	supportingObservationIds: ["abc123def456"],
 } satisfies ReflectionRecord;
 
+const migratedLegacyReflectionRecord = {
+	id: "fedcba654321",
+	content: "Migrated legacy reflection has no recorded provenance.",
+	supportingObservationIds: [],
+	legacy: true,
+} satisfies ReflectionRecord;
+
 function memoryDetailsV4(overrides: Partial<MemoryDetailsV4> = {}): MemoryDetailsV4 {
 	return {
 		type: "observational-memory",
 		version: 4,
 		observations: [baseRecord],
-		reflections: ["Legacy reflection remains plain.", reflectionRecord],
+		reflections: ["Legacy reflection remains plain.", reflectionRecord, migratedLegacyReflectionRecord],
 		...overrides,
 	};
 }
@@ -95,7 +102,7 @@ describe("reflection memory detail compatibility", () => {
 		expect(isSupportedMemoryDetails(details)).toBe(true);
 	});
 
-	it("keeps legacy reflections plain and exposes record helpers for id-bearing reflections", () => {
+	it("keeps legacy strings plain and renders migrated legacy records like native id-bearing reflections", () => {
 		const legacy = "Legacy reflection remains plain.";
 
 		expect(reflectionContent(legacy)).toBe("Legacy reflection remains plain.");
@@ -106,6 +113,18 @@ describe("reflection memory detail compatibility", () => {
 		expect(reflectionToPromptLine(reflectionRecord)).toBe(
 			"[def456abc123] User prefers compact source recall rows.",
 		);
+		expect(reflectionContent(migratedLegacyReflectionRecord)).toBe(
+			"Migrated legacy reflection has no recorded provenance.",
+		);
+		expect(reflectionId(migratedLegacyReflectionRecord)).toBe("fedcba654321");
+		expect(reflectionToPromptLine(migratedLegacyReflectionRecord)).toBe(
+			"[fedcba654321] Migrated legacy reflection has no recorded provenance.",
+		);
+	});
+
+	it("accepts migrated legacy records only when legacy true and support is empty", () => {
+		expect(isReflectionRecord(migratedLegacyReflectionRecord)).toBe(true);
+		expect(isMemoryDetailsV4(memoryDetailsV4({ reflections: [migratedLegacyReflectionRecord] }))).toBe(true);
 	});
 
 	it("rejects malformed reflection records", () => {
@@ -118,6 +137,9 @@ describe("reflection memory detail compatibility", () => {
 			{ ...reflectionRecord, content: "line one\nline two" },
 			{ ...reflectionRecord, supportingObservationIds: undefined },
 			{ ...reflectionRecord, supportingObservationIds: [] },
+			{ ...reflectionRecord, supportingObservationIds: [], legacy: false },
+			{ ...reflectionRecord, supportingObservationIds: ["abc123def456"], legacy: true },
+			{ ...reflectionRecord, legacy: "true" },
 			{ ...reflectionRecord, supportingObservationIds: [""] },
 			{ ...reflectionRecord, supportingObservationIds: ["abc123def456", 42] },
 		] as unknown[]) {

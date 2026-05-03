@@ -23,10 +23,11 @@ type RecallObservationToolStatus =
 	| "invalid_id"
 	| "not_found"
 	| "no_source"
-	| "source_unavailable";
+	| "source_unavailable"
+	| "no_provenance";
 
 type ObservationDetails = Pick<ObservationRecord, "id" | "content" | "timestamp" | "relevance">;
-type ReflectionDetails = Pick<ReflectionRecord, "id" | "content" | "supportingObservationIds"> & { reflectionIndex: number };
+type ReflectionDetails = Pick<ReflectionRecord, "id" | "content" | "supportingObservationIds" | "legacy"> & { reflectionIndex: number };
 
 export type RecallSourceEntryDetails = {
 	id: string;
@@ -55,6 +56,12 @@ type RecallUnavailableSupportingObservationDetails = {
 	observationId: string;
 };
 
+type RecallUnavailableReflectionProvenanceDetails = {
+	reflectionId: string;
+	reflectionIndex: number;
+	reason: "legacy";
+};
+
 export type RecallObservationToolDetails = {
 	status: RecallObservationToolStatus;
 	memoryId: string;
@@ -67,6 +74,7 @@ export type RecallObservationToolDetails = {
 	matches: RecallObservationMatchDetails[];
 	sourceEntries: RecallSourceEntryDetails[];
 	unavailableSupportingObservations: RecallUnavailableSupportingObservationDetails[];
+	unavailableReflectionProvenance: RecallUnavailableReflectionProvenanceDetails[];
 	missingSourceEntryIds: string[];
 	nonSourceEntryIds: string[];
 	sourceCharacterCount?: number;
@@ -166,6 +174,7 @@ function reflectionDetails(reflection: ReflectionRecord, reflectionIndex: number
 		id: reflection.id,
 		content: reflection.content,
 		supportingObservationIds: reflection.supportingObservationIds,
+		...(reflection.legacy === true ? { legacy: true } : {}),
 		reflectionIndex,
 	};
 }
@@ -227,6 +236,7 @@ function emptyDetails(status: RecallObservationToolStatus, memoryId: string, mes
 		matches: [],
 		sourceEntries: [],
 		unavailableSupportingObservations: [],
+		unavailableReflectionProvenance: [],
 		missingSourceEntryIds: [],
 		nonSourceEntryIds: [],
 		message,
@@ -234,10 +244,11 @@ function emptyDetails(status: RecallObservationToolStatus, memoryId: string, mes
 }
 
 function aggregateStatus(details: Omit<RecallObservationToolDetails, "status">): RecallObservationToolStatus {
-	const observationOnly = details.reflections.length === 0 && details.unavailableSupportingObservations.length === 0;
+	const observationOnly = details.reflections.length === 0 && details.unavailableSupportingObservations.length === 0 && details.unavailableReflectionProvenance.length === 0;
 	if (observationOnly && details.observations.some((match) => match.status === "ok")) return "ok";
 	if (observationOnly && details.observations.some((match) => match.status === "source_unavailable")) return "source_unavailable";
 	if (observationOnly && details.observations.length > 0) return "no_source";
+	if (details.unavailableReflectionProvenance.length > 0 && details.observations.length === 0 && details.sourceEntries.length === 0) return "no_provenance";
 	if (details.partial) return "partial";
 	if (details.sourceEntries.length > 0) return "ok";
 	if (details.reflections.length > 0) return "ok";
@@ -288,6 +299,10 @@ function unavailableSupportingLineText(item: RecallUnavailableSupportingObservat
 	return `Supporting observation ${item.observationId} for reflection ${item.reflectionId} is unavailable on the current branch.`;
 }
 
+function unavailableReflectionProvenanceLineText(item: RecallUnavailableReflectionProvenanceDetails): string {
+	return `Reflection ${item.reflectionId} was migrated from legacy memory created before reflection provenance was recorded, so no supporting observations or raw sources are available.`;
+}
+
 function unavailableObservationSourceLineText(match: RecallMemoryObservation): string {
 	return `Observation ${match.observation.id} has no source entries associated. This can happen for legacy observations created before source recall was available.`;
 }
@@ -310,6 +325,17 @@ function renderMemoryText(result: Extract<RecallMemorySourcesResult, { status: "
 					reflectionId: item.reflection.id,
 					reflectionIndex: item.reflectionIndex,
 					observationId: item.observationId,
+				}))
+				.join("\n")}`,
+		);
+	}
+	if (result.unavailableReflectionProvenance.length > 0) {
+		sections.push(
+			`Unavailable reflection provenance:\n${result.unavailableReflectionProvenance
+				.map((item) => unavailableReflectionProvenanceLineText({
+					reflectionId: item.reflection.id,
+					reflectionIndex: item.reflectionIndex,
+					reason: item.reason,
 				}))
 				.join("\n")}`,
 		);
@@ -342,6 +368,11 @@ function resultDetails(result: Extract<RecallMemorySourcesResult, { status: "fou
 		reflectionIndex: item.reflectionIndex,
 		observationId: item.observationId,
 	}));
+	const unavailableReflectionProvenance = result.unavailableReflectionProvenance.map((item) => ({
+		reflectionId: item.reflection.id,
+		reflectionIndex: item.reflectionIndex,
+		reason: item.reason,
+	}));
 	const partial = result.partial;
 	const detailWithoutStatus = {
 		memoryId: result.memoryId,
@@ -354,6 +385,7 @@ function resultDetails(result: Extract<RecallMemorySourcesResult, { status: "fou
 		matches: directObservationMatches,
 		sourceEntries,
 		unavailableSupportingObservations,
+		unavailableReflectionProvenance,
 		missingSourceEntryIds: result.missingSourceEntryIds,
 		nonSourceEntryIds: result.nonSourceEntryIds,
 		sourceCharacterCount: renderRecallSourceEntries(result.sourceEntries).length,
@@ -365,7 +397,7 @@ function resultDetails(result: Extract<RecallMemorySourcesResult, { status: "fou
 }
 
 function isObservationOnly(details: RecallObservationToolDetails): boolean {
-	return details.reflections.length === 0 && details.unavailableSupportingObservations.length === 0;
+	return details.reflections.length === 0 && details.unavailableSupportingObservations.length === 0 && details.unavailableReflectionProvenance.length === 0;
 }
 
 function renderFoundResult(result: Extract<RecallMemorySourcesResult, { status: "found" }>): ReturnType<typeof textResult> {
@@ -398,6 +430,7 @@ function statusSummary(details: RecallObservationToolDetails): string {
 	if (details.status === "not_found") return "not found";
 	if (details.status === "source_unavailable") return "source unavailable";
 	if (details.status === "no_source") return "no source";
+	if (details.status === "no_provenance") return "no provenance";
 	if (details.collision && details.partial) return "recalled · id collision · partial";
 	if (details.collision) return "recalled · id collision";
 	if (details.partial) return "recalled · partial";
@@ -458,6 +491,10 @@ function unavailableSupportingLine(item: RecallUnavailableSupportingObservationD
 	return `× supporting observation unavailable · reflection ${item.reflectionId} · observation ${item.observationId}`;
 }
 
+function unavailableReflectionProvenanceLine(item: RecallUnavailableReflectionProvenanceDetails): string {
+	return `× reflection provenance unavailable · reflection ${item.reflectionId} · legacy migrated reflection`;
+}
+
 function noSourceObservationLine(match: RecallObservationMatchDetails): string {
 	return `× no source · observation ${match.observation.id} · legacy/unattributed observation`;
 }
@@ -494,8 +531,9 @@ function memoryLines(details: RecallObservationToolDetails, expanded: boolean): 
 	for (const reflection of details.reflections) lines.push(reflectionLine(reflection));
 	if (details.reflections.length > 0 && details.observations.length > 0) lines.push("");
 	for (const observation of details.observations) lines.push(observationLine(observation.observation));
-	if ((details.reflections.length > 0 || details.observations.length > 0) && (details.sourceEntries.length > 0 || details.unavailableSupportingObservations.length > 0 || details.missingSourceEntryIds.length > 0 || details.nonSourceEntryIds.length > 0)) lines.push("");
+	if ((details.reflections.length > 0 || details.observations.length > 0) && (details.sourceEntries.length > 0 || details.unavailableSupportingObservations.length > 0 || details.unavailableReflectionProvenance.length > 0 || details.missingSourceEntryIds.length > 0 || details.nonSourceEntryIds.length > 0)) lines.push("");
 	for (const item of details.unavailableSupportingObservations) lines.push(unavailableSupportingLine(item));
+	for (const item of details.unavailableReflectionProvenance) lines.push(unavailableReflectionProvenanceLine(item));
 	for (const observation of details.observations) {
 		if (observation.status === "no_source") lines.push(noSourceObservationLine(observation));
 	}

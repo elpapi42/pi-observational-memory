@@ -20,6 +20,7 @@ export interface ReflectionRecord {
 	id: string;
 	content: string;
 	supportingObservationIds: string[];
+	legacy?: boolean;
 }
 
 export type MemoryReflection = LegacyReflection | ReflectionRecord;
@@ -78,17 +79,25 @@ function isNonEmptyStringArray(v: unknown): v is string[] {
 	return Array.isArray(v) && v.length > 0 && v.every((id) => typeof id === "string" && id.length > 0);
 }
 
+function isEmptyStringArray(v: unknown): v is string[] {
+	return Array.isArray(v) && v.length === 0;
+}
+
 export function isReflectionRecord(v: unknown): v is ReflectionRecord {
 	if (!v || typeof v !== "object") return false;
 	const o = v as Record<string, unknown>;
-	return (
-		typeof o.id === "string" &&
-		MEMORY_ID_PATTERN.test(o.id) &&
-		typeof o.content === "string" &&
-		o.content.trim().length > 0 &&
-		!/[\r\n]/.test(o.content) &&
-		isNonEmptyStringArray(o.supportingObservationIds)
-	);
+	if (
+		typeof o.id !== "string" ||
+		!MEMORY_ID_PATTERN.test(o.id) ||
+		typeof o.content !== "string" ||
+		o.content.trim().length === 0 ||
+		/[\r\n]/.test(o.content)
+	) {
+		return false;
+	}
+	if (o.legacy !== undefined && typeof o.legacy !== "boolean") return false;
+	if (o.legacy === true) return isEmptyStringArray(o.supportingObservationIds);
+	return isNonEmptyStringArray(o.supportingObservationIds);
 }
 
 export function isMemoryReflection(v: unknown): v is MemoryReflection {

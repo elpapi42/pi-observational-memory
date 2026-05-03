@@ -155,6 +155,13 @@ const reflection = {
 	supportingObservationIds: [baseObservation.id],
 } satisfies ReflectionRecord;
 
+const migratedLegacyReflection = {
+	id: "222222222222",
+	content: "Migrated legacy reflection without recorded provenance.",
+	supportingObservationIds: [],
+	legacy: true,
+} satisfies ReflectionRecord;
+
 function memoryDetailsV4(reflections: MemoryDetailsV4["reflections"] = [reflection], observations: ObservationRecord[] = []): MemoryDetailsV4 {
 	return {
 		type: "observational-memory",
@@ -202,8 +209,30 @@ describe("recallMemorySources", () => {
 		expect(result.observations).toHaveLength(1);
 		expect(result.observations[0]).toMatchObject({ status: "ok", observationEntryId: "supporting-obs-entry" });
 		expect(result.sourceEntries.map((entry) => entry.id)).toEqual(["source-user", "source-summary"]);
+		expect(result.unavailableReflectionProvenance).toEqual([]);
 		expect(result.collision).toBe(false);
 		expect(result.partial).toBe(false);
+	});
+
+	it("returns no-provenance diagnostics for migrated legacy reflection records", () => {
+		const entries = [
+			userSource,
+			compactionEntry({ id: "compaction-current", details: memoryDetailsV4([migratedLegacyReflection]) }),
+		] satisfies Entry[];
+
+		const result = recallMemorySources(entries, migratedLegacyReflection.id);
+
+		expect(result.status).toBe("found");
+		if (result.status !== "found") throw new Error("expected found");
+		expect(result.reflectionMatches).toEqual([{ reflection: migratedLegacyReflection, reflectionIndex: 0 }]);
+		expect(result.directObservationMatches).toEqual([]);
+		expect(result.observations).toEqual([]);
+		expect(result.sourceEntries).toEqual([]);
+		expect(result.unavailableReflectionProvenance).toEqual([
+			{ reflection: migratedLegacyReflection, reflectionIndex: 0, reason: "legacy" },
+		]);
+		expect(result.collision).toBe(false);
+		expect(result.partial).toBe(true);
 	});
 
 	it("returns all evidence for a mixed observation/reflection id conflict", () => {
@@ -239,6 +268,34 @@ describe("recallMemorySources", () => {
 		]);
 		expect(result.observations.map((match) => match.observationEntryId)).toEqual(["direct-entry", "support-entry"]);
 		expect(result.sourceEntries.map((entry) => entry.id)).toEqual(["source-user", "source-summary"]);
+	});
+
+	it("returns direct evidence and no-provenance diagnostics for mixed legacy reflection id conflicts", () => {
+		const matchingObservation = {
+			...baseObservation,
+			id: migratedLegacyReflection.id,
+			content: "Direct observation with the same id as a migrated legacy reflection.",
+			sourceEntryIds: ["source-user"],
+		} satisfies ObservationRecord;
+		const entries = [
+			userSource,
+			obsEntry("direct-entry", [matchingObservation]),
+			compactionEntry({ id: "compaction-current", details: memoryDetailsV4([migratedLegacyReflection]) }),
+		] satisfies Entry[];
+
+		const result = recallMemorySources(entries, migratedLegacyReflection.id);
+
+		expect(result.status).toBe("found");
+		if (result.status !== "found") throw new Error("expected found");
+		expect(result.collision).toBe(true);
+		expect(result.partial).toBe(true);
+		expect(result.reflectionMatches.map((match) => match.reflection.id)).toEqual([migratedLegacyReflection.id]);
+		expect(result.directObservationMatches.map((match) => match.observation.id)).toEqual([migratedLegacyReflection.id]);
+		expect(result.observations.map((match) => match.observationEntryId)).toEqual(["direct-entry"]);
+		expect(result.sourceEntries.map((entry) => entry.id)).toEqual(["source-user"]);
+		expect(result.unavailableReflectionProvenance).toEqual([
+			{ reflection: migratedLegacyReflection, reflectionIndex: 0, reason: "legacy" },
+		]);
 	});
 
 	it("dedupes duplicate supporting observations without hiding duplicate observation ids", () => {
@@ -340,6 +397,7 @@ describe("recallMemorySources", () => {
 			observations: [],
 			sourceEntries: [],
 			unavailableSupportingObservations: [],
+			unavailableReflectionProvenance: [],
 			missingSourceEntryIds: [],
 			nonSourceEntryIds: [],
 			collision: false,

@@ -5,7 +5,7 @@ import {
 	gapRawEntries,
 	getMemoryState,
 } from "../branch.js";
-import { renderSummary, runPruner, runReflector } from "../compaction.js";
+import { migrateLegacyReflections, renderSummary, runPruner, runReflector } from "../compaction.js";
 import { observationsToPromptLines, runObserver } from "../observer.js";
 import type { Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
@@ -130,7 +130,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 				return { cancel: true };
 			}
 
-			const workingReflections: MemoryReflection[] = [...memoryState.reflections];
+			const workingReflections: MemoryReflection[] = migrateLegacyReflections(memoryState.reflections);
 			const workingObservations: ObservationRecord[] = [
 				...memoryState.committedObs,
 				...deltaObservationData.flatMap((d) => d.records),

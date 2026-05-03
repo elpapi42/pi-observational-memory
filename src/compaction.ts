@@ -31,6 +31,46 @@ function joinObservationsOrEmpty(items: ObservationRecord[]): string {
 	return items.length ? observationsToPromptLines(items).join("\n") : "(none yet)";
 }
 
+export function migrateLegacyReflections(reflections: MemoryReflection[]): MemoryReflection[] {
+	const migrated: MemoryReflection[] = [];
+	const contentToIndex = new Map<string, number>();
+
+	for (const reflection of reflections) {
+		const rawContent = reflectionContent(reflection).trim();
+		const normalizedContent = typeof reflection === "string" ? rawContent.replace(/\s+/g, " ") : rawContent;
+		if (!normalizedContent) {
+			migrated.push(reflection);
+			continue;
+		}
+		const content = truncateRecordContent(normalizedContent);
+
+		const existingIndex = contentToIndex.get(content);
+		if (existingIndex !== undefined) {
+			const existing = migrated[existingIndex];
+			if (typeof existing !== "string" && existing.legacy === true && typeof reflection !== "string" && reflection.legacy !== true) {
+				migrated[existingIndex] = reflection;
+			}
+			continue;
+		}
+
+		if (typeof reflection !== "string") {
+			migrated.push(reflection);
+			contentToIndex.set(content, migrated.length - 1);
+			continue;
+		}
+
+		migrated.push({
+			id: hashId(content),
+			content,
+			supportingObservationIds: [],
+			legacy: true,
+		});
+		contentToIndex.set(content, migrated.length - 1);
+	}
+
+	return migrated;
+}
+
 const RecordReflectionsSchema = Type.Object({
 	reflections: Type.Array(
 		Type.Object({

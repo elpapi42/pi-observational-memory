@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeSupportingObservationIds, renderSummary } from "../src/compaction.js";
+import { migrateLegacyReflections, normalizeSupportingObservationIds, renderSummary } from "../src/compaction.js";
 import { hashId } from "../src/ids.js";
 import { CONTEXT_USAGE_INSTRUCTIONS, REFLECTOR_SYSTEM } from "../src/prompts.js";
 import type { MemoryReflection, ObservationRecord, ReflectionRecord } from "../src/types.js";
@@ -19,6 +19,70 @@ const reflectionRecord: ReflectionRecord = {
 	content: reflectionContent,
 	supportingObservationIds: [observation.id],
 };
+
+const migratedLegacyRecord: ReflectionRecord = {
+	id: hashId("Migrated legacy reflection."),
+	content: "Migrated legacy reflection.",
+	supportingObservationIds: [],
+	legacy: true,
+};
+
+describe("legacy reflection migration", () => {
+	it("converts eligible legacy string reflections into id-bearing legacy records", () => {
+		const migrated = migrateLegacyReflections(["  Migrated legacy reflection.  "]);
+
+		expect(migrated).toEqual([migratedLegacyRecord]);
+	});
+
+	it("preserves native records and migrated records unchanged", () => {
+		const migrated = migrateLegacyReflections([reflectionRecord, migratedLegacyRecord]);
+
+		expect(migrated).toEqual([reflectionRecord, migratedLegacyRecord]);
+	});
+
+	it("dedupes by reflection content while preferring native records over migrated legacy records", () => {
+		const migrated = migrateLegacyReflections([
+			reflectionContent,
+			reflectionRecord,
+			"Migrated legacy reflection.",
+			"Migrated legacy reflection.",
+		]);
+
+		expect(migrated).toEqual([reflectionRecord, migratedLegacyRecord]);
+	});
+
+	it("normalizes multiline legacy string reflections into id-bearing legacy records", () => {
+		const migrated = migrateLegacyReflections(["Legacy reflection with\nmultiple\tlines."]);
+
+		expect(migrated).toEqual([
+			{
+				id: hashId("Legacy reflection with multiple lines."),
+				content: "Legacy reflection with multiple lines.",
+				supportingObservationIds: [],
+				legacy: true,
+			},
+		]);
+	});
+
+	it("checks multiline migration eligibility before truncating normalized content", () => {
+		const newlineAfterTruncationBoundary = `${"x".repeat(10_001)}\nsecond line`;
+		const [migrated] = migrateLegacyReflections([newlineAfterTruncationBoundary]);
+
+		const truncatedContent = `${"x".repeat(10_000)} … [truncated 13 chars]`;
+		expect(migrated).toEqual({
+			id: hashId(truncatedContent),
+			content: truncatedContent,
+			supportingObservationIds: [],
+			legacy: true,
+		});
+	});
+
+	it("preserves empty legacy strings as plain strings", () => {
+		const empty = "   ";
+
+		expect(migrateLegacyReflections([empty])).toEqual([empty]);
+	});
+});
 
 describe("reflection supporting observation normalization", () => {
 	const allowed = ["111111111111", "222222222222", "333333333333"];
@@ -60,6 +124,15 @@ describe("renderSummary", () => {
 
 		expect(summary).toContain(`## Reflections\n[${reflectionRecord.id}] ${reflectionContent}`);
 		expect(summary).toContain("## Observations\n[abc123def456] 2026-05-02 10:30 [high]");
+	});
+
+	it("renders migrated legacy reflection records with ids like native records", () => {
+		const [migrated] = migrateLegacyReflections(["Migrated legacy reflection."]);
+		const summary = renderSummary([migrated], [observation]);
+
+		expect(summary).toContain(`## Reflections\n[${migratedLegacyRecord.id}] Migrated legacy reflection.`);
+		expect(summary).not.toContain("legacy: true");
+		expect(summary).not.toContain("supportingObservationIds");
 	});
 
 	it("keeps raw source and reflection provenance metadata out of compact summaries", () => {

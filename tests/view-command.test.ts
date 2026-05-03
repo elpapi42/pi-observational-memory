@@ -19,6 +19,13 @@ const reflectionRecord = {
 
 const legacyReflection = "Plain prior reflection.";
 
+const migratedLegacyReflectionRecord = {
+	id: "222222222222",
+	content: "Migrated legacy reflection content.",
+	supportingObservationIds: [],
+	legacy: true,
+} satisfies ReflectionRecord;
+
 function memoryDetailsV3(reflections: string[] = [legacyReflection]): MemoryDetailsV3 {
 	return {
 		type: "observational-memory",
@@ -28,7 +35,7 @@ function memoryDetailsV3(reflections: string[] = [legacyReflection]): MemoryDeta
 	};
 }
 
-function memoryDetailsV4(reflections: MemoryDetailsV4["reflections"] = [legacyReflection, reflectionRecord]): MemoryDetailsV4 {
+function memoryDetailsV4(reflections: MemoryDetailsV4["reflections"] = [legacyReflection, reflectionRecord, migratedLegacyReflectionRecord]): MemoryDetailsV4 {
 	return {
 		type: "observational-memory",
 		version: 4,
@@ -71,13 +78,15 @@ describe("/om-view", () => {
 		const output = await runView(memoryDetailsV4());
 
 		expect(output).toContain(`[${reflectionRecord.id}] ${reflectionRecord.content}`);
+		expect(output).toContain(`[${migratedLegacyReflectionRecord.id}] ${migratedLegacyReflectionRecord.content}`);
 		expect(output).toContain(legacyReflection);
 		expect(output).toContain(`[${committedObservation.id}] ${committedObservation.timestamp} [${committedObservation.relevance}] ${committedObservation.content}`);
 		expect(output).not.toContain("[object Object]");
 		expect(output).not.toContain("NaN");
 		expect(output).not.toContain("unrecallable");
 		expect(output).not.toContain("recallable");
-		expect(output).not.toContain("legacy");
+		expect(output).not.toContain("legacy: true");
+		expect(output).not.toContain("supportingObservationIds");
 	});
 
 	it("keeps v3 legacy reflections plain", async () => {

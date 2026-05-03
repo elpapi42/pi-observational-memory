@@ -46,6 +46,13 @@ const reflection = {
 	supportingObservationIds: [baseObservation.id],
 } satisfies ReflectionRecord;
 
+const migratedLegacyReflection = {
+	id: "222222222222",
+	content: "Migrated legacy reflection without recorded provenance.",
+	supportingObservationIds: [],
+	legacy: true,
+} satisfies ReflectionRecord;
+
 function memoryDetailsV4(reflections: MemoryDetailsV4["reflections"] = [reflection], observations: ObservationRecord[] = []): MemoryDetailsV4 {
 	return {
 		type: "observational-memory",
@@ -221,6 +228,61 @@ describe("recall tool execution", () => {
 		expect(result.content[0].text).toContain("[User @ 2026-05-02 10:00]: direct observation source");
 		expect(result.content[0].text).toContain("[User @ 2026-05-02 10:00]: supporting observation source");
 		expect(formatRecallHeaderForTui(result.details)).toContain("⚠ recalled · id collision · 1 reflection · 2 observations · 2 source entries");
+	});
+
+	it("renders no-provenance diagnostics for migrated legacy reflection recall", async () => {
+		const { result, getBranch, getEntries } = await executeRecall(migratedLegacyReflection.id, [
+			sourceEntry(),
+			compactionEntry({ id: "compaction-current", details: memoryDetailsV4([migratedLegacyReflection]) }),
+		]);
+
+		expect(result.details.status).toBe("no_provenance");
+		expect(result.details.partial).toBe(true);
+		expect(result.details.reflections).toEqual([
+			expect.objectContaining({ id: migratedLegacyReflection.id, legacy: true, supportingObservationIds: [] }),
+		]);
+		expect(result.details.observations).toEqual([]);
+		expect(result.details.sourceEntries).toEqual([]);
+		expect(result.details.unavailableReflectionProvenance).toEqual([
+			{ reflectionId: migratedLegacyReflection.id, reflectionIndex: 0, reason: "legacy" },
+		]);
+		expect(result.content[0].text).toContain(`Reflections:\n[${migratedLegacyReflection.id}] ${migratedLegacyReflection.content}`);
+		expect(result.content[0].text).toContain("Unavailable reflection provenance");
+		expect(result.content[0].text).toContain("migrated from legacy memory created before reflection provenance was recorded");
+		expect(result.content[0].text).not.toContain("Sources:");
+		expect(getBranch).toHaveBeenCalledTimes(1);
+		expect(getEntries).not.toHaveBeenCalled();
+
+		const header = formatRecallHeaderForTui(result.details);
+		const collapsed = formatRecallResultForTui(result, false);
+		const expanded = formatRecallResultForTui(result, true);
+		expect(header).toContain("× no provenance · 1 reflection");
+		expect(collapsed).toContain(`✓ reflection · ${migratedLegacyReflection.id} · ${migratedLegacyReflection.content}`);
+		expect(collapsed).toContain(`× reflection provenance unavailable · reflection ${migratedLegacyReflection.id} · legacy migrated reflection`);
+		expect(collapsed).not.toContain("source entry");
+		expect(expanded).not.toContain("Please preserve exact sources.");
+	});
+
+	it("returns available evidence and no-provenance diagnostics for mixed legacy reflection id conflicts", async () => {
+		const legacyCollision = { ...migratedLegacyReflection, id: observationId } satisfies ReflectionRecord;
+		const { result } = await executeRecall(observationId, [
+			sourceEntry("source-a", "direct observation source"),
+			obsEntry("direct-entry", [{ ...baseObservation, sourceEntryIds: ["source-a"] }]),
+			compactionEntry({ id: "compaction-current", details: memoryDetailsV4([legacyCollision]) }),
+		]);
+
+		expect(result.details.status).toBe("partial");
+		expect(result.details.collision).toBe(true);
+		expect(result.details.reflections.map((item) => item.id)).toEqual([observationId]);
+		expect(result.details.directObservationMatches.map((item) => item.observation.id)).toEqual([observationId]);
+		expect(result.details.sourceEntries.map((entry) => entry.id)).toEqual(["source-a"]);
+		expect(result.details.unavailableReflectionProvenance).toEqual([
+			{ reflectionId: observationId, reflectionIndex: 0, reason: "legacy" },
+		]);
+		expect(result.content[0].text).toContain("Memory id abc123def456 matched multiple observations/reflections");
+		expect(result.content[0].text).toContain("Unavailable reflection provenance");
+		expect(result.content[0].text).toContain("[User @ 2026-05-02 10:00]: direct observation source");
+		expect(formatRecallHeaderForTui(result.details)).toContain("⚠ recalled · id collision · partial · 1 reflection · 1 observation · 1 source entry");
 	});
 
 	it("renders partial unavailable diagnostics while preserving available reflection evidence", async () => {

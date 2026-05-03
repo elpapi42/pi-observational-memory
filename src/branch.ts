@@ -108,6 +108,12 @@ export type RecallUnavailableSupportingObservation = {
 	observationId: string;
 };
 
+export type RecallUnavailableReflectionProvenance = {
+	reflection: ReflectionRecord;
+	reflectionIndex: number;
+	reason: "legacy";
+};
+
 export type RecallMemorySourcesResult =
 	| {
 			status: "not_found";
@@ -117,6 +123,7 @@ export type RecallMemorySourcesResult =
 			observations: [];
 			sourceEntries: [];
 			unavailableSupportingObservations: [];
+			unavailableReflectionProvenance: [];
 			missingSourceEntryIds: [];
 			nonSourceEntryIds: [];
 			collision: false;
@@ -130,6 +137,7 @@ export type RecallMemorySourcesResult =
 			observations: RecallMemoryObservation[];
 			sourceEntries: Entry[];
 			unavailableSupportingObservations: RecallUnavailableSupportingObservation[];
+			unavailableReflectionProvenance: RecallUnavailableReflectionProvenance[];
 			missingSourceEntryIds: string[];
 			nonSourceEntryIds: string[];
 			collision: boolean;
@@ -424,7 +432,12 @@ export function recallMemorySources(entries: Entry[], memoryId: string): RecallM
 	}
 
 	const unavailableSupportingObservations: RecallUnavailableSupportingObservation[] = [];
+	const unavailableReflectionProvenance: RecallUnavailableReflectionProvenance[] = [];
 	for (const reflectionMatch of reflectionMatches) {
+		if (reflectionMatch.reflection.legacy === true) {
+			unavailableReflectionProvenance.push({ ...reflectionMatch, reason: "legacy" });
+			continue;
+		}
 		for (const observationId of reflectionMatch.reflection.supportingObservationIds) {
 			const supportingObservations = observationsById.get(observationId);
 			if (!supportingObservations || supportingObservations.length === 0) {
@@ -457,6 +470,7 @@ export function recallMemorySources(entries: Entry[], memoryId: string): RecallM
 			observations: [],
 			sourceEntries: [],
 			unavailableSupportingObservations: [],
+			unavailableReflectionProvenance: [],
 			missingSourceEntryIds: [],
 			nonSourceEntryIds: [],
 			collision: false,
@@ -475,10 +489,12 @@ export function recallMemorySources(entries: Entry[], memoryId: string): RecallM
 		observations,
 		sourceEntries,
 		unavailableSupportingObservations,
+		unavailableReflectionProvenance,
 		missingSourceEntryIds,
 		nonSourceEntryIds,
 		collision: reflectionMatches.length + directObservationMatches.length > 1,
 		partial:
+			unavailableReflectionProvenance.length > 0 ||
 			hasNoSourceObservationInMemoryRecall ||
 			unavailableSupportingObservations.length > 0 ||
 			missingSourceEntryIds.length > 0 ||

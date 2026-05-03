@@ -19,12 +19,19 @@ const reflectionRecord = {
 
 const legacyReflection = "abcdefgh";
 
+const migratedLegacyReflectionRecord = {
+	id: "222222222222",
+	content: "abcdefghijkl",
+	supportingObservationIds: [],
+	legacy: true,
+} satisfies ReflectionRecord;
+
 function memoryDetailsV4(): MemoryDetailsV4 {
 	return {
 		type: "observational-memory",
 		version: 4,
 		observations: [committedObservation],
-		reflections: [legacyReflection, reflectionRecord],
+		reflections: [legacyReflection, reflectionRecord, migratedLegacyReflectionRecord],
 	};
 }
 
@@ -67,11 +74,13 @@ async function runStatus(details: MemoryDetailsV4): Promise<string> {
 }
 
 describe("/om-status", () => {
-	it("counts structured reflection tokens using reflection content", async () => {
+	it("counts structured and migrated legacy reflection tokens using reflection content", async () => {
 		const output = await runStatus(memoryDetailsV4());
 
-		expect(output).toContain("Reflections:   ~3 tokens (2 entries)");
+		expect(output).toContain("Reflections:   ~6 tokens (3 entries)");
 		expect(output).not.toContain("[object Object]");
 		expect(output).not.toContain("NaN");
+		expect(output).not.toContain("legacy");
+		expect(output).not.toContain("supportingObservationIds");
 	});
 });
