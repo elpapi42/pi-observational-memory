@@ -33,6 +33,43 @@ function joinObservationsOrEmpty(items: ObservationRecord[]): string {
 	return items.length ? observationsToPromptLines(items).join("\n") : "(none yet)";
 }
 
+export type ObservationCoverageTag = "uncited" | "cited" | "reinforced";
+
+export function deriveObservationCoverageTags(
+	reflections: MemoryReflection[],
+	observations: ObservationRecord[],
+): Map<string, ObservationCoverageTag> {
+	const activeIds = new Set(observations.map((o) => o.id));
+	const counts = new Map<string, number>();
+	for (const observation of observations) counts.set(observation.id, 0);
+
+	for (const reflection of reflections) {
+		if (typeof reflection === "string" || reflection.legacy === true) continue;
+		const citedActiveIds = new Set(reflection.supportingObservationIds.filter((id) => activeIds.has(id)));
+		for (const id of citedActiveIds) counts.set(id, (counts.get(id) ?? 0) + 1);
+	}
+
+	const tags = new Map<string, ObservationCoverageTag>();
+	for (const observation of observations) {
+		const count = counts.get(observation.id) ?? 0;
+		tags.set(observation.id, count === 0 ? "uncited" : count >= 4 ? "reinforced" : "cited");
+	}
+	return tags;
+}
+
+export function renderObservationsForPrunerPrompt(
+	observations: ObservationRecord[],
+	coverageTags: ReadonlyMap<string, ObservationCoverageTag>,
+): string {
+	if (observations.length === 0) return "(none yet)";
+	return observations
+		.map((observation) => {
+			const tag = coverageTags.get(observation.id) ?? "uncited";
+			return `[${observation.id}] ${observation.timestamp} [${observation.relevance}] [coverage: ${tag}] ${observation.content}`;
+		})
+		.join("\n");
+}
+
 export function migrateLegacyReflections(reflections: MemoryReflection[]): MemoryReflection[] {
 	const migrated: MemoryReflection[] = [];
 	const contentToIndex = new Map<string, number>();
@@ -406,6 +443,7 @@ interface PrunerPassContext {
 	deltaTokens: number;
 	pass: number;
 	maxPasses: number;
+	coverageTags: ReadonlyMap<string, ObservationCoverageTag>;
 }
 
 interface PrunerPassResult {
@@ -471,7 +509,7 @@ async function runPrunerPass(
 ${joinReflectionsOrEmpty(reflections)}
 
 CURRENT OBSERVATIONS:
-${joinObservationsOrEmpty(observations)}
+${renderObservationsForPrunerPrompt(observations, passContext.coverageTags)}
 
 ${pressureLine}
 
@@ -505,7 +543,8 @@ Decide which observations to remove from the kept set. Call drop_observations wi
 	};
 
 	try {
-		const stream = agentLoop(prompts, context, config, args.signal);
+		const loop = args.agentLoop ?? agentLoop;
+		const stream = loop(prompts, context, config, args.signal);
 		for await (const _event of stream) {
 			// Drain events; the tool's execute already records drops.
 		}
@@ -530,6 +569,7 @@ export async function runPruner(
 
 	const target = Math.max(1, Math.floor(budgetTokens * PRUNER_TARGET_RATIO));
 	let pool = observations;
+	const coverageTags = deriveObservationCoverageTags(reflections, observations);
 	const allDropped: string[] = [];
 	let fellBack = false;
 
@@ -544,6 +584,7 @@ export async function runPruner(
 			deltaTokens,
 			pass,
 			maxPasses: PRUNER_MAX_PASSES,
+			coverageTags,
 		});
 
 		if (result.fellBack) {
