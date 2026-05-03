@@ -12,6 +12,7 @@ If you haven't read **[concepts.md](concepts.md)** yet, do that first — this d
   - [`observationThresholdTokens`](#observationthresholdtokens--default-1000)
   - [`compactionThresholdTokens`](#compactionthresholdtokens--default-50000)
   - [`reflectionThresholdTokens`](#reflectionthresholdtokens--default-30000)
+  - [`passive`](#passive--default-false)
   - [`compactionModel`](#compactionmodel--default-session-model)
 - [Pi compaction settings the extension depends on](#pi-compaction-settings-the-extension-depends-on)
   - [`keepRecentTokens`](#keeprecenttokens--pi-setting-default-20000)
@@ -46,7 +47,8 @@ Every setting at its default value:
   "observational-memory": {
     "observationThresholdTokens": 1000,
     "compactionThresholdTokens": 50000,
-    "reflectionThresholdTokens": 30000
+    "reflectionThresholdTokens": 30000,
+    "passive": false
   },
   "compaction": {
     "enabled": true,
@@ -66,6 +68,7 @@ One setting doesn't have a default and is easy to miss: **`compactionModel`**. L
     "observationThresholdTokens": 1000,
     "compactionThresholdTokens": 50000,
     "reflectionThresholdTokens": 30000,
+    "passive": false,
     "compactionModel": { "provider": "openrouter", "id": "google/gemma-4-31b-it" }
   },
   "compaction": {
@@ -74,7 +77,7 @@ One setting doesn't have a default and is easy to miss: **`compactionModel`**. L
 }
 ```
 
-The settings below are listed roughly in the order they affect a session's life: the observer fires first and most often, the extension-trigger cadence comes next, the reflector + pruner gate engages inside compaction, the model choice applies to all three roles, and the Pi-owned settings determine the structural details of each compaction.
+The settings below are listed roughly in the order they affect a session's life: the observer fires first and most often, the extension-trigger cadence comes next, passive mode can disable that proactive work, the reflector + pruner gate engages inside compaction, the model choice applies to all three roles, and the Pi-owned settings determine the structural details of each compaction.
 
 ---
 
@@ -113,6 +116,14 @@ The working observation pool size at which the reflector + pruner pair engages i
 **Lower values** crystallize reflections earlier and keep the observation pool tight, at the cost of more frequent reflector+pruner runs.
 
 **Higher values** let the pool grow before cleanup. Individual compactions are cheaper, but the summary the actor sees grows larger between cleanups.
+
+### `passive` — default `false`
+
+When `true`, observational memory becomes reactive instead of proactive: the background observer trigger and the extension's proactive `agent_end` compaction trigger are disabled.
+
+Manual `/compact` and Pi's own window-pressure compaction still use the custom compaction hook. That means the sync catch-up observer, reflector, pruner, `/om-status`, `/om-view`, and `recall` remain available; passive mode only stops the extension from doing memory work on its own between compactions.
+
+You can override this setting for a shell/session with `PI_OBSERVATIONAL_MEMORY_PASSIVE`. Recognized truthy values are `1`, `true`, `yes`, and `on`; recognized falsy values are `0`, `false`, `no`, and `off`. The environment variable is read after global and project settings, so it wins over both when set to a recognized value.
 
 ### `compactionModel` — default: session model
 
@@ -156,7 +167,7 @@ This setting is **structural** to the extension, not just a tuning knob. Three o
 
 Three things can fire the `session_before_compact` hook (where this extension does its work):
 
-1. **Extension trigger** — the proactive path. When raw tokens since the last compaction exceed `compactionThresholdTokens`, the agent is idle (`agent_end` has fired), and no observer is in flight. The deferred timing is intentional: it minimizes the chance of compaction interrupting an active turn.
+1. **Extension trigger** — the proactive path. When raw tokens since the last compaction exceed `compactionThresholdTokens`, the agent is idle (`agent_end` has fired), no observer is in flight, and `passive` is not `true`. The deferred timing is intentional: it minimizes the chance of compaction interrupting an active turn.
 2. **Window-pressure trigger** — the safety net. When context approaches `contextWindow − reserveTokens`.
 3. **Manual `/compact`** — user-triggered.
 

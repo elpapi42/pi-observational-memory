@@ -5,6 +5,7 @@ import type { Runtime } from "../runtime.js";
 export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.on("agent_end", (_event, ctx) => {
 		runtime.ensureConfig(ctx.cwd);
+		if (runtime.config.passive === true) return;
 		if (runtime.compactInFlight) return;
 
 		const entries = ctx.sessionManager.getBranch() as Parameters<typeof rawTokensSinceLastCompaction>[0];

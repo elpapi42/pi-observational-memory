@@ -15,6 +15,7 @@ import { OBSERVATION_CUSTOM_TYPE, reflectionToPromptLine, type ObservationEntryD
 export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.on("turn_end", (_event, ctx) => {
 		runtime.ensureConfig(ctx.cwd);
+		if (runtime.config.passive === true) return;
 		if (runtime.observerInFlight) return;
 
 		const entries = ctx.sessionManager.getBranch() as Parameters<typeof rawTokensSinceLastBound>[0];

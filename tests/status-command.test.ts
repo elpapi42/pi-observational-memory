@@ -49,6 +49,7 @@ async function runStatus(details: MemoryDetailsV4): Promise<string> {
 			observationThresholdTokens: 1000,
 			compactionThresholdTokens: 50000,
 			reflectionThresholdTokens: 30000,
+			passive: false,
 		},
 		observerInFlight: false,
 		compactInFlight: false,
