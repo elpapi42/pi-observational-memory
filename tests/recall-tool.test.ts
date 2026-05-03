@@ -98,10 +98,15 @@ describe("recall tool registration", () => {
 
 	it("defines prompt metadata so the actor can discover the narrow recall tool", () => {
 		expect(recallObservationTool.name).toBe("recall");
+		expect(recallObservationTool.label).toBe("Recall memory evidence");
 		expect(formatRecallCallForTui(observationId)).toBe("recall abc123def456");
-		expect(recallObservationTool.promptSnippet).toContain("observation or reflection id");
-		expect(recallObservationTool.promptGuidelines?.join("\n")).toContain("not general search");
-		expect(recallObservationTool.promptGuidelines?.join("\n")).toContain("materially affects a decision");
+		expect(recallObservationTool.description).toContain("Recover exact evidence and source context");
+		expect(recallObservationTool.promptSnippet).toContain("precision matters");
+		const guidelines = recallObservationTool.promptGuidelines?.join("\n") ?? "";
+		expect(guidelines).toContain("important decision");
+		expect(guidelines).toContain("exact wording, rationale, file paths, commands, errors, commits, user constraints, or provenance");
+		expect(guidelines).toContain("not use recall as semantic search or transcript browsing");
+		expect(guidelines).toContain("Do not recall every id preemptively");
 	});
 });
 
