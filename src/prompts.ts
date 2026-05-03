@@ -145,17 +145,19 @@ ${RELEVANCE_RUBRIC}
 Your task is different from the observer's: you are not recording events, you are distilling stable patterns from them.
 
 You receive:
-- Current reflections (already-crystallized long-lived facts, one per line).
+- Current reflections (already-crystallized long-lived facts, one per line). Newer reflections may begin with a bracketed id handle; treat that id as recall metadata, not as part of the reflection prose.
 - Current observations (timestamped, relevance-tagged events accumulated over many turns). Each is shown as "[id] YYYY-MM-DD HH:MM [relevance] content".
 
 How you work:
 1. Read current reflections and observations to understand what is already crystallized and what new signal exists in the pool.
-2. Identify new stable patterns worth crystallizing and call record_reflections with a batch of one or more new reflection strings.
+2. Identify new stable patterns worth crystallizing and call record_reflections with a batch of one or more new reflection proposals. Each proposal must include the reflection content and the exact supporting observation ids.
 3. Read the receipt. If more reflections are warranted, call record_reflections again with another batch. You may call the tool many times.
 4. When nothing more is stable enough to crystallize, STOP calling the tool and reply with a brief plain-text confirmation (one short sentence). That ends the run.
 
 What to emit:
 - Produce ONLY NEW reflections. Do not restate, rewrite, or lightly rephrase existing reflections.
+- For every reflection proposal, include supportingObservationIds: the smallest exact set of current observation ids that directly support the reflection.
+- Never invent supporting observation ids. Use only ids printed in the current observations list. Reflection proposals with missing, empty, or invalid supportingObservationIds will be rejected and not recorded.
 - Crystallize preferentially from "high" and "critical" observations; ignore "low" unless a pattern across many "low" observations is itself significant.
 - Focus on:
   - User identity, role, preferences, constraints.
@@ -196,7 +198,7 @@ ${RELEVANCE_RUBRIC}
 </relevance-rubric>
 
 You receive:
-- Current reflections (long-lived facts; they survive regardless — treat them as already captured).
+- Current reflections (long-lived facts; they survive regardless — treat them as already captured). Newer reflections may begin with a bracketed id handle; treat that id as recall metadata, not as part of the reflection prose.
 - Current observations (timestamped, relevance-tagged events to prune). Each is shown as "[id] YYYY-MM-DD HH:MM [relevance] content", where id is the 12-character hex handle you reference when dropping.
 - A pressure line stating pool size, target, tokens still to cut, and the current pass strategy.
 
@@ -269,9 +271,9 @@ export function buildPrunerPassGuidance(pass: number, maxPasses: number): string
 
 export const CONTEXT_USAGE_INSTRUCTIONS = `These are condensed memories from earlier in this session.
 
-- Reflections: stable, long-lived facts about the user, project, decisions, and constraints.
+- Reflections: stable, long-lived facts about the user, project, decisions, and constraints. New reflection lines may include ids in brackets.
 - Observations: timestamped events from the conversation history, in chronological order. Observation lines include ids in brackets.
 
 Treat these as past records. When entries conflict, the most recent observation reflects the latest known state. Work that prior observations describe as completed should not be redone unless the user explicitly asks to revisit it.
 
-When exact source context is needed for precision or traceability, use the recall tool with the relevant observation id. Do not use recall as broad search or inject raw source unless it is needed.`;
+When exact source context is needed for precision or traceability, use the recall tool with the relevant observation or reflection id. This is especially useful when a reflection materially affects a decision or is too compressed to continue confidently. Do not use recall as broad search or inject raw source unless it is needed.`;

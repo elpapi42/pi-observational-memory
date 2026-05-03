@@ -8,6 +8,7 @@ import {
 import { countByRelevance, formatRelevanceHistogram } from "../relevance.js";
 import type { Runtime } from "../runtime.js";
 import { estimateStringTokens } from "../tokens.js";
+import { reflectionContent, type MemoryReflection } from "../types.js";
 
 export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.registerCommand("om-status", {
@@ -19,10 +20,11 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			const sinceCompaction = rawTokensSinceLastCompaction(entries);
 
 			const { reflections: committedRefs, committedObs, pendingObs } = getMemoryState(entries);
+			const committedRefItems = committedRefs as MemoryReflection[];
 			const committedObsTokens = committedObs.reduce((s, r) => s + estimateStringTokens(r.content), 0);
 			const committedObsCount = committedObs.length;
-			const committedRefsTokens = committedRefs.reduce((s, r) => s + estimateStringTokens(r), 0);
-			const committedRefsCount = committedRefs.length;
+			const committedRefsTokens = committedRefItems.reduce((s, r) => s + estimateStringTokens(reflectionContent(r)), 0);
+			const committedRefsCount = committedRefItems.length;
 
 			const pendingObsTokens = pendingObs.reduce((s, r) => s + estimateStringTokens(r.content), 0);
 			const pendingObsCount = pendingObs.length;

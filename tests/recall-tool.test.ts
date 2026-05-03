@@ -9,8 +9,8 @@ import {
 	formatRecallResultForTui,
 	recallObservationTool,
 } from "../src/tools/recall-observation.js";
-import type { ObservationRecord } from "../src/types.js";
-import { messageEntry, observationEntry } from "./fixtures/session.js";
+import type { MemoryDetailsV4, ObservationRecord, ReflectionRecord } from "../src/types.js";
+import { compactionEntry, messageEntry, observationEntry } from "./fixtures/session.js";
 
 const observationId = "abc123def456";
 
@@ -38,6 +38,21 @@ function sourceEntry(id = "source-user", content = "Please preserve exact source
 		id,
 		message: { role: "user", timestamp: "2026-05-02 10:00", content },
 	});
+}
+
+const reflection = {
+	id: "111111111111",
+	content: "User prefers recallable durable reflections.",
+	supportingObservationIds: [baseObservation.id],
+} satisfies ReflectionRecord;
+
+function memoryDetailsV4(reflections: MemoryDetailsV4["reflections"] = [reflection], observations: ObservationRecord[] = []): MemoryDetailsV4 {
+	return {
+		type: "observational-memory",
+		version: 4,
+		observations,
+		reflections,
+	};
 }
 
 function fakeCtx(entries: unknown[]) {
@@ -77,8 +92,9 @@ describe("recall tool registration", () => {
 	it("defines prompt metadata so the actor can discover the narrow recall tool", () => {
 		expect(recallObservationTool.name).toBe("recall");
 		expect(formatRecallCallForTui(observationId)).toBe("recall abc123def456");
-		expect(recallObservationTool.promptSnippet).toContain("observation id");
+		expect(recallObservationTool.promptSnippet).toContain("observation or reflection id");
 		expect(recallObservationTool.promptGuidelines?.join("\n")).toContain("not general search");
+		expect(recallObservationTool.promptGuidelines?.join("\n")).toContain("materially affects a decision");
 	});
 });
 
@@ -148,6 +164,130 @@ describe("recall tool execution", () => {
 		expect(expanded).not.toContain("    [Assistant @ 2026-05-02 10:01]:");
 	});
 
+	it("renders reflection recall with reflection rows, observation rows, and a shared source section", async () => {
+		const { result, getBranch, getEntries } = await executeRecall(reflection.id, [
+			sourceEntry(),
+			obsEntry("supporting-entry", [{ ...baseObservation, sourceEntryIds: ["source-user"] }]),
+			compactionEntry({ id: "compaction-current", details: memoryDetailsV4([reflection]) }),
+		]);
+
+		expect(result.details.status).toBe("ok");
+		expect(result.details.reflections.map((item) => item.id)).toEqual([reflection.id]);
+		expect(result.details.observations.map((item) => item.observation.id)).toEqual([baseObservation.id]);
+		expect(result.details.sourceEntries.map((entry) => entry.id)).toEqual(["source-user"]);
+		expect(result.content[0].text).toContain(`Reflections:\n[${reflection.id}] ${reflection.content}`);
+		expect(result.content[0].text).toContain(`Observations:\n[${baseObservation.id}] 2026-05-02 10:00 [high] ${baseObservation.content}`);
+		expect(result.content[0].text).toContain("Sources:\n[User @ 2026-05-02 10:00]: Please preserve exact sources.");
+		expect(getBranch).toHaveBeenCalledTimes(1);
+		expect(getEntries).not.toHaveBeenCalled();
+
+		const header = formatRecallHeaderForTui(result.details);
+		const collapsed = formatRecallResultForTui(result, false);
+		const expanded = formatRecallResultForTui(result, true);
+		expect(header).toContain("✓ recalled · 1 reflection · 1 observation · 1 source entry");
+		expect(collapsed).toContain(`✓ reflection · ${reflection.id} · ${reflection.content}`);
+		expect(collapsed).toContain(`✓ observation · 2026-05-02 10:00 · [high] · ${baseObservation.content}`);
+		expect(collapsed.indexOf("✓ reflection")).toBeLessThan(collapsed.indexOf("✓ observation"));
+		expect(collapsed.indexOf("✓ observation")).toBeLessThan(collapsed.indexOf("✓ user"));
+		expect(collapsed).not.toContain("•");
+		expect(collapsed).not.toContain("Please preserve exact sources.");
+		expect(collapsed).toContain("(Ctrl+O to expand)");
+		expect(expanded).toContain("    Please preserve exact sources.");
+	});
+
+	it("returns all evidence for mixed observation/reflection id conflicts", async () => {
+		const supportingObservation = {
+			...baseObservation,
+			id: "222222222222",
+			content: "Supporting observation for the colliding reflection.",
+			sourceEntryIds: ["source-b"],
+		} satisfies ObservationRecord;
+		const collidingReflection = { ...reflection, id: observationId, supportingObservationIds: [supportingObservation.id] } satisfies ReflectionRecord;
+		const { result } = await executeRecall(observationId, [
+			sourceEntry("source-a", "direct observation source"),
+			sourceEntry("source-b", "supporting observation source"),
+			obsEntry("direct-entry", [{ ...baseObservation, sourceEntryIds: ["source-a"] }]),
+			obsEntry("support-entry", [supportingObservation]),
+			compactionEntry({ id: "compaction-current", details: memoryDetailsV4([collidingReflection]) }),
+		]);
+
+		expect(result.details.status).toBe("ok");
+		expect(result.details.collision).toBe(true);
+		expect(result.details.reflections.map((item) => item.id)).toEqual([observationId]);
+		expect(result.details.directObservationMatches.map((item) => item.observation.id)).toEqual([observationId]);
+		expect(result.details.observations.map((item) => item.observationEntryId)).toEqual(["direct-entry", "support-entry"]);
+		expect(result.details.sourceEntries.map((entry) => entry.id)).toEqual(["source-a", "source-b"]);
+		expect(result.content[0].text).toContain("Memory id abc123def456 matched multiple observations/reflections");
+		expect(result.content[0].text).toContain("[User @ 2026-05-02 10:00]: direct observation source");
+		expect(result.content[0].text).toContain("[User @ 2026-05-02 10:00]: supporting observation source");
+		expect(formatRecallHeaderForTui(result.details)).toContain("⚠ recalled · id collision · 1 reflection · 2 observations · 2 source entries");
+	});
+
+	it("renders partial unavailable diagnostics while preserving available reflection evidence", async () => {
+		const metadataEntry = obsEntry("metadata-entry", [
+			{ ...baseObservation, id: "333333333333", sourceEntryIds: ["source-user"] },
+		]);
+		const partialObservation = {
+			...baseObservation,
+			id: "222222222222",
+			content: "Observation with partial source availability.",
+			sourceEntryIds: ["source-user", "missing-source", "metadata-entry"],
+		} satisfies ObservationRecord;
+		const partialReflection = {
+			...reflection,
+			supportingObservationIds: [partialObservation.id, "999999999999"],
+		} satisfies ReflectionRecord;
+		const { result } = await executeRecall(partialReflection.id, [
+			sourceEntry(),
+			metadataEntry,
+			obsEntry("partial-support-entry", [partialObservation]),
+			compactionEntry({ id: "compaction-current", details: memoryDetailsV4([partialReflection]) }),
+		]);
+
+		expect(result.details.status).toBe("partial");
+		expect(result.details.partial).toBe(true);
+		expect(result.details.sourceEntries.map((entry) => entry.id)).toEqual(["source-user"]);
+		expect(result.details.unavailableSupportingObservations.map((item) => item.observationId)).toEqual(["999999999999"]);
+		expect(result.details.missingSourceEntryIds).toEqual(["missing-source"]);
+		expect(result.details.nonSourceEntryIds).toEqual(["metadata-entry"]);
+		expect(result.content[0].text).toContain("Unavailable supporting observations");
+		expect(result.content[0].text).toContain("Unavailable source entries: missing: missing-source; non-source: metadata-entry");
+		expect(result.content[0].text).toContain("[User @ 2026-05-02 10:00]: Please preserve exact sources.");
+		const collapsed = formatRecallResultForTui(result, false);
+		expect(formatRecallHeaderForTui(result.details)).toContain("⚠ recalled · partial · 1 reflection · 1 observation · 1 source entry");
+		expect(collapsed).toContain("× supporting observation unavailable · reflection 111111111111 · observation 999999999999");
+		expect(collapsed).toContain("× source unavailable · missing: missing-source · non-source: metadata-entry");
+	});
+
+	it("renders partial diagnostics when a reflection is supported by a no-source observation", async () => {
+		const legacySupportingObservation = {
+			...baseObservation,
+			id: "222222222222",
+			content: "Legacy observation without source ids supports the reflection.",
+		} satisfies ObservationRecord;
+		const partialReflection = {
+			...reflection,
+			supportingObservationIds: [legacySupportingObservation.id],
+		} satisfies ReflectionRecord;
+		const { result } = await executeRecall(partialReflection.id, [
+			obsEntry("legacy-support-entry", [legacySupportingObservation]),
+			compactionEntry({ id: "compaction-current", details: memoryDetailsV4([partialReflection]) }),
+		]);
+
+		expect(result.details.status).toBe("partial");
+		expect(result.details.partial).toBe(true);
+		expect(result.details.reflections.map((item) => item.id)).toEqual([partialReflection.id]);
+		expect(result.details.observations).toHaveLength(1);
+		expect(result.details.observations[0]).toMatchObject({ status: "no_source", observationEntryId: "legacy-support-entry" });
+		expect(result.details.sourceEntries).toEqual([]);
+		expect(result.content[0].text).toContain("Unavailable observation sources");
+		expect(result.content[0].text).toContain("Observation 222222222222 has no source entries associated");
+		const collapsed = formatRecallResultForTui(result, false);
+		expect(formatRecallHeaderForTui(result.details)).toContain("⚠ recalled · partial · 1 reflection · 1 observation");
+		expect(collapsed).toContain("× no source · observation 222222222222 · legacy/unattributed observation");
+		expect(collapsed).not.toContain("source entry");
+	});
+
 	it("renders a static recall call and pi-fork-style result body without invalidating", async () => {
 		const { result } = await executeRecall(observationId, [
 			sourceEntry(),
@@ -197,7 +337,7 @@ describe("recall tool execution", () => {
 
 		expect(result.details.status).toBe("not_found");
 		expect(result.details.matches).toEqual([]);
-		expect(result.content[0].text).toContain("No observation with id abc123def456 was found on the current branch");
+		expect(result.content[0].text).toContain("No observation or reflection with id abc123def456 was found on the current branch");
 	});
 
 	it("returns no_source for legacy observations without using batch fallback", async () => {

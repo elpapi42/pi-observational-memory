@@ -4,27 +4,29 @@ import { defineTool, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { Text } from "@mariozechner/pi-tui";
 import {
-	recallObservationSources,
+	recallMemorySources,
 	type Entry,
-	type RecallObservationMatch,
-	type RecallObservationSourcesResult,
+	type RecallMemoryObservation,
+	type RecallMemorySourcesResult,
 } from "../branch.js";
 import { renderRecallSourceEntries, renderRecallSourceEntry } from "../serialize.js";
 import { estimateEntryTokens } from "../tokens.js";
-import type { ObservationRecord } from "../types.js";
+import type { ObservationRecord, ReflectionRecord } from "../types.js";
 
 export const RECALL_OBSERVATION_TOOL_NAME = "recall";
 
-const OBSERVATION_ID_PATTERN = /^[a-f0-9]{12}$/;
+const MEMORY_ID_PATTERN = /^[a-f0-9]{12}$/;
 
 type RecallObservationToolStatus =
 	| "ok"
+	| "partial"
 	| "invalid_id"
 	| "not_found"
 	| "no_source"
 	| "source_unavailable";
 
 type ObservationDetails = Pick<ObservationRecord, "id" | "content" | "timestamp" | "relevance">;
+type ReflectionDetails = Pick<ReflectionRecord, "id" | "content" | "supportingObservationIds"> & { reflectionIndex: number };
 
 export type RecallSourceEntryDetails = {
 	id: string;
@@ -36,8 +38,9 @@ export type RecallSourceEntryDetails = {
 };
 
 type RecallObservationMatchDetails = {
-	status: RecallObservationMatch["status"];
+	status: RecallMemoryObservation["status"];
 	observationEntryId: string;
+	observationRecordIndex: number;
 	observation: ObservationDetails;
 	sourceEntryIds?: string[];
 	sourceEntries?: RecallSourceEntryDetails[];
@@ -46,11 +49,26 @@ type RecallObservationMatchDetails = {
 	sourceCharacterCount?: number;
 };
 
+type RecallUnavailableSupportingObservationDetails = {
+	reflectionId: string;
+	reflectionIndex: number;
+	observationId: string;
+};
+
 export type RecallObservationToolDetails = {
 	status: RecallObservationToolStatus;
+	memoryId: string;
 	observationId: string;
 	collision: boolean;
+	partial: boolean;
+	reflections: ReflectionDetails[];
+	directObservationMatches: RecallObservationMatchDetails[];
+	observations: RecallObservationMatchDetails[];
 	matches: RecallObservationMatchDetails[];
+	sourceEntries: RecallSourceEntryDetails[];
+	unavailableSupportingObservations: RecallUnavailableSupportingObservationDetails[];
+	missingSourceEntryIds: string[];
+	nonSourceEntryIds: string[];
 	sourceCharacterCount?: number;
 	message?: string;
 };
@@ -143,23 +161,40 @@ function observationDetails(observation: ObservationRecord): ObservationDetails 
 	};
 }
 
-function matchDetails(match: RecallObservationMatch, sourceText?: string, includeSourceContent = true): RecallObservationMatchDetails {
+function reflectionDetails(reflection: ReflectionRecord, reflectionIndex: number): ReflectionDetails {
+	return {
+		id: reflection.id,
+		content: reflection.content,
+		supportingObservationIds: reflection.supportingObservationIds,
+		reflectionIndex,
+	};
+}
+
+function observationMatchDetails(match: RecallMemoryObservation, includeSourceContent = true): RecallObservationMatchDetails {
 	if (match.status === "ok") {
 		return {
 			status: "ok",
 			observationEntryId: match.observationEntryId,
+			observationRecordIndex: match.observationRecordIndex,
 			observation: observationDetails(match.observation),
 			sourceEntryIds: match.sourceEntryIds,
 			sourceEntries: match.sourceEntries.map((entry) => sourceEntryDetails(entry, includeSourceContent)),
-			sourceCharacterCount: sourceText?.length ?? 0,
+			sourceCharacterCount: renderRecallSourceEntries(match.sourceEntries).length,
 		};
 	}
 	if (match.status === "source_unavailable") {
 		return {
 			status: "source_unavailable",
 			observationEntryId: match.observationEntryId,
+			observationRecordIndex: match.observationRecordIndex,
 			observation: observationDetails(match.observation),
 			sourceEntryIds: match.sourceEntryIds,
+			...(includeSourceContent
+				? {
+						sourceEntries: match.sourceEntries.map((entry) => sourceEntryDetails(entry, true)),
+						sourceCharacterCount: renderRecallSourceEntries(match.sourceEntries).length,
+					}
+				: {}),
 			missingSourceEntryIds: match.missingSourceEntryIds,
 			nonSourceEntryIds: match.nonSourceEntryIds,
 		};
@@ -167,6 +202,7 @@ function matchDetails(match: RecallObservationMatch, sourceText?: string, includ
 	return {
 		status: "no_source",
 		observationEntryId: match.observationEntryId,
+		observationRecordIndex: match.observationRecordIndex,
 		observation: observationDetails(match.observation),
 	};
 }
@@ -178,59 +214,164 @@ function textResult(text: string, details: RecallObservationToolDetails) {
 	};
 }
 
-function aggregateStatus(matches: RecallObservationMatch[]): RecallObservationToolStatus {
-	if (matches.some((match) => match.status === "ok")) return "ok";
-	if (matches.some((match) => match.status === "source_unavailable")) return "source_unavailable";
-	return "no_source";
+function emptyDetails(status: RecallObservationToolStatus, memoryId: string, message: string): RecallObservationToolDetails {
+	return {
+		status,
+		memoryId,
+		observationId: memoryId,
+		collision: false,
+		partial: false,
+		reflections: [],
+		directObservationMatches: [],
+		observations: [],
+		matches: [],
+		sourceEntries: [],
+		unavailableSupportingObservations: [],
+		missingSourceEntryIds: [],
+		nonSourceEntryIds: [],
+		message,
+	};
 }
 
-function friendlyNoSourceMessage(observationId: string): string {
-	return `Observation ${observationId} has no source entries associated with it. This can happen for legacy observations created before source recall was available.`;
+function aggregateStatus(details: Omit<RecallObservationToolDetails, "status">): RecallObservationToolStatus {
+	const observationOnly = details.reflections.length === 0 && details.unavailableSupportingObservations.length === 0;
+	if (observationOnly && details.observations.some((match) => match.status === "ok")) return "ok";
+	if (observationOnly && details.observations.some((match) => match.status === "source_unavailable")) return "source_unavailable";
+	if (observationOnly && details.observations.length > 0) return "no_source";
+	if (details.partial) return "partial";
+	if (details.sourceEntries.length > 0) return "ok";
+	if (details.reflections.length > 0) return "ok";
+	if (details.observations.length > 0) return "no_source";
+	return "not_found";
 }
 
-function friendlySourceUnavailableMessage(match: Extract<RecallObservationMatch, { status: "source_unavailable" }>): string {
-	const missing = match.missingSourceEntryIds.length > 0 ? ` missing: ${match.missingSourceEntryIds.join(", ")}` : "";
-	const nonSource = match.nonSourceEntryIds.length > 0 ? ` non-source: ${match.nonSourceEntryIds.join(", ")}` : "";
+function friendlyNoSourceMessage(memoryId: string): string {
+	return `Observation ${memoryId} has no source entries associated with it. This can happen for legacy observations created before source recall was available.`;
+}
+
+function friendlySourceUnavailableMessage(match: RecallObservationMatchDetails): string {
+	const missing = match.missingSourceEntryIds && match.missingSourceEntryIds.length > 0 ? ` missing: ${match.missingSourceEntryIds.join(", ")}` : "";
+	const nonSource = match.nonSourceEntryIds && match.nonSourceEntryIds.length > 0 ? ` non-source: ${match.nonSourceEntryIds.join(", ")}` : "";
 	return `Observation ${match.observation.id} has source entries associated, but some are unavailable on the current branch or are not source-renderable.${missing}${nonSource}`;
 }
 
-function renderFoundResult(result: Extract<RecallObservationSourcesResult, { status: "found" }>): ReturnType<typeof textResult> {
+function reflectionLineText(reflection: ReflectionDetails): string {
+	return `[${reflection.id}] ${reflection.content}`;
+}
+
+function observationLineText(observation: ObservationDetails): string {
+	return `[${observation.id}] ${observation.timestamp} [${observation.relevance}] ${observation.content}`;
+}
+
+function renderObservationOnlyTextFromResult(result: Extract<RecallMemorySourcesResult, { status: "found" }>): string {
 	const sections: string[] = [];
-	const detailsMatches: RecallObservationMatchDetails[] = [];
-	let sourceCharacterCount = 0;
-
 	if (result.collision) {
-		sections.push(`Multiple observations share id ${result.observationId}; returning all matching source results from the current branch.`);
+		sections.push(`Multiple observations share id ${result.memoryId}; returning all matching source results from the current branch.`);
 	}
-
-	for (const match of result.matches) {
+	for (const match of result.directObservationMatches) {
 		if (match.status === "ok") {
 			const sourceText = renderRecallSourceEntries(match.sourceEntries);
-			sourceCharacterCount += sourceText.length;
-			detailsMatches.push(matchDetails(match, sourceText));
 			if (sourceText.trim()) sections.push(sourceText);
 			else sections.push(`Observation ${match.observation.id} has source entries associated, but they rendered no text content.`);
 			continue;
 		}
-
 		if (match.status === "source_unavailable") {
-			detailsMatches.push(matchDetails(match));
-			sections.push(friendlySourceUnavailableMessage(match));
+			sections.push(friendlySourceUnavailableMessage(observationMatchDetails(match, false)));
 			continue;
 		}
-
-		detailsMatches.push(matchDetails(match));
 		sections.push(friendlyNoSourceMessage(match.observation.id));
 	}
+	return sections.join("\n\n");
+}
 
-	const text = sections.join("\n\n");
-	return textResult(text, {
-		status: aggregateStatus(result.matches),
-		observationId: result.observationId,
+function unavailableSupportingLineText(item: RecallUnavailableSupportingObservationDetails): string {
+	return `Supporting observation ${item.observationId} for reflection ${item.reflectionId} is unavailable on the current branch.`;
+}
+
+function unavailableObservationSourceLineText(match: RecallMemoryObservation): string {
+	return `Observation ${match.observation.id} has no source entries associated. This can happen for legacy observations created before source recall was available.`;
+}
+
+function renderMemoryText(result: Extract<RecallMemorySourcesResult, { status: "found" }>): string {
+	const sections: string[] = [];
+	if (result.collision) {
+		sections.push(`Memory id ${result.memoryId} matched multiple observations/reflections; returning all available evidence from the current branch.`);
+	}
+	if (result.reflectionMatches.length > 0) {
+		sections.push(`Reflections:\n${result.reflectionMatches.map((match) => reflectionLineText(reflectionDetails(match.reflection, match.reflectionIndex))).join("\n")}`);
+	}
+	if (result.observations.length > 0) {
+		sections.push(`Observations:\n${result.observations.map((match) => observationLineText(match.observation)).join("\n")}`);
+	}
+	if (result.unavailableSupportingObservations.length > 0) {
+		sections.push(
+			`Unavailable supporting observations:\n${result.unavailableSupportingObservations
+				.map((item) => unavailableSupportingLineText({
+					reflectionId: item.reflection.id,
+					reflectionIndex: item.reflectionIndex,
+					observationId: item.observationId,
+				}))
+				.join("\n")}`,
+		);
+	}
+	const noSourceObservations = result.observations.filter((match) => match.status === "no_source");
+	if (noSourceObservations.length > 0) {
+		sections.push(`Unavailable observation sources:\n${noSourceObservations.map(unavailableObservationSourceLineText).join("\n")}`);
+	}
+	if (result.missingSourceEntryIds.length > 0 || result.nonSourceEntryIds.length > 0) {
+		const parts: string[] = [];
+		if (result.missingSourceEntryIds.length > 0) parts.push(`missing: ${result.missingSourceEntryIds.join(", ")}`);
+		if (result.nonSourceEntryIds.length > 0) parts.push(`non-source: ${result.nonSourceEntryIds.join(", ")}`);
+		sections.push(`Unavailable source entries: ${parts.join("; ")}`);
+	}
+	const sourceText = renderRecallSourceEntries(result.sourceEntries);
+	if (sourceText.trim()) sections.push(`Sources:\n${sourceText}`);
+	if (sections.length === 0) sections.push(`Memory ${result.memoryId} was found, but no source evidence rendered.`);
+	return sections.join("\n\n");
+}
+
+function resultDetails(result: Extract<RecallMemorySourcesResult, { status: "found" }>, includeSourceContent = true): RecallObservationToolDetails {
+	const reflections = result.reflectionMatches.map((match) => reflectionDetails(match.reflection, match.reflectionIndex));
+	const memoryLayerRecall = result.reflectionMatches.length > 0 || result.unavailableSupportingObservations.length > 0;
+	const includeObservationSources = (match: RecallMemoryObservation) => includeSourceContent && (memoryLayerRecall || match.status !== "source_unavailable");
+	const observations = result.observations.map((match) => observationMatchDetails(match, includeObservationSources(match)));
+	const directObservationMatches = result.directObservationMatches.map((match) => observationMatchDetails(match, includeObservationSources(match)));
+	const sourceEntries = memoryLayerRecall ? result.sourceEntries.map((entry) => sourceEntryDetails(entry, includeSourceContent)) : [];
+	const unavailableSupportingObservations = result.unavailableSupportingObservations.map((item) => ({
+		reflectionId: item.reflection.id,
+		reflectionIndex: item.reflectionIndex,
+		observationId: item.observationId,
+	}));
+	const partial = result.partial;
+	const detailWithoutStatus = {
+		memoryId: result.memoryId,
+		observationId: result.memoryId,
 		collision: result.collision,
-		matches: detailsMatches,
-		sourceCharacterCount,
-	});
+		partial,
+		reflections,
+		directObservationMatches,
+		observations,
+		matches: directObservationMatches,
+		sourceEntries,
+		unavailableSupportingObservations,
+		missingSourceEntryIds: result.missingSourceEntryIds,
+		nonSourceEntryIds: result.nonSourceEntryIds,
+		sourceCharacterCount: renderRecallSourceEntries(result.sourceEntries).length,
+	};
+	return {
+		status: aggregateStatus(detailWithoutStatus),
+		...detailWithoutStatus,
+	};
+}
+
+function isObservationOnly(details: RecallObservationToolDetails): boolean {
+	return details.reflections.length === 0 && details.unavailableSupportingObservations.length === 0;
+}
+
+function renderFoundResult(result: Extract<RecallMemorySourcesResult, { status: "found" }>): ReturnType<typeof textResult> {
+	const details = resultDetails(result);
+	const text = isObservationOnly(details) ? renderObservationOnlyTextFromResult(result) : renderMemoryText(result);
+	return textResult(text, details);
 }
 
 function plural(n: number, singular: string, pluralForm = `${singular}s`): string {
@@ -238,6 +379,7 @@ function plural(n: number, singular: string, pluralForm = `${singular}s`): strin
 }
 
 function sourceEntriesFromDetails(details: RecallObservationToolDetails): RecallSourceEntryDetails[] {
+	if (!isObservationOnly(details)) return details.sourceEntries;
 	return details.matches.flatMap((match) => match.sourceEntries ?? []);
 }
 
@@ -247,6 +389,7 @@ function tokenSummary(tokens: number): string {
 
 function statusIcon(details: RecallObservationToolDetails): string {
 	if (details.status === "ok") return details.collision ? "⚠" : "✓";
+	if (details.status === "partial") return "⚠";
 	return "×";
 }
 
@@ -255,12 +398,20 @@ function statusSummary(details: RecallObservationToolDetails): string {
 	if (details.status === "not_found") return "not found";
 	if (details.status === "source_unavailable") return "source unavailable";
 	if (details.status === "no_source") return "no source";
-	return details.collision ? "recalled · id collision" : "recalled";
+	if (details.collision && details.partial) return "recalled · id collision · partial";
+	if (details.collision) return "recalled · id collision";
+	if (details.partial) return "recalled · partial";
+	return "recalled";
 }
 
 export function formatRecallHeaderForTui(details: RecallObservationToolDetails): string {
 	const parts = [`${statusIcon(details)} ${statusSummary(details)}`];
-	if (details.matches.length > 0) parts.push(plural(details.matches.length, "match", "matches"));
+	if (isObservationOnly(details)) {
+		if (details.matches.length > 0) parts.push(plural(details.matches.length, "match", "matches"));
+	} else {
+		if (details.reflections.length > 0) parts.push(plural(details.reflections.length, "reflection"));
+		if (details.observations.length > 0) parts.push(plural(details.observations.length, "observation"));
+	}
 	const sources = sourceEntriesFromDetails(details);
 	if (sources.length > 0) parts.push(plural(sources.length, "source entry", "source entries"));
 	const tokens = sources.reduce((sum, source) => sum + source.tokens, 0);
@@ -281,6 +432,10 @@ function observationLine(observation: ObservationDetails): string {
 	return `✓ observation · ${observation.timestamp} · [${observation.relevance}] · ${observation.content}`;
 }
 
+function reflectionLine(reflection: ReflectionDetails): string {
+	return `✓ reflection · ${reflection.id} · ${reflection.content}`;
+}
+
 function indentContent(content: string): string {
 	return content
 		.split("\n")
@@ -288,18 +443,26 @@ function indentContent(content: string): string {
 		.join("\n");
 }
 
-function unavailableSourceLine(match: RecallObservationMatchDetails): string {
+function unavailableSourceLine(details: { missingSourceEntryIds?: string[]; nonSourceEntryIds?: string[] }): string {
 	const parts: string[] = [];
-	if (match.missingSourceEntryIds && match.missingSourceEntryIds.length > 0) {
-		parts.push(`missing: ${match.missingSourceEntryIds.join(", ")}`);
+	if (details.missingSourceEntryIds && details.missingSourceEntryIds.length > 0) {
+		parts.push(`missing: ${details.missingSourceEntryIds.join(", ")}`);
 	}
-	if (match.nonSourceEntryIds && match.nonSourceEntryIds.length > 0) {
-		parts.push(`non-source: ${match.nonSourceEntryIds.join(", ")}`);
+	if (details.nonSourceEntryIds && details.nonSourceEntryIds.length > 0) {
+		parts.push(`non-source: ${details.nonSourceEntryIds.join(", ")}`);
 	}
 	return `× source unavailable${parts.length > 0 ? ` · ${parts.join(" · ")}` : ""}`;
 }
 
-function matchLines(match: RecallObservationMatchDetails, expanded: boolean): string[] {
+function unavailableSupportingLine(item: RecallUnavailableSupportingObservationDetails): string {
+	return `× supporting observation unavailable · reflection ${item.reflectionId} · observation ${item.observationId}`;
+}
+
+function noSourceObservationLine(match: RecallObservationMatchDetails): string {
+	return `× no source · observation ${match.observation.id} · legacy/unattributed observation`;
+}
+
+function observationOnlyMatchLines(match: RecallObservationMatchDetails, expanded: boolean): string[] {
 	const lines = [observationLine(match.observation), ""];
 	if (match.status === "ok") {
 		for (const source of match.sourceEntries ?? []) {
@@ -311,8 +474,40 @@ function matchLines(match: RecallObservationMatchDetails, expanded: boolean): st
 		}
 		return lines;
 	}
-	if (match.status === "source_unavailable") return [...lines, unavailableSourceLine(match)];
+	if (match.status === "source_unavailable") {
+		const sources = match.sourceEntries ?? [];
+		for (const source of sources) {
+			lines.push(sourceMetadataLine(source));
+			if (expanded && source.content) {
+				lines.push(indentContent(source.content));
+				lines.push("");
+			}
+		}
+		lines.push(unavailableSourceLine(match));
+		return lines;
+	}
 	return [...lines, "× no source · legacy/unattributed observation"];
+}
+
+function memoryLines(details: RecallObservationToolDetails, expanded: boolean): string[] {
+	const lines: string[] = [];
+	for (const reflection of details.reflections) lines.push(reflectionLine(reflection));
+	if (details.reflections.length > 0 && details.observations.length > 0) lines.push("");
+	for (const observation of details.observations) lines.push(observationLine(observation.observation));
+	if ((details.reflections.length > 0 || details.observations.length > 0) && (details.sourceEntries.length > 0 || details.unavailableSupportingObservations.length > 0 || details.missingSourceEntryIds.length > 0 || details.nonSourceEntryIds.length > 0)) lines.push("");
+	for (const item of details.unavailableSupportingObservations) lines.push(unavailableSupportingLine(item));
+	for (const observation of details.observations) {
+		if (observation.status === "no_source") lines.push(noSourceObservationLine(observation));
+	}
+	if (details.missingSourceEntryIds.length > 0 || details.nonSourceEntryIds.length > 0) lines.push(unavailableSourceLine(details));
+	for (const source of details.sourceEntries) {
+		lines.push(sourceMetadataLine(source));
+		if (expanded && source.content) {
+			lines.push(indentContent(source.content));
+			lines.push("");
+		}
+	}
+	return lines;
 }
 
 export function formatRecallResultForTui(result: AgentToolResult<RecallObservationToolDetails>, expanded: boolean): string {
@@ -326,15 +521,20 @@ export function formatRecallResultForTui(result: AgentToolResult<RecallObservati
 	}
 
 	const lines: string[] = [];
-	if (details.matches.length > 0) {
-		for (const match of details.matches) {
-			if (lines.length > 0) lines.push("");
-			lines.push(...matchLines(match, expanded));
+	if (isObservationOnly(details)) {
+		if (details.matches.length > 0) {
+			for (const match of details.matches) {
+				if (lines.length > 0) lines.push("");
+				lines.push(...observationOnlyMatchLines(match, expanded));
+			}
+		} else if (details.message) {
+			lines.push(details.message);
 		}
-	} else if (details.message) {
-		lines.push(details.message);
+	} else {
+		lines.push(...memoryLines(details, expanded));
 	}
-	if (!expanded && details.matches.some((match) => match.status === "ok" && (match.sourceEntries?.length ?? 0) > 0)) {
+
+	if (!expanded && sourceEntriesFromDetails(details).length > 0) {
 		lines.push("", "(Ctrl+O to expand)");
 	}
 	return lines.join("\n").trimEnd();
@@ -354,18 +554,19 @@ export function formatRecallRenderedResultForTui(result: AgentToolResult<RecallO
 
 export const recallObservationTool = defineTool({
 	name: RECALL_OBSERVATION_TOOL_NAME,
-	label: "Recall observation source",
-	description: "Recall exact source entries for an observational-memory observation id on the current branch.",
-	promptSnippet: "Recall exact source entries for a compacted observational-memory observation id.",
+	label: "Recall memory source",
+	description: "Recall exact source entries for an observational-memory observation or reflection id on the current branch.",
+	promptSnippet: "Recall exact source entries for a compacted observational-memory observation or reflection id.",
 	promptGuidelines: [
-		"Use recall when a compacted observation id needs exact source context or the user asks what supports a remembered claim.",
-		"This is not general search: pass a specific observation id from the compacted Observations list.",
+		"Use recall when a compacted observation or reflection id needs exact source context or the user asks what supports a remembered claim.",
+		"This is not general search: pass a specific memory id from the compacted Reflections or Observations list.",
+		"Reflection recall is most useful when a reflection materially affects a decision or is too compressed to continue confidently.",
 		"Do not call recall for broad transcript browsing or off-branch history.",
 	],
 	parameters: Type.Object({
 		id: Type.String({
 			pattern: "^[a-f0-9]{12}$",
-			description: "12-character lowercase hex observational-memory observation id.",
+			description: "12-character lowercase hex observational-memory observation or reflection id.",
 		}),
 	}),
 	renderCall(args) {
@@ -375,29 +576,17 @@ export const recallObservationTool = defineTool({
 		return new Text(formatRecallRenderedResultForTui(result as AgentToolResult<RecallObservationToolDetails>, options.expanded), 0, 0);
 	},
 	async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-		const observationId = params.id;
-		if (!OBSERVATION_ID_PATTERN.test(observationId)) {
-			const message = `Observation id must be 12 lowercase hex characters. Received: ${observationId}`;
-			return textResult(message, {
-				status: "invalid_id",
-				observationId,
-				collision: false,
-				matches: [],
-				message,
-			});
+		const memoryId = params.id;
+		if (!MEMORY_ID_PATTERN.test(memoryId)) {
+			const message = `Memory id must be 12 lowercase hex characters. Received: ${memoryId}`;
+			return textResult(message, emptyDetails("invalid_id", memoryId, message));
 		}
 
 		const branchEntries = ctx.sessionManager.getBranch() as Entry[];
-		const result = recallObservationSources(branchEntries, observationId);
+		const result = recallMemorySources(branchEntries, memoryId);
 		if (result.status === "not_found") {
-			const message = `No observation with id ${observationId} was found on the current branch.`;
-			return textResult(message, {
-				status: "not_found",
-				observationId,
-				collision: false,
-				matches: [],
-				message,
-			});
+			const message = `No observation or reflection with id ${memoryId} was found on the current branch.`;
+			return textResult(message, emptyDetails("not_found", memoryId, message));
 		}
 
 		return renderFoundResult(result);

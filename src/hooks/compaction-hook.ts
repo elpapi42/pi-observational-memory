@@ -12,10 +12,11 @@ import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import { estimateStringTokens } from "../tokens.js";
 import {
 	OBSERVATION_CUSTOM_TYPE,
-	type MemoryDetails,
+	reflectionToPromptLine,
+	type MemoryDetailsV4,
+	type MemoryReflection,
 	type ObservationEntryData,
 	type ObservationRecord,
-	type Reflection,
 } from "../types.js";
 
 export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void {
@@ -76,7 +77,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 						model: resolved.model as any,
 						apiKey: resolved.apiKey,
 						headers: resolved.headers,
-						priorReflections: memoryState.reflections,
+						priorReflections: memoryState.reflections.map(reflectionToPromptLine),
 						priorObservations: priorObservationLines,
 						chunk: gapChunk,
 						allowedSourceEntryIds: sourceEntryIds,
@@ -129,7 +130,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 				return { cancel: true };
 			}
 
-			const workingReflections: Reflection[] = [...memoryState.reflections];
+			const workingReflections: MemoryReflection[] = [...memoryState.reflections];
 			const workingObservations: ObservationRecord[] = [
 				...memoryState.committedObs,
 				...deltaObservationData.flatMap((d) => d.records),
@@ -175,9 +176,9 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 				throw new Error("invariant violated: finalObservations empty after delta guard");
 			}
 
-			const details: MemoryDetails = {
+			const details: MemoryDetailsV4 = {
 				type: "observational-memory",
-				version: 3,
+				version: 4,
 				observations: finalObservations,
 				reflections: finalReflections,
 			};

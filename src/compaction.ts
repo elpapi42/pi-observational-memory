@@ -1,11 +1,13 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@mariozechner/pi-agent-core";
 import { Type, type Message, type Model } from "@mariozechner/pi-ai";
 import type { Static } from "@sinclair/typebox";
+import { hashId } from "./ids.js";
 import { observationsToPromptLines } from "./observer.js";
 import { buildPrunerPassGuidance, CONTEXT_USAGE_INSTRUCTIONS, PRUNER_SYSTEM, REFLECTOR_SYSTEM } from "./prompts.js";
 import { truncateRecordContent } from "./serialize.js";
 import { estimateStringTokens } from "./tokens.js";
-import type { ObservationRecord, Reflection } from "./types.js";
+import { reflectionContent, reflectionToPromptLine } from "./types.js";
+import type { MemoryReflection, ObservationRecord, ReflectionRecord } from "./types.js";
 
 const PRUNER_MAX_PASSES = 5;
 const PRUNER_TARGET_RATIO = 0.8;
@@ -21,8 +23,8 @@ interface LlmArgs {
 	signal?: AbortSignal;
 }
 
-function joinReflectionsOrEmpty(items: Reflection[]): string {
-	return items.length ? items.join("\n") : "(none yet)";
+function joinReflectionsOrEmpty(items: MemoryReflection[]): string {
+	return items.length ? items.map(reflectionToPromptLine).join("\n") : "(none yet)";
 }
 
 function joinObservationsOrEmpty(items: ObservationRecord[]): string {
@@ -31,26 +33,60 @@ function joinObservationsOrEmpty(items: ObservationRecord[]): string {
 
 const RecordReflectionsSchema = Type.Object({
 	reflections: Type.Array(
-		Type.String({
-			minLength: 1,
-			description: "Single-line plain prose reflection. No markdown, no tags, no timestamp, no bullets.",
+		Type.Object({
+			content: Type.String({
+				minLength: 1,
+				description: "Single-line plain prose reflection. No markdown, no tags, no timestamp, no bullets.",
+			}),
+			supportingObservationIds: Type.Array(
+				Type.String({
+					pattern: "^[a-f0-9]{12}$",
+					description: "Exact observation id from the current-observations list that supports this reflection.",
+				}),
+				{
+					minItems: 1,
+					description:
+						"Smallest exact set of current observation ids that directly support this reflection. " +
+						"Use only ids shown in the current observations list; never invent ids.",
+				},
+			),
 		}),
 		{
 			minItems: 1,
-			description: "Batch of new reflections. Each string is one reflection.",
+			description: "Batch of new reflection proposals with their supporting observation ids.",
 		},
 	),
 });
 
 type RecordReflectionsArgs = Static<typeof RecordReflectionsSchema>;
 
+export function normalizeSupportingObservationIds(
+	supportingObservationIds: readonly string[] | undefined,
+	allowedObservationIds: readonly string[],
+): string[] | undefined {
+	if (!supportingObservationIds || supportingObservationIds.length === 0) return undefined;
+	const allowedOrder = new Map<string, number>();
+	for (let i = 0; i < allowedObservationIds.length; i++) {
+		if (!allowedOrder.has(allowedObservationIds[i])) allowedOrder.set(allowedObservationIds[i], i);
+	}
+
+	const seen = new Set<string>();
+	for (const id of supportingObservationIds) {
+		if (!allowedOrder.has(id)) return undefined;
+		seen.add(id);
+	}
+	if (seen.size === 0) return undefined;
+	return Array.from(seen).sort((a, b) => (allowedOrder.get(a) ?? 0) - (allowedOrder.get(b) ?? 0));
+}
+
 export async function runReflector(
 	args: LlmArgs,
-	reflections: Reflection[],
+	reflections: MemoryReflection[],
 	observations: ObservationRecord[],
-): Promise<Reflection[]> {
-	const existing = new Set(reflections.map((r) => r.trim()));
-	const added = new Set<string>();
+): Promise<ReflectionRecord[]> {
+	const existing = new Set(reflections.map((r) => reflectionContent(r).trim()));
+	const allowedObservationIds = observations.map((o) => o.id);
+	const added = new Map<string, ReflectionRecord>();
 
 	const recordTool: AgentTool<typeof RecordReflectionsSchema> = {
 		name: "record_reflections",
@@ -63,24 +99,41 @@ export async function runReflector(
 		execute: async (_id, params: RecordReflectionsArgs) => {
 			let accepted = 0;
 			let duplicates = 0;
-			for (const r of params.reflections) {
-				const content = truncateRecordContent(r.trim());
-				if (!content) continue;
+			let unsupported = 0;
+			for (const proposal of params.reflections) {
+				const content = truncateRecordContent(proposal.content.trim());
+				if (!content || /[\r\n]/.test(content)) {
+					unsupported++;
+					continue;
+				}
+				const supportingObservationIds = normalizeSupportingObservationIds(
+					proposal.supportingObservationIds,
+					allowedObservationIds,
+				);
+				if (!supportingObservationIds) {
+					unsupported++;
+					continue;
+				}
 				if (existing.has(content) || added.has(content)) {
 					duplicates++;
 					continue;
 				}
-				added.add(content);
+				added.set(content, {
+					id: hashId(content),
+					content,
+					supportingObservationIds,
+				});
 				accepted++;
 			}
 			const parts: string[] = [];
 			parts.push(`Recorded ${accepted} new reflection${accepted === 1 ? "" : "s"}.`);
 			if (duplicates) parts.push(`${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped.`);
+			if (unsupported) parts.push(`${unsupported} unsupported proposal${unsupported === 1 ? "" : "s"} rejected for invalid supporting observation ids.`);
 			parts.push(`Total new this run: ${added.size}.`);
 			parts.push("Call record_reflections again if more should be crystallized; otherwise stop and emit a short plain-text confirmation.");
 			return {
 				content: [{ type: "text", text: parts.join(" ") }],
-				details: { accepted, duplicates, total: added.size },
+				details: { accepted, duplicates, unsupported, total: added.size },
 			};
 		},
 	};
@@ -91,7 +144,7 @@ ${joinReflectionsOrEmpty(reflections)}
 CURRENT OBSERVATIONS:
 ${joinObservationsOrEmpty(observations)}
 
-Crystallize new long-lived reflections from the observation pool. Call record_reflections with batches of new reflections. You may call the tool multiple times as you reason through the pool. Do not restate reflections already in the current reflections list. When done, stop calling the tool and emit a short plain-text confirmation.`;
+Crystallize new long-lived reflections from the observation pool. Call record_reflections with batches of new reflection proposals, each with the exact supporting observation ids. You may call the tool multiple times as you reason through the pool. Do not restate reflections already in the current reflections list. When done, stop calling the tool and emit a short plain-text confirmation.`;
 
 	const prompts: Message[] = [
 		{
@@ -128,7 +181,7 @@ Crystallize new long-lived reflections from the observation pool. Call record_re
 		// Salvage any reflections accepted before the error; downstream pruner still runs.
 	}
 
-	return Array.from(added);
+	return Array.from(added.values());
 }
 
 export interface PrunerResult {
@@ -171,7 +224,7 @@ interface PrunerPassResult {
 
 async function runPrunerPass(
 	args: LlmArgs,
-	reflections: Reflection[],
+	reflections: MemoryReflection[],
 	observations: ObservationRecord[],
 	passContext: PrunerPassContext,
 ): Promise<PrunerPassResult> {
@@ -275,7 +328,7 @@ Decide which observations to remove from the kept set. Call drop_observations wi
 
 export async function runPruner(
 	args: LlmArgs,
-	reflections: Reflection[],
+	reflections: MemoryReflection[],
 	observations: ObservationRecord[],
 	budgetTokens: number,
 ): Promise<PrunerResult> {
@@ -314,13 +367,13 @@ export async function runPruner(
 	return { observations: pool, droppedIds: allDropped, fellBack };
 }
 
-export function renderSummary(reflections: Reflection[], observations: ObservationRecord[]): string {
+export function renderSummary(reflections: MemoryReflection[], observations: ObservationRecord[]): string {
 	if (reflections.length === 0 && observations.length === 0) return "";
 
 	const parts: string[] = [CONTEXT_USAGE_INSTRUCTIONS];
 
 	if (reflections.length > 0) {
-		parts.push(`## Reflections\n${reflections.join("\n")}`);
+		parts.push(`## Reflections\n${reflections.map(reflectionToPromptLine).join("\n")}`);
 	}
 	if (observations.length > 0) {
 		const body = observationsToPromptLines(observations).join("\n");

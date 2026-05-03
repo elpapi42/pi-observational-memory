@@ -1,11 +1,13 @@
 import {
 	OBSERVATION_CUSTOM_TYPE,
-	isMemoryDetails,
 	isObservationEntryData,
-	type MemoryDetails,
+	isReflectionRecord,
+	isSupportedMemoryDetails,
+	type MemoryReflection,
 	type ObservationEntryData,
 	type ObservationRecord,
-	type Reflection,
+	type ReflectionRecord,
+	type SupportedMemoryDetails,
 } from "./types.js";
 import { estimateEntryTokens } from "./tokens.js";
 
@@ -68,6 +70,78 @@ export type RecallObservationSourcesResult =
 			matches: RecallObservationMatch[];
 			collision: boolean;
 		};
+
+export type RecallMemoryObservation =
+	| {
+			status: "ok";
+			observation: ObservationRecord;
+			observationEntryId: string;
+			observationRecordIndex: number;
+			sourceEntryIds: string[];
+			sourceEntries: Entry[];
+		}
+	| {
+			status: "no_source";
+			observation: ObservationRecord;
+			observationEntryId: string;
+			observationRecordIndex: number;
+		}
+	| {
+			status: "source_unavailable";
+			observation: ObservationRecord;
+			observationEntryId: string;
+			observationRecordIndex: number;
+			sourceEntryIds: string[];
+			sourceEntries: Entry[];
+			missingSourceEntryIds: string[];
+			nonSourceEntryIds: string[];
+		};
+
+export type RecallMemoryReflectionMatch = {
+	reflection: ReflectionRecord;
+	reflectionIndex: number;
+};
+
+export type RecallUnavailableSupportingObservation = {
+	reflection: ReflectionRecord;
+	reflectionIndex: number;
+	observationId: string;
+};
+
+export type RecallMemorySourcesResult =
+	| {
+			status: "not_found";
+			memoryId: string;
+			reflectionMatches: [];
+			directObservationMatches: [];
+			observations: [];
+			sourceEntries: [];
+			unavailableSupportingObservations: [];
+			missingSourceEntryIds: [];
+			nonSourceEntryIds: [];
+			collision: false;
+			partial: false;
+		}
+	| {
+			status: "found";
+			memoryId: string;
+			reflectionMatches: RecallMemoryReflectionMatch[];
+			directObservationMatches: RecallMemoryObservation[];
+			observations: RecallMemoryObservation[];
+			sourceEntries: Entry[];
+			unavailableSupportingObservations: RecallUnavailableSupportingObservation[];
+			missingSourceEntryIds: string[];
+			nonSourceEntryIds: string[];
+			collision: boolean;
+			partial: boolean;
+		};
+
+type IndexedObservation = {
+	observation: ObservationRecord;
+	observationEntryId: string;
+	observationRecordIndex: number;
+	branchIndex: number;
+};
 
 export function findLastCompactionIndex(entries: Entry[]): number {
 	for (let i = entries.length - 1; i >= 0; i--) {
@@ -152,6 +226,23 @@ function uniqueIds(ids: string[]): string[] {
 	return Array.from(new Set(ids));
 }
 
+function collectIndexedObservations(entries: Entry[]): IndexedObservation[] {
+	const observations: IndexedObservation[] = [];
+	for (let branchIndex = 0; branchIndex < entries.length; branchIndex++) {
+		const entry = entries[branchIndex];
+		if (!isObservationEntry(entry)) continue;
+		if (!isObservationEntryData(entry.data)) continue;
+		entry.data.records.forEach((observation, observationRecordIndex) => {
+			observations.push({ observation, observationEntryId: entry.id, observationRecordIndex, branchIndex });
+		});
+	}
+	return observations;
+}
+
+function observationKey(observation: Pick<IndexedObservation, "observationEntryId" | "observationRecordIndex">): string {
+	return `${observation.observationEntryId}:${observation.observationRecordIndex}`;
+}
+
 function resolveSourceEntries(entries: Entry[], sourceEntryIds: string[]): {
 	status: "ok" | "source_unavailable";
 	sourceEntryIds: string[];
@@ -185,6 +276,81 @@ function resolveSourceEntries(entries: Entry[], sourceEntryIds: string[]): {
 		missingSourceEntryIds: [],
 		nonSourceEntryIds: [],
 	};
+}
+
+function resolveSourceEntriesPartial(entries: Entry[], sourceEntryIds: string[]): {
+	status: "ok" | "source_unavailable";
+	sourceEntryIds: string[];
+	sourceEntries: Entry[];
+	missingSourceEntryIds: string[];
+	nonSourceEntryIds: string[];
+} {
+	const requested = uniqueIds(sourceEntryIds);
+	const requestedSet = new Set(requested);
+	const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+	const missingSourceEntryIds = requested.filter((id) => !entriesById.has(id));
+	const nonSourceEntryIds = requested.filter((id) => {
+		const entry = entriesById.get(id);
+		return entry !== undefined && !isSourceEntry(entry);
+	});
+	const sourceEntries = entries.filter((entry) => requestedSet.has(entry.id) && isSourceEntry(entry));
+	return {
+		status: missingSourceEntryIds.length > 0 || nonSourceEntryIds.length > 0 ? "source_unavailable" : "ok",
+		sourceEntryIds: requested,
+		sourceEntries,
+		missingSourceEntryIds,
+		nonSourceEntryIds,
+	};
+}
+
+function memoryObservationFromIndexed(entries: Entry[], indexed: IndexedObservation): RecallMemoryObservation {
+	const { observation, observationEntryId, observationRecordIndex } = indexed;
+	if (!observation.sourceEntryIds || observation.sourceEntryIds.length === 0) {
+		return { status: "no_source", observation, observationEntryId, observationRecordIndex };
+	}
+	const resolved = resolveSourceEntriesPartial(entries, observation.sourceEntryIds);
+	if (resolved.status === "source_unavailable") {
+		return {
+			status: "source_unavailable",
+			observation,
+			observationEntryId,
+			observationRecordIndex,
+			sourceEntryIds: resolved.sourceEntryIds,
+			sourceEntries: resolved.sourceEntries,
+			missingSourceEntryIds: resolved.missingSourceEntryIds,
+			nonSourceEntryIds: resolved.nonSourceEntryIds,
+		};
+	}
+	return {
+		status: "ok",
+		observation,
+		observationEntryId,
+		observationRecordIndex,
+		sourceEntryIds: resolved.sourceEntryIds,
+		sourceEntries: resolved.sourceEntries,
+	};
+}
+
+function uniqueSourceEntriesInBranchOrder(entries: Entry[], observations: RecallMemoryObservation[]): Entry[] {
+	const requested = new Set<string>();
+	for (const observation of observations) {
+		if (observation.status === "ok" || observation.status === "source_unavailable") {
+			for (const entry of observation.sourceEntries) requested.add(entry.id);
+		}
+	}
+	return entries.filter((entry) => requested.has(entry.id) && isSourceEntry(entry));
+}
+
+function uniqueUnavailableSourceIds(
+	observations: RecallMemoryObservation[],
+	field: "missingSourceEntryIds" | "nonSourceEntryIds",
+): string[] {
+	const ids: string[] = [];
+	for (const observation of observations) {
+		if (observation.status !== "source_unavailable") continue;
+		ids.push(...observation[field]);
+	}
+	return uniqueIds(ids);
 }
 
 export function recallObservationSources(entries: Entry[], observationId: string): RecallObservationSourcesResult {
@@ -226,11 +392,98 @@ export function recallObservationSources(entries: Entry[], observationId: string
 	return { status: "found", observationId, matches, collision: matches.length > 1 };
 }
 
-function getPriorMemoryDetails(entries: Entry[]): MemoryDetails | undefined {
+function getPriorMemoryDetails(entries: Entry[]): SupportedMemoryDetails | undefined {
 	const idx = findLastCompactionIndex(entries);
 	if (idx === -1) return undefined;
 	const details = entries[idx].details;
-	return isMemoryDetails(details) ? details : undefined;
+	return isSupportedMemoryDetails(details) ? details : undefined;
+}
+
+export function recallMemorySources(entries: Entry[], memoryId: string): RecallMemorySourcesResult {
+	const indexedObservations = collectIndexedObservations(entries);
+	const observationsById = new Map<string, IndexedObservation[]>();
+	for (const observation of indexedObservations) {
+		const matches = observationsById.get(observation.observation.id) ?? [];
+		matches.push(observation);
+		observationsById.set(observation.observation.id, matches);
+	}
+
+	const priorDetails = getPriorMemoryDetails(entries);
+	const reflectionMatches: RecallMemoryReflectionMatch[] = [];
+	if (priorDetails) {
+		priorDetails.reflections.forEach((reflection, reflectionIndex) => {
+			if (!isReflectionRecord(reflection) || reflection.id !== memoryId) return;
+			reflectionMatches.push({ reflection, reflectionIndex });
+		});
+	}
+
+	const directIndexedObservations = observationsById.get(memoryId) ?? [];
+	const observationsByKey = new Map<string, IndexedObservation>();
+	for (const observation of directIndexedObservations) {
+		observationsByKey.set(observationKey(observation), observation);
+	}
+
+	const unavailableSupportingObservations: RecallUnavailableSupportingObservation[] = [];
+	for (const reflectionMatch of reflectionMatches) {
+		for (const observationId of reflectionMatch.reflection.supportingObservationIds) {
+			const supportingObservations = observationsById.get(observationId);
+			if (!supportingObservations || supportingObservations.length === 0) {
+				unavailableSupportingObservations.push({ ...reflectionMatch, observationId });
+				continue;
+			}
+			for (const observation of supportingObservations) {
+				observationsByKey.set(observationKey(observation), observation);
+			}
+		}
+	}
+
+	const indexedObservationBag = Array.from(observationsByKey.values()).sort((a, b) => {
+		if (a.branchIndex !== b.branchIndex) return a.branchIndex - b.branchIndex;
+		return a.observationRecordIndex - b.observationRecordIndex;
+	});
+	const observations = indexedObservationBag.map((observation) => memoryObservationFromIndexed(entries, observation));
+	const directObservationKeys = new Set(directIndexedObservations.map(observationKey));
+	const directObservationMatches = observations.filter((observation) => directObservationKeys.has(observationKey(observation)));
+	const sourceEntries = uniqueSourceEntriesInBranchOrder(entries, observations);
+	const missingSourceEntryIds = uniqueUnavailableSourceIds(observations, "missingSourceEntryIds");
+	const nonSourceEntryIds = uniqueUnavailableSourceIds(observations, "nonSourceEntryIds");
+
+	if (reflectionMatches.length === 0 && directObservationMatches.length === 0) {
+		return {
+			status: "not_found",
+			memoryId,
+			reflectionMatches: [],
+			directObservationMatches: [],
+			observations: [],
+			sourceEntries: [],
+			unavailableSupportingObservations: [],
+			missingSourceEntryIds: [],
+			nonSourceEntryIds: [],
+			collision: false,
+			partial: false,
+		};
+	}
+
+	const hasNoSourceObservationInMemoryRecall =
+		reflectionMatches.length > 0 && observations.some((observation) => observation.status === "no_source");
+
+	return {
+		status: "found",
+		memoryId,
+		reflectionMatches,
+		directObservationMatches,
+		observations,
+		sourceEntries,
+		unavailableSupportingObservations,
+		missingSourceEntryIds,
+		nonSourceEntryIds,
+		collision: reflectionMatches.length + directObservationMatches.length > 1,
+		partial:
+			hasNoSourceObservationInMemoryRecall ||
+			unavailableSupportingObservations.length > 0 ||
+			missingSourceEntryIds.length > 0 ||
+			nonSourceEntryIds.length > 0,
+	};
 }
 
 export function collectObservationsByCoverage(
@@ -292,7 +545,7 @@ function collectObservationsPendingNextCompaction(entries: Entry[]): Observation
 }
 
 export interface MemoryState {
-	reflections: Reflection[];
+	reflections: MemoryReflection[];
 	committedObs: ObservationRecord[];
 	pendingObs: ObservationRecord[];
 }

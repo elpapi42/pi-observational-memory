@@ -10,6 +10,9 @@ type TestEntry = {
 	customType?: string;
 	summary?: unknown;
 	data?: unknown;
+	details?: unknown;
+	firstKeptEntryId?: string;
+	fromId?: string;
 };
 
 export function messageEntry(
@@ -53,6 +56,17 @@ export function branchSummaryEntry(
 		type: "branch_summary",
 		parentId: null,
 		timestamp: "2026-05-02T10:03:00.000Z",
+		...overrides,
+	};
+}
+
+export function compactionEntry(
+	overrides: Partial<TestEntry> & { id: string; details: unknown },
+): TestEntry {
+	return {
+		type: "compaction",
+		parentId: null,
+		timestamp: "2026-05-02T10:04:00.000Z",
 		...overrides,
 	};
 }

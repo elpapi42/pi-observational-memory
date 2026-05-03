@@ -10,7 +10,7 @@ import { observationsToPromptLines, runObserver } from "../observer.js";
 import type { Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import { estimateStringTokens } from "../tokens.js";
-import { OBSERVATION_CUSTOM_TYPE, type ObservationEntryData } from "../types.js";
+import { OBSERVATION_CUSTOM_TYPE, reflectionToPromptLine, type ObservationEntryData } from "../types.js";
 
 export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.on("turn_end", (_event, ctx) => {
@@ -60,7 +60,7 @@ export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): voi
 				model: resolved.model as any,
 				apiKey: resolved.apiKey,
 				headers: resolved.headers,
-				priorReflections: reflections,
+				priorReflections: reflections.map(reflectionToPromptLine),
 				priorObservations: priorObservationLines,
 				chunk,
 				allowedSourceEntryIds: sourceEntryIds,

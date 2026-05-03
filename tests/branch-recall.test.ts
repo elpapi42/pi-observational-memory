@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { isSourceEntry, recallObservationSources, type Entry } from "../src/branch.js";
-import { OBSERVATION_CUSTOM_TYPE, type ObservationRecord } from "../src/types.js";
-import { branchSummaryEntry, customMessageEntry, messageEntry, observationEntry } from "./fixtures/session.js";
+import { isSourceEntry, recallMemorySources, recallObservationSources, type Entry } from "../src/branch.js";
+import { OBSERVATION_CUSTOM_TYPE, type MemoryDetailsV4, type ObservationRecord, type ReflectionRecord } from "../src/types.js";
+import { branchSummaryEntry, compactionEntry, customMessageEntry, messageEntry, observationEntry } from "./fixtures/session.js";
 
 const baseObservation = {
 	id: "abc123def456",
@@ -146,6 +146,205 @@ describe("recallObservationSources", () => {
 		if (result.status !== "found") throw new Error("expected found");
 		expect(result.matches).toHaveLength(1);
 		expect(result.matches[0]).toMatchObject({ status: "ok", observationEntryId: "valid-entry" });
+	});
+});
+
+const reflection = {
+	id: "111111111111",
+	content: "User prefers recallable durable reflections.",
+	supportingObservationIds: [baseObservation.id],
+} satisfies ReflectionRecord;
+
+function memoryDetailsV4(reflections: MemoryDetailsV4["reflections"] = [reflection], observations: ObservationRecord[] = []): MemoryDetailsV4 {
+	return {
+		type: "observational-memory",
+		version: 4,
+		observations,
+		reflections,
+	};
+}
+
+describe("recallMemorySources", () => {
+	it("preserves observation-only recall evidence while producing a shared source section", () => {
+		const entries = [
+			userSource,
+			summarySource,
+			obsEntry("obs-entry", [{ ...baseObservation, sourceEntryIds: ["source-summary", "source-user"] }]),
+		] satisfies Entry[];
+
+		const result = recallMemorySources(entries, baseObservation.id);
+
+		expect(result.status).toBe("found");
+		if (result.status !== "found") throw new Error("expected found");
+		expect(result.reflectionMatches).toEqual([]);
+		expect(result.directObservationMatches).toHaveLength(1);
+		expect(result.observations).toHaveLength(1);
+		expect(result.observations[0]).toMatchObject({ status: "ok", observationEntryId: "obs-entry" });
+		expect(result.sourceEntries.map((entry) => entry.id)).toEqual(["source-user", "source-summary"]);
+		expect(result.collision).toBe(false);
+		expect(result.partial).toBe(false);
+	});
+
+	it("resolves a current reflection id through supporting observations even when they are pruned from visible memory", () => {
+		const entries = [
+			userSource,
+			summarySource,
+			obsEntry("supporting-obs-entry", [{ ...baseObservation, sourceEntryIds: ["source-user", "source-summary"] }]),
+			compactionEntry({ id: "compaction-current", details: memoryDetailsV4([reflection], []) }),
+		] satisfies Entry[];
+
+		const result = recallMemorySources(entries, reflection.id);
+
+		expect(result.status).toBe("found");
+		if (result.status !== "found") throw new Error("expected found");
+		expect(result.reflectionMatches).toEqual([{ reflection, reflectionIndex: 0 }]);
+		expect(result.directObservationMatches).toEqual([]);
+		expect(result.observations).toHaveLength(1);
+		expect(result.observations[0]).toMatchObject({ status: "ok", observationEntryId: "supporting-obs-entry" });
+		expect(result.sourceEntries.map((entry) => entry.id)).toEqual(["source-user", "source-summary"]);
+		expect(result.collision).toBe(false);
+		expect(result.partial).toBe(false);
+	});
+
+	it("returns all evidence for a mixed observation/reflection id conflict", () => {
+		const matchingObservation = {
+			...baseObservation,
+			id: reflection.id,
+			content: "Direct observation with the same id as a reflection.",
+			sourceEntryIds: ["source-user"],
+		} satisfies ObservationRecord;
+		const supportingObservation = {
+			...baseObservation,
+			id: "222222222222",
+			content: "Supporting observation for the reflection.",
+			sourceEntryIds: ["source-user", "source-summary"],
+		} satisfies ObservationRecord;
+		const conflictingReflection = { ...reflection, supportingObservationIds: [supportingObservation.id] } satisfies ReflectionRecord;
+		const entries = [
+			userSource,
+			summarySource,
+			obsEntry("direct-entry", [matchingObservation]),
+			obsEntry("support-entry", [supportingObservation]),
+			compactionEntry({ id: "compaction-current", details: memoryDetailsV4([conflictingReflection]) }),
+		] satisfies Entry[];
+
+		const result = recallMemorySources(entries, reflection.id);
+
+		expect(result.status).toBe("found");
+		if (result.status !== "found") throw new Error("expected found");
+		expect(result.collision).toBe(true);
+		expect(result.reflectionMatches.map((match) => match.reflection.id)).toEqual([reflection.id]);
+		expect(result.directObservationMatches.map((match) => match.observation.content)).toEqual([
+			"Direct observation with the same id as a reflection.",
+		]);
+		expect(result.observations.map((match) => match.observationEntryId)).toEqual(["direct-entry", "support-entry"]);
+		expect(result.sourceEntries.map((entry) => entry.id)).toEqual(["source-user", "source-summary"]);
+	});
+
+	it("dedupes duplicate supporting observations without hiding duplicate observation ids", () => {
+		const duplicateA = { ...baseObservation, sourceEntryIds: ["source-user"] } satisfies ObservationRecord;
+		const duplicateB = { ...baseObservation, content: "Duplicate id from another entry.", sourceEntryIds: ["source-summary"] } satisfies ObservationRecord;
+		const entries = [
+			userSource,
+			summarySource,
+			obsEntry("obs-entry-a", [duplicateA]),
+			obsEntry("obs-entry-b", [duplicateB]),
+			compactionEntry({ id: "compaction-current", details: memoryDetailsV4([reflection]) }),
+		] satisfies Entry[];
+
+		const result = recallMemorySources(entries, reflection.id);
+
+		expect(result.status).toBe("found");
+		if (result.status !== "found") throw new Error("expected found");
+		expect(result.observations.map((match) => [match.observationEntryId, match.observation.content])).toEqual([
+			["obs-entry-a", baseObservation.content],
+			["obs-entry-b", "Duplicate id from another entry."],
+		]);
+		expect(result.sourceEntries.map((entry) => entry.id)).toEqual(["source-user", "source-summary"]);
+	});
+
+	it("returns partial evidence with diagnostics for missing supporting observations and unavailable source ids", () => {
+		const metadataEntry = obsEntry("metadata-entry", [
+			{ ...baseObservation, id: "333333333333", sourceEntryIds: ["source-user"] },
+		]);
+		const partiallyAvailableObservation = {
+			...baseObservation,
+			id: "222222222222",
+			content: "Observation with one available and two unavailable sources.",
+			sourceEntryIds: ["source-user", "missing-source", "metadata-entry"],
+		} satisfies ObservationRecord;
+		const partialReflection = {
+			...reflection,
+			supportingObservationIds: [partiallyAvailableObservation.id, "999999999999"],
+		} satisfies ReflectionRecord;
+		const entries = [
+			userSource,
+			metadataEntry,
+			obsEntry("partial-support-entry", [partiallyAvailableObservation]),
+			compactionEntry({ id: "compaction-current", details: memoryDetailsV4([partialReflection]) }),
+		] satisfies Entry[];
+
+		const result = recallMemorySources(entries, partialReflection.id);
+
+		expect(result.status).toBe("found");
+		if (result.status !== "found") throw new Error("expected found");
+		expect(result.partial).toBe(true);
+		expect(result.reflectionMatches).toHaveLength(1);
+		expect(result.observations).toHaveLength(1);
+		expect(result.observations[0]).toMatchObject({ status: "source_unavailable", observationEntryId: "partial-support-entry" });
+		expect(result.sourceEntries.map((entry) => entry.id)).toEqual(["source-user"]);
+		expect(result.unavailableSupportingObservations.map((item) => item.observationId)).toEqual(["999999999999"]);
+		expect(result.missingSourceEntryIds).toEqual(["missing-source"]);
+		expect(result.nonSourceEntryIds).toEqual(["metadata-entry"]);
+	});
+
+	it("marks reflection evidence partial when a supporting observation has no source ids", () => {
+		const legacySupportingObservation = {
+			...baseObservation,
+			id: "222222222222",
+			content: "Legacy observation without source ids supports the reflection.",
+		} satisfies ObservationRecord;
+		const partialReflection = {
+			...reflection,
+			supportingObservationIds: [legacySupportingObservation.id],
+		} satisfies ReflectionRecord;
+		const entries = [
+			obsEntry("legacy-support-entry", [legacySupportingObservation]),
+			compactionEntry({ id: "compaction-current", details: memoryDetailsV4([partialReflection]) }),
+		] satisfies Entry[];
+
+		const result = recallMemorySources(entries, partialReflection.id);
+
+		expect(result.status).toBe("found");
+		if (result.status !== "found") throw new Error("expected found");
+		expect(result.partial).toBe(true);
+		expect(result.observations).toHaveLength(1);
+		expect(result.observations[0]).toMatchObject({ status: "no_source", observationEntryId: "legacy-support-entry" });
+		expect(result.sourceEntries).toEqual([]);
+	});
+
+	it("uses only the latest/current memory details for reflection ids", () => {
+		const oldReflection = { ...reflection, id: "222222222222", content: "Old reflection no longer current." } satisfies ReflectionRecord;
+		const entries = [
+			userSource,
+			obsEntry("obs-entry", [{ ...baseObservation, sourceEntryIds: ["source-user"] }]),
+			compactionEntry({ id: "compaction-old", details: memoryDetailsV4([oldReflection]) }),
+			compactionEntry({ id: "compaction-current", details: memoryDetailsV4([reflection]) }),
+		] satisfies Entry[];
+
+		expect(recallMemorySources(entries, oldReflection.id)).toEqual({
+			status: "not_found",
+			memoryId: oldReflection.id,
+			reflectionMatches: [],
+			directObservationMatches: [],
+			observations: [],
+			sourceEntries: [],
+			unavailableSupportingObservations: [],
+			missingSourceEntryIds: [],
+			nonSourceEntryIds: [],
+			collision: false,
+			partial: false,
+		});
 	});
 });
 
