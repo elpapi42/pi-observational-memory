@@ -359,7 +359,7 @@ function renderMemoryText(result: Extract<RecallMemorySourcesResult, { status: "
 function resultDetails(result: Extract<RecallMemorySourcesResult, { status: "found" }>, includeSourceContent = true): RecallObservationToolDetails {
 	const reflections = result.reflectionMatches.map((match) => reflectionDetails(match.reflection, match.reflectionIndex));
 	const memoryLayerRecall = result.reflectionMatches.length > 0 || result.unavailableSupportingObservations.length > 0;
-	const includeObservationSources = (match: RecallMemoryObservation) => includeSourceContent && (memoryLayerRecall || match.status !== "source_unavailable");
+	const includeObservationSources = (_match: RecallMemoryObservation) => includeSourceContent;
 	const observations = result.observations.map((match) => observationMatchDetails(match, includeObservationSources(match)));
 	const directObservationMatches = result.directObservationMatches.map((match) => observationMatchDetails(match, includeObservationSources(match)));
 	const sourceEntries = memoryLayerRecall ? result.sourceEntries.map((entry) => sourceEntryDetails(entry, includeSourceContent)) : [];
@@ -419,54 +419,59 @@ function tokenSummary(tokens: number): string {
 	return `~${tokens.toLocaleString()} ${tokens === 1 ? "token" : "tokens"}`;
 }
 
-function statusIcon(details: RecallObservationToolDetails): string {
-	if (details.status === "ok") return details.collision ? "⚠" : "✓";
-	if (details.status === "partial") return "⚠";
-	return "×";
+function isFailureStatus(status: RecallObservationToolStatus): boolean {
+	return status === "invalid_id" || status === "not_found";
 }
 
-function statusSummary(details: RecallObservationToolDetails): string {
-	if (details.status === "invalid_id") return "invalid id";
-	if (details.status === "not_found") return "not found";
-	if (details.status === "source_unavailable") return "source unavailable";
-	if (details.status === "no_source") return "no source";
-	if (details.status === "no_provenance") return "no provenance";
-	if (details.collision && details.partial) return "recalled · id collision · partial";
-	if (details.collision) return "recalled · id collision";
-	if (details.partial) return "recalled · partial";
-	return "recalled";
+function observationCountForHeader(details: RecallObservationToolDetails): number {
+	return isObservationOnly(details) ? details.matches.length : details.observations.length;
 }
 
 export function formatRecallHeaderForTui(details: RecallObservationToolDetails): string {
-	const parts = [`${statusIcon(details)} ${statusSummary(details)}`];
-	if (isObservationOnly(details)) {
-		if (details.matches.length > 0) parts.push(plural(details.matches.length, "match", "matches"));
-	} else {
-		if (details.reflections.length > 0) parts.push(plural(details.reflections.length, "reflection"));
-		if (details.observations.length > 0) parts.push(plural(details.observations.length, "observation"));
-	}
+	if (isFailureStatus(details.status)) return "× failure";
+
+	const parts = ["✓ success"];
+	if (details.reflections.length > 0) parts.push(plural(details.reflections.length, "reflection"));
+	const observations = observationCountForHeader(details);
+	if (observations > 0) parts.push(plural(observations, "observation"));
 	const sources = sourceEntriesFromDetails(details);
-	if (sources.length > 0) parts.push(plural(sources.length, "source entry", "source entries"));
+	if (sources.length > 0) parts.push(plural(sources.length, "source"));
 	const tokens = sources.reduce((sum, source) => sum + source.tokens, 0);
 	if (tokens > 0) parts.push(tokenSummary(tokens));
 	return parts.join(" · ");
 }
 
-function sourceLabel(source: RecallSourceEntryDetails): string {
-	return source.origin ? `${source.origin[0].toLowerCase()}${source.origin.slice(1)}` : "entry";
+const TUI_TYPE_WIDTH = 15;
+const TUI_META_WIDTH = 31;
+
+function alignedRow(type: string, meta: string, text: string): string {
+	return `${type.padEnd(TUI_TYPE_WIDTH)} ${meta.padEnd(TUI_META_WIDTH)} ${text}`.trimEnd();
+}
+
+function sourceTag(source: RecallSourceEntryDetails): string {
+	const origin = source.origin.trim().toLowerCase();
+	if (origin === "user") return "user";
+	if (origin === "assistant") return "assistant";
+	if (origin.startsWith("tool result")) return "tool";
+	if (origin.startsWith("custom message")) return "custom";
+	if (origin.startsWith("branch summary")) return "summary";
+	return origin.split(/[^a-z0-9]+/).find(Boolean) ?? "entry";
 }
 
 function sourceMetadataLine(source: RecallSourceEntryDetails): string {
-	const qualifiers = source.qualifiers.length > 0 ? ` · ${source.qualifiers.join(" · ")}` : "";
-	return `✓ ${sourceLabel(source)} · ${source.timestamp} · entry ${source.id} · ${tokenSummary(source.tokens)}${qualifiers}`;
+	return alignedRow("✓ source", `${source.timestamp} [${sourceTag(source)}]`, tokenSummary(source.tokens));
 }
 
 function observationLine(observation: ObservationDetails): string {
-	return `✓ observation · ${observation.timestamp} · [${observation.relevance}] · ${observation.content}`;
+	return alignedRow("✓ observation", `${observation.timestamp} [${observation.relevance}]`, observation.content);
 }
 
 function reflectionLine(reflection: ReflectionDetails): string {
-	return `✓ reflection · ${reflection.id} · ${reflection.content}`;
+	return alignedRow("✓ reflection", "", reflection.content);
+}
+
+function noteLine(kind: string, text: string): string {
+	return alignedRow("• note", `[${kind}]`, text);
 }
 
 function indentContent(content: string): string {
@@ -476,76 +481,46 @@ function indentContent(content: string): string {
 		.join("\n");
 }
 
-function unavailableSourceLine(details: { missingSourceEntryIds?: string[]; nonSourceEntryIds?: string[] }): string {
-	const parts: string[] = [];
-	if (details.missingSourceEntryIds && details.missingSourceEntryIds.length > 0) {
-		parts.push(`missing: ${details.missingSourceEntryIds.join(", ")}`);
+function unavailableEvidenceMessage(details: RecallObservationToolDetails): string {
+	if (details.unavailableReflectionProvenance.length > 0 && details.observations.length === 0) {
+		return "migrated legacy reflection has no supporting observations";
 	}
-	if (details.nonSourceEntryIds && details.nonSourceEntryIds.length > 0) {
-		parts.push(`non-source: ${details.nonSourceEntryIds.join(", ")}`);
-	}
-	return `× source unavailable${parts.length > 0 ? ` · ${parts.join(" · ")}` : ""}`;
+	return "no source entries are available for this memory id";
 }
 
-function unavailableSupportingLine(item: RecallUnavailableSupportingObservationDetails): string {
-	return `× supporting observation unavailable · reflection ${item.reflectionId} · observation ${item.observationId}`;
-}
-
-function unavailableReflectionProvenanceLine(item: RecallUnavailableReflectionProvenanceDetails): string {
-	return `× reflection provenance unavailable · reflection ${item.reflectionId} · legacy migrated reflection`;
-}
-
-function noSourceObservationLine(match: RecallObservationMatchDetails): string {
-	return `× no source · observation ${match.observation.id} · legacy/unattributed observation`;
-}
-
-function observationOnlyMatchLines(match: RecallObservationMatchDetails, expanded: boolean): string[] {
-	const lines = [observationLine(match.observation), ""];
-	if (match.status === "ok") {
-		for (const source of match.sourceEntries ?? []) {
-			lines.push(sourceMetadataLine(source));
-			if (expanded && source.content) {
-				lines.push(indentContent(source.content));
-				lines.push("");
-			}
-		}
-		return lines;
-	}
-	if (match.status === "source_unavailable") {
-		const sources = match.sourceEntries ?? [];
-		for (const source of sources) {
-			lines.push(sourceMetadataLine(source));
-			if (expanded && source.content) {
-				lines.push(indentContent(source.content));
-				lines.push("");
-			}
-		}
-		lines.push(unavailableSourceLine(match));
-		return lines;
-	}
-	return [...lines, "× no source · legacy/unattributed observation"];
-}
-
-function memoryLines(details: RecallObservationToolDetails, expanded: boolean): string[] {
-	const lines: string[] = [];
-	for (const reflection of details.reflections) lines.push(reflectionLine(reflection));
-	if (details.reflections.length > 0 && details.observations.length > 0) lines.push("");
-	for (const observation of details.observations) lines.push(observationLine(observation.observation));
-	if ((details.reflections.length > 0 || details.observations.length > 0) && (details.sourceEntries.length > 0 || details.unavailableSupportingObservations.length > 0 || details.unavailableReflectionProvenance.length > 0 || details.missingSourceEntryIds.length > 0 || details.nonSourceEntryIds.length > 0)) lines.push("");
-	for (const item of details.unavailableSupportingObservations) lines.push(unavailableSupportingLine(item));
-	for (const item of details.unavailableReflectionProvenance) lines.push(unavailableReflectionProvenanceLine(item));
-	for (const observation of details.observations) {
-		if (observation.status === "no_source") lines.push(noSourceObservationLine(observation));
-	}
-	if (details.missingSourceEntryIds.length > 0 || details.nonSourceEntryIds.length > 0) lines.push(unavailableSourceLine(details));
-	for (const source of details.sourceEntries) {
+function pushSourceLines(lines: string[], sources: RecallSourceEntryDetails[], expanded: boolean): void {
+	for (const source of sources) {
 		lines.push(sourceMetadataLine(source));
 		if (expanded && source.content) {
 			lines.push(indentContent(source.content));
 			lines.push("");
 		}
 	}
-	return lines;
+}
+
+function memoryRows(details: RecallObservationToolDetails): string[] {
+	if (isObservationOnly(details)) return details.matches.map((match) => observationLine(match.observation));
+	return [
+		...details.reflections.map((reflection) => reflectionLine(reflection)),
+		...details.observations.map((observation) => observationLine(observation.observation)),
+	];
+}
+
+function noteRows(details: RecallObservationToolDetails, sources: RecallSourceEntryDetails[]): string[] {
+	const notes: string[] = [];
+	if (details.status === "invalid_id") {
+		notes.push(noteLine("invalid id", `memory ids must be 12 lowercase hex characters; received ${details.memoryId}`));
+		return notes;
+	}
+	if (details.status === "not_found") {
+		notes.push(noteLine("not found", `no observation or reflection with id ${details.memoryId} was found on the current branch`));
+		return notes;
+	}
+	if (details.collision) notes.push(noteLine("id collision", `multiple memory items share ${details.memoryId}`));
+	if (sources.length === 0 && (details.reflections.length > 0 || details.observations.length > 0 || details.matches.length > 0)) {
+		notes.push(noteLine("unavailable evidence", unavailableEvidenceMessage(details)));
+	}
+	return notes;
 }
 
 export function formatRecallResultForTui(result: AgentToolResult<RecallObservationToolDetails>, expanded: boolean): string {
@@ -558,21 +533,17 @@ export function formatRecallResultForTui(result: AgentToolResult<RecallObservati
 		return text || "recall";
 	}
 
+	const sources = sourceEntriesFromDetails(details);
 	const lines: string[] = [];
-	if (isObservationOnly(details)) {
-		if (details.matches.length > 0) {
-			for (const match of details.matches) {
-				if (lines.length > 0) lines.push("");
-				lines.push(...observationOnlyMatchLines(match, expanded));
-			}
-		} else if (details.message) {
-			lines.push(details.message);
-		}
-	} else {
-		lines.push(...memoryLines(details, expanded));
-	}
+	const rows = memoryRows(details);
+	const notes = noteRows(details, sources);
+	lines.push(...rows);
+	if (rows.length > 0 && notes.length > 0) lines.push("");
+	lines.push(...notes);
+	if ((rows.length > 0 || notes.length > 0) && sources.length > 0) lines.push("");
+	pushSourceLines(lines, sources, expanded);
 
-	if (!expanded && sourceEntriesFromDetails(details).length > 0) {
+	if (!expanded && sources.some((source) => source.content)) {
 		lines.push("", "(Ctrl+O to expand)");
 	}
 	return lines.join("\n").trimEnd();

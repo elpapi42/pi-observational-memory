@@ -151,24 +151,28 @@ describe("recall tool execution", () => {
 		const renderedCollapsed = formatRecallRenderedResultForTui(result, false);
 		const expanded = formatRecallResultForTui(result, true);
 
-		expect(header).toContain("✓ recalled · 1 match · 2 source entries");
+		expect(header).toContain("✓ success · 1 observation · 2 sources");
 		expect(formatRecallCallForTui(observationId)).toBe("recall abc123def456");
-		expect(collapsed).not.toContain("✓ recalled");
+		expect(collapsed).not.toContain("✓ success");
 		expect(collapsed).not.toContain("recall abc123def456");
-		expect(collapsed.startsWith(`✓ observation · 2026-05-02 10:00 · [high] · ${fullObservationContent}`)).toBe(true);
-		expect(renderedCollapsed.startsWith(`\n✓ recalled · 1 match · 2 source entries`)).toBe(true);
-		expect(renderedCollapsed).toContain(`\n\n✓ observation · 2026-05-02 10:00 · [high] · ${fullObservationContent}`);
+		expect(collapsed.startsWith(`✓ observation   2026-05-02 10:00 [high]`)).toBe(true);
+		expect(renderedCollapsed.startsWith(`\n✓ success · 1 observation · 2 sources`)).toBe(true);
+		expect(renderedCollapsed).toContain(`\n\n✓ observation   2026-05-02 10:00 [high]`);
+		expect(renderedCollapsed).toContain(fullObservationContent);
 		expect(renderedCollapsed).not.toContain("recall abc123def456");
-		expect(collapsed).toContain(`✓ observation · 2026-05-02 10:00 · [high] · ${fullObservationContent}`);
-		expect(collapsed).toContain("\n\n✓ user · 2026-05-02 10:00 · entry source-user · ~");
-		expect(collapsed).toContain("✓ assistant · 2026-05-02 10:01 · entry source-assistant · ~");
-		expect(collapsed).not.toContain("•");
-		expect(collapsed).toContain("tool calls: read");
+		expect(collapsed).toContain(`✓ observation   2026-05-02 10:00 [high]`);
+		expect(collapsed).toContain(fullObservationContent);
+		expect(collapsed).toContain("\n\n✓ source        2026-05-02 10:00 [user]");
+		expect(collapsed).toContain("✓ source        2026-05-02 10:01 [assistant]");
+		expect(collapsed).not.toContain("• note");
+		expect(collapsed).not.toContain("source-user");
+		expect(collapsed).not.toContain("tool calls: read");
 		expect(collapsed).not.toContain("Please preserve exact sources.");
 		expect(collapsed).not.toContain("I will inspect the code.");
 		expect(collapsed).toContain("(Ctrl+O to expand)");
 
-		expect(expanded).toContain(`✓ observation · 2026-05-02 10:00 · [high] · ${fullObservationContent}`);
+		expect(expanded).toContain(`✓ observation   2026-05-02 10:00 [high]`);
+		expect(expanded).toContain(fullObservationContent);
 		expect(expanded).toContain("    Please preserve exact sources.");
 		expect(expanded).toContain("    I will inspect the code.");
 		expect(expanded).toContain('[read({"path":"src/tools/recall-observation.ts"})]');
@@ -196,12 +200,15 @@ describe("recall tool execution", () => {
 		const header = formatRecallHeaderForTui(result.details);
 		const collapsed = formatRecallResultForTui(result, false);
 		const expanded = formatRecallResultForTui(result, true);
-		expect(header).toContain("✓ recalled · 1 reflection · 1 observation · 1 source entry");
-		expect(collapsed).toContain(`✓ reflection · ${reflection.id} · ${reflection.content}`);
-		expect(collapsed).toContain(`✓ observation · 2026-05-02 10:00 · [high] · ${baseObservation.content}`);
+		expect(header).toContain("✓ success · 1 reflection · 1 observation · 1 source");
+		expect(collapsed).toContain(`✓ reflection`);
+		expect(collapsed).toContain(reflection.content);
+		expect(collapsed).not.toContain(`✓ reflection · ${reflection.id}`);
+		expect(collapsed).toContain(`✓ observation   2026-05-02 10:00 [high]`);
+		expect(collapsed).toContain(baseObservation.content);
 		expect(collapsed.indexOf("✓ reflection")).toBeLessThan(collapsed.indexOf("✓ observation"));
-		expect(collapsed.indexOf("✓ observation")).toBeLessThan(collapsed.indexOf("✓ user"));
-		expect(collapsed).not.toContain("•");
+		expect(collapsed.indexOf("✓ observation")).toBeLessThan(collapsed.indexOf("✓ source"));
+		expect(collapsed).not.toContain("• note");
 		expect(collapsed).not.toContain("Please preserve exact sources.");
 		expect(collapsed).toContain("(Ctrl+O to expand)");
 		expect(expanded).toContain("    Please preserve exact sources.");
@@ -232,7 +239,10 @@ describe("recall tool execution", () => {
 		expect(result.content[0].text).toContain("Memory id abc123def456 matched multiple observations/reflections");
 		expect(result.content[0].text).toContain("[User @ 2026-05-02 10:00]: direct observation source");
 		expect(result.content[0].text).toContain("[User @ 2026-05-02 10:00]: supporting observation source");
-		expect(formatRecallHeaderForTui(result.details)).toContain("⚠ recalled · id collision · 1 reflection · 2 observations · 2 source entries");
+		const collapsed = formatRecallResultForTui(result, false);
+		expect(formatRecallHeaderForTui(result.details)).toContain("✓ success · 1 reflection · 2 observations · 2 sources");
+		expect(collapsed).toContain("• note          [id collision]");
+		expect(collapsed).toContain("multiple memory items share abc123def456");
 	});
 
 	it("renders no-provenance diagnostics for migrated legacy reflection recall", async () => {
@@ -261,10 +271,13 @@ describe("recall tool execution", () => {
 		const header = formatRecallHeaderForTui(result.details);
 		const collapsed = formatRecallResultForTui(result, false);
 		const expanded = formatRecallResultForTui(result, true);
-		expect(header).toContain("× no provenance · 1 reflection");
-		expect(collapsed).toContain(`✓ reflection · ${migratedLegacyReflection.id} · ${migratedLegacyReflection.content}`);
-		expect(collapsed).toContain(`× reflection provenance unavailable · reflection ${migratedLegacyReflection.id} · legacy migrated reflection`);
-		expect(collapsed).not.toContain("source entry");
+		expect(header).toContain("✓ success · 1 reflection");
+		expect(collapsed).toContain("✓ reflection");
+		expect(collapsed).toContain(migratedLegacyReflection.content);
+		expect(collapsed).not.toContain(`✓ reflection · ${migratedLegacyReflection.id}`);
+		expect(collapsed).toContain("• note          [unavailable evidence]");
+		expect(collapsed).toContain("migrated legacy reflection has no supporting observations");
+		expect(collapsed).not.toContain("✓ source");
 		expect(expanded).not.toContain("Please preserve exact sources.");
 	});
 
@@ -287,7 +300,11 @@ describe("recall tool execution", () => {
 		expect(result.content[0].text).toContain("Memory id abc123def456 matched multiple observations/reflections");
 		expect(result.content[0].text).toContain("Unavailable reflection provenance");
 		expect(result.content[0].text).toContain("[User @ 2026-05-02 10:00]: direct observation source");
-		expect(formatRecallHeaderForTui(result.details)).toContain("⚠ recalled · id collision · partial · 1 reflection · 1 observation · 1 source entry");
+		const collapsed = formatRecallResultForTui(result, false);
+		expect(formatRecallHeaderForTui(result.details)).toContain("✓ success · 1 reflection · 1 observation · 1 source");
+		expect(collapsed).toContain("• note          [id collision]");
+		expect(collapsed).not.toContain("unavailable evidence");
+		expect(collapsed).not.toContain("reflection provenance unavailable");
 	});
 
 	it("renders partial unavailable diagnostics while preserving available reflection evidence", async () => {
@@ -321,9 +338,10 @@ describe("recall tool execution", () => {
 		expect(result.content[0].text).toContain("Unavailable source entries: missing: missing-source; non-source: metadata-entry");
 		expect(result.content[0].text).toContain("[User @ 2026-05-02 10:00]: Please preserve exact sources.");
 		const collapsed = formatRecallResultForTui(result, false);
-		expect(formatRecallHeaderForTui(result.details)).toContain("⚠ recalled · partial · 1 reflection · 1 observation · 1 source entry");
-		expect(collapsed).toContain("× supporting observation unavailable · reflection 111111111111 · observation 999999999999");
-		expect(collapsed).toContain("× source unavailable · missing: missing-source · non-source: metadata-entry");
+		expect(formatRecallHeaderForTui(result.details)).toContain("✓ success · 1 reflection · 1 observation · 1 source");
+		expect(collapsed).not.toContain("supporting observation unavailable");
+		expect(collapsed).not.toContain("source unavailable");
+		expect(collapsed).not.toContain("unavailable evidence");
 	});
 
 	it("renders partial diagnostics when a reflection is supported by a no-source observation", async () => {
@@ -350,9 +368,11 @@ describe("recall tool execution", () => {
 		expect(result.content[0].text).toContain("Unavailable observation sources");
 		expect(result.content[0].text).toContain("Observation 222222222222 has no source entries associated");
 		const collapsed = formatRecallResultForTui(result, false);
-		expect(formatRecallHeaderForTui(result.details)).toContain("⚠ recalled · partial · 1 reflection · 1 observation");
-		expect(collapsed).toContain("× no source · observation 222222222222 · legacy/unattributed observation");
-		expect(collapsed).not.toContain("source entry");
+		expect(formatRecallHeaderForTui(result.details)).toContain("✓ success · 1 reflection · 1 observation");
+		expect(collapsed).toContain("• note          [unavailable evidence]");
+		expect(collapsed).toContain("no source entries are available for this memory id");
+		expect(collapsed).not.toContain("legacy/unattributed observation");
+		expect(collapsed).not.toContain("✓ source");
 	});
 
 	it("renders a static recall call and pi-fork-style result body without invalidating", async () => {
@@ -382,10 +402,11 @@ describe("recall tool execution", () => {
 		const renderedResult = resultComponent?.render(200) ?? [];
 		expect(renderedResult[0].trim()).toBe("");
 		const renderedText = renderedResult.join("\n");
-		expect(renderedText).toContain("✓ recalled · 1 match · 1 source entry");
+		expect(renderedText).toContain("✓ success · 1 observation · 1 source");
 		expect(renderedText).not.toContain("recall abc123def456");
 		expect(renderedResult[2].trim()).toBe("");
-		expect(renderedResult[3].trim()).toBe("✓ observation · 2026-05-02 10:00 · [high] · User confirmed exact source ids are required.");
+		expect(renderedResult[3].trim()).toContain("✓ observation   2026-05-02 10:00 [high]");
+		expect(renderedResult[3].trim()).toContain("User confirmed exact source ids are required.");
 	});
 
 	it("returns invalid_id for malformed ids", async () => {
@@ -393,6 +414,9 @@ describe("recall tool execution", () => {
 
 		expect(result.details.status).toBe("invalid_id");
 		expect(result.content[0].text).toContain("12 lowercase hex characters");
+		expect(formatRecallHeaderForTui(result.details)).toBe("× failure");
+		expect(formatRecallResultForTui(result, false)).toContain("• note          [invalid id]");
+		expect(formatRecallResultForTui(result, false)).toContain("memory ids must be 12 lowercase hex characters; received not-an-id");
 		expect(getBranch).not.toHaveBeenCalled();
 	});
 
@@ -405,6 +429,9 @@ describe("recall tool execution", () => {
 		expect(result.details.status).toBe("not_found");
 		expect(result.details.matches).toEqual([]);
 		expect(result.content[0].text).toContain("No observation or reflection with id abc123def456 was found on the current branch");
+		expect(formatRecallHeaderForTui(result.details)).toBe("× failure");
+		expect(formatRecallResultForTui(result, false)).toContain("• note          [not found]");
+		expect(formatRecallResultForTui(result, false)).toContain("no observation or reflection with id abc123def456 was found on the current branch");
 	});
 
 	it("returns no_source for legacy observations without using batch fallback", async () => {
@@ -442,6 +469,10 @@ describe("recall tool execution", () => {
 		});
 		expect(result.content[0].text).toContain("some are unavailable on the current branch");
 		expect(result.content[0].text).not.toContain("[User @ 2026-05-02 10:00]");
+		expect(formatRecallHeaderForTui(result.details)).toContain("✓ success · 1 observation · 1 source");
+		expect(formatRecallResultForTui(result, false)).toContain("✓ source        2026-05-02 10:00 [user]");
+		expect(formatRecallResultForTui(result, false)).not.toContain("unavailable evidence");
+		expect(formatRecallResultForTui(result, false)).not.toContain("source unavailable");
 	});
 
 	it("returns all duplicate id matches instead of choosing one", async () => {
@@ -474,7 +505,8 @@ describe("recall tool execution", () => {
 		expect(result.content[0].text).toContain("start-");
 		expect(result.content[0].text).toContain("-end");
 		expect(result.content[0].text).not.toContain("too large to return safely");
-		expect(formatRecallResultForTui(result, false)).toContain("✓ observation · 2026-05-02 10:00 · [high]");
-		expect(formatRecallResultForTui(result, false)).toContain("✓ user · 2026-05-02 10:00 · entry source-large · ~");
+		expect(formatRecallResultForTui(result, false)).toContain("✓ observation   2026-05-02 10:00 [high]");
+		expect(formatRecallResultForTui(result, false)).toContain("✓ source        2026-05-02 10:00 [user]");
+		expect(formatRecallResultForTui(result, false)).not.toContain("source-large");
 	});
 });
