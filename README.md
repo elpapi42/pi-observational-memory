@@ -22,31 +22,34 @@ What the agent sees after compaction looks like this:
 
 ```
 ## Reflections
-User works at Acme Corp building Acme Dashboard on Next.js 15 with Supabase auth.
-Hard constraint: ship by January 22nd 2026.
-Public API uses GraphQL (switched from REST to reduce mobile over-fetching).
+[a1b2c3d4e5f6] User works at Acme Corp building Acme Dashboard on Next.js 15 with Supabase auth.
+[b2c3d4e5f6a1] Hard constraint: ship by January 22nd 2026.
+[c3d4e5f6a1b2] Public API uses GraphQL (switched from REST to reduce mobile over-fetching).
 
 ## Observations
-2026-01-15 14:30 [high] User decided to switch from REST to GraphQL for the public API; motivation was reducing over-fetching on mobile clients.
-2026-01-15 14:35 [medium] Agent scaffolded GraphQL schema in src/schema.ts.
-2026-01-15 14:50 [medium] GraphQL migration completed; user confirmed queries working.
-2026-01-15 15:10 [critical] User wants rate limiting on all public endpoints; prefers token bucket algorithm at 100 req/min per API key.
+[d4e5f6a1b2c3] 2026-01-15 14:30 [high] User decided to switch from REST to GraphQL for the public API; motivation was reducing over-fetching on mobile clients.
+[e5f6a1b2c3d4] 2026-01-15 14:35 [medium] Agent scaffolded GraphQL schema in src/schema.ts.
+[f6a1b2c3d4e5] 2026-01-15 14:50 [medium] GraphQL migration completed; user confirmed queries working.
+[a6b1c2d3e4f5] 2026-01-15 15:10 [critical] User wants rate limiting on all public endpoints; prefers token bucket algorithm at 100 req/min per API key.
 ```
 
 Two layers of memory, two different jobs:
 
-- **Reflections** are durable patterns — who you are, what you've decided, hard constraints. Plain prose, no timestamps. They crystallize once and persist across every future compaction.
-- **Observations** are timestamped events with a per-entry relevance tier (`low` / `medium` / `high` / `critical`). They're written near-real-time, then pruned over time — but never paraphrased.
+- **Reflections** are durable patterns — who you are, what you've decided, hard constraints. They render as plain prose with an id handle when recallable, and persist across future compactions.
+- **Observations** are timestamped events with an id and a per-entry relevance tier (`low` / `medium` / `high` / `critical`). They're written near-real-time, then pruned over time — but never paraphrased.
+
+Those ids are not decoration. When the agent needs exact evidence behind a compacted memory item, it can call the agent-facing `recall` tool with a reflection or observation id. The TUI shows a compact evidence summary, while the agent receives the full raw source context that produced the memory.
 
 Hour six should feel like hour one. The agent knows who you are, what you've built together, and what's left to do.
 
 ## What you actually get from it
 
-- **Continuity that survives many compactions.** The summary is built by mechanical concatenation, not an LLM rewrite. What survives one compaction survives all of them, byte-identical — there's no compounding drift across cycles.
+- **Continuity across many compactions.** The summary is built by mechanical concatenation, not an LLM rewrite. Kept observations and reflections are carried forward without paraphrase; observations may be pruned later, but they are never rewritten into summary-of-summary drift.
 - **Temporal reasoning.** Every observation carries a per-minute timestamp. The agent can reason about *when* something happened, not just *that* it happened.
+- **Source-backed recall.** Observation and reflection ids let the agent recover the exact prior conversation/tool evidence behind compacted memory when precision matters.
 - **Relevance-aware pruning.** Four relevance tiers drive what gets dropped first when the observation pool grows. Trivia goes; user assertions, decisions, and verbatim errors stay.
 - **Reflections that crystallize.** Identity, constraints, and durable preferences settle into a separate layer that doesn't get re-paraphrased on each compaction.
-- **Predictable token cost.** Properly configured for your use case, this can save real money. The reflector + pruner only run above a configurable gate, so most compactions cost **zero LLM calls** — just bookkeeping. The observer can be pointed at a cheap fast model independently of your main coding model.
+- **Predictable token cost.** Properly configured for your use case, this can save real money. The reflector + pruner only run above a configurable gate, so below-gate compactions skip those LLM calls; they only call a model if sync catch-up observation is needed. The observer can be pointed at a cheap fast model independently of your main coding model.
 - **Cache-friendly by design.** Memory updates are batched at compaction boundaries instead of injected into every turn, so prompt prefix caching keeps working between compactions.
 - **Fewer mid-work surprises.** The extension proactively triggers compaction when the agent is idle, and this will not affect your current work as after compaction you still keep the tail of your session intact.
 
@@ -73,19 +76,19 @@ flowchart TD
     Conv([Conversation accumulates])
     Obs[Observer<br/>async, fire-and-forget<br/>compresses each chunk into timestamped,<br/>relevance-tagged observations<br/>stored as silent tree entries]
     Comp[Compaction<br/>extension-owned; merges accumulated<br/>observations with prior compaction state]
-    RP[Reflector + Pruner<br/>Reflector appends new reflections<br/>crystallized from the pool<br/>Pruner drops observations by id<br/>across up to 5 passes]
-    Sum[Summary mechanically assembled<br/>## Reflections<br/>&nbsp;&nbsp;plain prose lines<br/>## Observations<br/>&nbsp;&nbsp;YYYY-MM-DD HH:MM relevance ...<br/>Becomes the compactionSummary<br/>the agent sees on the next turn]
+    RP[Reflector + Pruner<br/>Reflector runs focused passes<br/>to crystallize durable patterns<br/>Pruner drops observations by id<br/>across up to 5 passes]
+    Sum[Summary mechanically assembled<br/>## Reflections<br/>&nbsp;&nbsp;[id] durable insight<br/>## Observations<br/>&nbsp;&nbsp;[id] YYYY-MM-DD HH:MM relevance ...<br/>Becomes the compactionSummary<br/>the agent sees on the next turn]
 
     Conv -->|every ~1k raw tokens since last bound| Obs
-    Obs -->|every ~50k raw tokens since last compaction| Comp
+    Obs -->|live tail reaches ~50k raw tokens| Comp
     Comp -->|observation pool ≥ 30k tokens| RP
     RP --> Sum
-    Comp -.->|pool below gate — skip LLM calls| Sum
+    Comp -.->|pool below gate — skip reflector/pruner| Sum
 ```
 
 - **Observer** runs in the background as turns complete. The user never waits on it.
 - **Compaction** is owned by the extension. The summary is *mechanically concatenated* from current reflections + current observations — never an LLM rewrite. This is what eliminates the summary-of-a-summary problem.
-- **Reflector + Pruner** run as an inseparable pair, and only when there's enough material to crystallize. Below the gate, compaction does **zero LLM calls**.
+- **Reflector + Pruner** run as an inseparable pair, and only when there's enough material to crystallize. Below the gate, those roles are skipped; compaction only calls a model if sync catch-up observation is needed for uncovered raw history.
 
 The agent only ever sees the most recent compaction summary, packaged as a normal `compactionSummary` message. Observations and reflections are never injected into the live message stream — that would invalidate prefix caching with every observation. By batching memory updates at compaction boundaries, the prefix stays stable between compactions and prefix caching keeps working.
 
@@ -140,12 +143,13 @@ For the full list and tuning recipes, see **[docs/configuration.md](docs/configu
 
 > **Upgrading from `pi-observational-memory@1.x`?** The config keys changed: v1's `observationThreshold` is now `compactionThresholdTokens`, v1's `reflectionThreshold` is now `reflectionThresholdTokens`, and `observationThresholdTokens` is new. Old v1 keys are silently ignored — update your `settings.json`.
 
-## Commands
+## Commands and agent tool
 
-| Command | What it does |
+| Surface | What it does |
 |---|---|
-| `/om-status` | Memory totals, percent-to-threshold for each gate, and in-flight flags for observer and compaction |
-| `/om-view` | Full dump of memory state: every reflection, every committed observation, every pending observation. Each observation line is `[id] YYYY-MM-DD HH:MM [relevance] content` |
+| `/om-status` | Memory totals, percent-to-threshold for each gate, passive-mode status, and in-flight flags for observer and compaction |
+| `/om-view` | Full dump of memory state: every reflection, every committed observation, every pending observation. Reflection and observation ids shown here can be used with `recall` |
+| `recall` agent tool | Recovers exact source evidence for a specific reflection or observation id on the current branch. It is for agent self-recovery and provenance, not a user command, semantic search, or transcript browser |
 
 ## Credits
 
