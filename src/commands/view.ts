@@ -3,7 +3,7 @@ import { getMemoryState } from "../branch.js";
 import { countByRelevance, formatRelevanceHistogram } from "../relevance.js";
 import type { Runtime } from "../runtime.js";
 import { estimateStringTokens } from "../tokens.js";
-import type { ObservationRecord } from "../types.js";
+import { reflectionContent, reflectionToPromptLine, type MemoryReflection, type ObservationRecord } from "../types.js";
 
 export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.registerCommand("om-view", {
@@ -12,9 +12,10 @@ export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime): void {
 			runtime.ensureConfig(ctx.cwd);
 			const entries = ctx.sessionManager.getBranch() as Parameters<typeof getMemoryState>[0];
 			const { reflections: committedRefs, committedObs, pendingObs } = getMemoryState(entries);
+			const committedRefItems = committedRefs as MemoryReflection[];
 
-			const committedRefTokens = committedRefs.reduce((s, r) => s + estimateStringTokens(r), 0);
-			const committedRefCount = committedRefs.length;
+			const committedRefTokens = committedRefItems.reduce((s, r) => s + estimateStringTokens(reflectionContent(r)), 0);
+			const committedRefCount = committedRefItems.length;
 
 			const committedObsTokens = committedObs.reduce((s, r) => s + estimateStringTokens(r.content), 0);
 			const committedObsCount = committedObs.length;
@@ -44,8 +45,8 @@ export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime): void {
 			sections.push(
 				`── Reflections (${committedRefCount} ${plural(committedRefCount, "entry", "entries")}, ~${committedRefTokens.toLocaleString()} tokens) ──`,
 			);
-			if (committedRefs.length > 0) {
-				sections.push(committedRefs.join("\n\n"));
+			if (committedRefItems.length > 0) {
+				sections.push(committedRefItems.map(reflectionToPromptLine).join("\n\n"));
 			} else {
 				sections.push("(none)");
 			}

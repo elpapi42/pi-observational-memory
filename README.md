@@ -104,7 +104,8 @@ Settings live in Pi's `settings.json` — globally at `~/.pi/agent/settings.json
   "observational-memory": {
     "observationThresholdTokens": 1000,
     "compactionThresholdTokens": 50000,
-    "reflectionThresholdTokens": 30000
+    "reflectionThresholdTokens": 30000,
+    "passive": false
   },
   "compaction": {
     "keepRecentTokens": 20000
@@ -122,15 +123,18 @@ To run the background memory work (observer, reflector, pruner) on a cheaper / f
 }
 ```
 
-The five settings most worth knowing:
+The six settings most worth knowing:
 
 | Setting | Default | What it controls |
 |---|---|---|
 | `observationThresholdTokens` | `1,000` | How often the observer fires in the background |
 | `compactionThresholdTokens` | `50,000` | How often the extension proactively triggers compaction |
 | `reflectionThresholdTokens` | `30,000` | The observation pool size at which reflector + pruner engage |
+| `passive` | `false` | Disables proactive observation and extension-triggered compaction while keeping manual/Pi compaction and commands active |
 | `compactionModel` | session model | Which model runs the observer / reflector / pruner — point at a cheaper one to save cost |
 | `compaction.keepRecentTokens` | `20,000` | How much recent conversation Pi keeps verbatim post-compaction (Pi setting; structural to the extension) |
+
+For shell/session-level control, `PI_OBSERVATIONAL_MEMORY_PASSIVE` overrides global and project settings. Use `1`, `true`, `yes`, or `on` to enable passive mode; use `0`, `false`, `no`, or `off` to force it off.
 
 For the full list and tuning recipes, see **[docs/configuration.md](docs/configuration.md)**.
 

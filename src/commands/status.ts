@@ -8,6 +8,7 @@ import {
 import { countByRelevance, formatRelevanceHistogram } from "../relevance.js";
 import type { Runtime } from "../runtime.js";
 import { estimateStringTokens } from "../tokens.js";
+import { reflectionContent, type MemoryReflection } from "../types.js";
 
 export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.registerCommand("om-status", {
@@ -19,10 +20,11 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			const sinceCompaction = rawTokensSinceLastCompaction(entries);
 
 			const { reflections: committedRefs, committedObs, pendingObs } = getMemoryState(entries);
+			const committedRefItems = committedRefs as MemoryReflection[];
 			const committedObsTokens = committedObs.reduce((s, r) => s + estimateStringTokens(r.content), 0);
 			const committedObsCount = committedObs.length;
-			const committedRefsTokens = committedRefs.reduce((s, r) => s + estimateStringTokens(r), 0);
-			const committedRefsCount = committedRefs.length;
+			const committedRefsTokens = committedRefItems.reduce((s, r) => s + estimateStringTokens(reflectionContent(r)), 0);
+			const committedRefsCount = committedRefItems.length;
 
 			const pendingObsTokens = pendingObs.reduce((s, r) => s + estimateStringTokens(r.content), 0);
 			const pendingObsCount = pendingObs.length;
@@ -48,7 +50,39 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			const cObsLabel = committedObsCount === 1 ? "observation" : "observations";
 			const pObsLabel = pendingObsCount === 1 ? "observation" : "observations";
 
+			const passiveLines = runtime.config.passive === true
+				? [
+					"── Mode ──",
+					"Passive: proactive observation and compaction triggers disabled; compaction hook remains active",
+					"",
+				]
+				: [];
+
+			const activityLines = runtime.config.passive === true
+				? [
+					"── Activity ──",
+					`Observation trigger: passive (~${sinceBound.toLocaleString()} / ${obsThreshold.toLocaleString()} tokens, ${obsPct}%)`,
+					"  → proactive observation is disabled; manual/Pi compaction can still run sync catch-up observation",
+					`Compaction trigger:  passive (~${sinceCompaction.toLocaleString()} / ${compThreshold.toLocaleString()} tokens, ${compPct}%)`,
+					"  → proactive extension-triggered compaction is disabled; manual/Pi compaction still uses the custom hook",
+					`Next reflection:     ~${observationPoolTokens.toLocaleString()} / ${refThreshold.toLocaleString()} tokens (${refPct}%)`,
+					`  → if observations exceed ${refThreshold.toLocaleString()} tokens when compaction runs, reflections are`,
+					`    distilled from them and redundant observations are pruned away`,
+				]
+				: [
+					"── Activity ──",
+					`Next observation: ~${sinceBound.toLocaleString()} / ${obsThreshold.toLocaleString()} tokens (${obsPct}%)`,
+					`  → at ${obsThreshold.toLocaleString()} tokens, recent conversation is compressed into new observations`,
+					`Next compaction:  ~${sinceCompaction.toLocaleString()} / ${compThreshold.toLocaleString()} tokens (${compPct}%)`,
+					`  → at ${compThreshold.toLocaleString()} tokens, raw history is replaced by the updated reflections and`,
+					`    observations, keeping only the last ${keepRecentTokens.toLocaleString()} tokens of conversation verbatim`,
+					`Next reflection:  ~${observationPoolTokens.toLocaleString()} / ${refThreshold.toLocaleString()} tokens (${refPct}%)`,
+					`  → if observations exceed ${refThreshold.toLocaleString()} tokens when compaction runs, reflections are`,
+					`    distilled from them and redundant observations are pruned away`,
+				];
+
 			const lines = [
+				...passiveLines,
 				"── Memory ──",
 				`Reflections:   ~${committedRefsTokens.toLocaleString()} tokens (${committedRefsCount} ${refLabel})      — durable insights`,
 				`Observations:`,
@@ -56,15 +90,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`  pending      ~${pendingObsTokens.toLocaleString()} tokens (${pendingObsCount} ${pObsLabel}) — waiting for next compaction`,
 				`  relevance    ${formatRelevanceHistogram(relevanceHistogram)}`,
 				"",
-				"── Activity ──",
-				`Next observation: ~${sinceBound.toLocaleString()} / ${obsThreshold.toLocaleString()} tokens (${obsPct}%)`,
-				`  → at ${obsThreshold.toLocaleString()} tokens, recent conversation is compressed into new observations`,
-				`Next compaction:  ~${sinceCompaction.toLocaleString()} / ${compThreshold.toLocaleString()} tokens (${compPct}%)`,
-				`  → at ${compThreshold.toLocaleString()} tokens, raw history is replaced by the updated reflections and`,
-				`    observations, keeping only the last ${keepRecentTokens.toLocaleString()} tokens of conversation verbatim`,
-				`Next reflection:  ~${observationPoolTokens.toLocaleString()} / ${refThreshold.toLocaleString()} tokens (${refPct}%)`,
-				`  → if observations exceed ${refThreshold.toLocaleString()} tokens when compaction runs, reflections are`,
-				`    distilled from them and redundant observations are pruned away`,
+				...activityLines,
 			];
 
 			if (runtime.observerInFlight || runtime.compactInFlight) {

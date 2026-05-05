@@ -5,17 +5,18 @@ import {
 	gapRawEntries,
 	getMemoryState,
 } from "../branch.js";
-import { renderSummary, runPruner, runReflector } from "../compaction.js";
+import { migrateLegacyReflections, renderSummary, runPruner, runReflector } from "../compaction.js";
 import { observationsToPromptLines, runObserver } from "../observer.js";
 import type { Runtime } from "../runtime.js";
-import { serializeBranchEntries } from "../serialize.js";
+import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import { estimateStringTokens } from "../tokens.js";
 import {
 	OBSERVATION_CUSTOM_TYPE,
-	type MemoryDetails,
+	reflectionToPromptLine,
+	type MemoryDetailsV4,
+	type MemoryReflection,
 	type ObservationEntryData,
 	type ObservationRecord,
-	type Reflection,
 } from "../types.js";
 
 export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void {
@@ -63,8 +64,8 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			let gapObservationData: ObservationEntryData | null = null;
 			const gap = gapRawEntries(entries, firstKeptEntryId);
 			if (gap.length > 0) {
-				const gapChunk = serializeBranchEntries(gap);
-				if (gapChunk.trim()) {
+				const { text: gapChunk, sourceEntryIds } = serializeSourceAddressedBranchEntries(gap);
+				if (gapChunk.trim() && sourceEntryIds.length > 0) {
 					const gapFromId = gap[0].id;
 					const gapUpToId = gap[gap.length - 1].id;
 					const priorObservationLines = observationsToPromptLines([
@@ -81,9 +82,10 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 						model: resolved.model as any,
 						apiKey: resolved.apiKey,
 						headers: resolved.headers,
-						priorReflections: memoryState.reflections,
+						priorReflections: memoryState.reflections.map(reflectionToPromptLine),
 						priorObservations: priorObservationLines,
 						chunk: gapChunk,
+						allowedSourceEntryIds: sourceEntryIds,
 						signal,
 					});
 					const gapPromise: Promise<void> = gapCall.then(() => undefined, () => undefined);
@@ -133,7 +135,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 				return { cancel: true };
 			}
 
-			const workingReflections: Reflection[] = [...memoryState.reflections];
+			const workingReflections: MemoryReflection[] = migrateLegacyReflections(memoryState.reflections);
 			const workingObservations: ObservationRecord[] = [
 				...memoryState.committedObs,
 				...deltaObservationData.flatMap((d) => d.records),
@@ -147,12 +149,11 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			if (observationTokens >= runtime.config.reflectionThresholdTokens) {
 				if (hasUI) ui?.notify("Observational memory: running reflector + pruner...", "info");
 				try {
-					const newReflections = await runReflector(
+					finalReflections = await runReflector(
 						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal },
 						workingReflections,
 						workingObservations,
 					);
-					finalReflections = [...workingReflections, ...newReflections];
 
 					const prunerResult = await runPruner(
 						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal },
@@ -179,9 +180,9 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 				throw new Error("invariant violated: finalObservations empty after delta guard");
 			}
 
-			const details: MemoryDetails = {
+			const details: MemoryDetailsV4 = {
 				type: "observational-memory",
-				version: 3,
+				version: 4,
 				observations: finalObservations,
 				reflections: finalReflections,
 			};
