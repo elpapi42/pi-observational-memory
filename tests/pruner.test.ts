@@ -136,9 +136,11 @@ describe("coverage-aware pruner prompts", () => {
 	it("passes coverage-tagged observations to the pruner loop", async () => {
 		const loop = fakeAgentLoop((prompts) => {
 			const text = promptText(prompts);
+			// Only cited/reinforced observations are passed to the pruner
 			expect(text).toContain(`[${obsA.id}] ${obsA.timestamp} [high] [coverage: cited] ${obsA.content}`);
 			expect(text).toContain(`[${obsB.id}] ${obsB.timestamp} [medium] [coverage: reinforced] ${obsB.content}`);
-			expect(text).toContain(`[${obsC.id}] ${obsC.timestamp} [low] [coverage: uncited] ${obsC.content}`);
+			// Uncited observations are excluded from the pruner pool
+			expect(text).not.toContain(`[${obsC.id}]`);
 		});
 		const reflections: MemoryReflection[] = [
 			reflection("A cited.", [obsA.id]),
@@ -150,7 +152,9 @@ describe("coverage-aware pruner prompts", () => {
 
 		const result = await runPruner({ model: {} as any, apiKey: "test", agentLoop: loop }, reflections, observations, 1);
 
-		expect(result).toEqual({ observations, droppedIds: [], fellBack: false });
+		// All observations returned: uncited (always kept) + prunable (no drops)
+		expect(result.droppedIds).toEqual([]);
+		expect(result.observations.length).toBe(observations.length);
 	});
 
 	it("does not add coverage tags to reflector prompts", async () => {
@@ -179,9 +183,14 @@ describe("coverage-aware pruner prompts", () => {
 			};
 		}) as any;
 
+		// Need at least one reflection so some observations are prunable (cited/reinforced)
+		const localReflections: MemoryReflection[] = [
+			reflection("A cited.", [obsA.id]),
+		];
+
 		await runPruner(
 			{ model: {} as any, apiKey: "test", agentLoop: emittingLoop, onEvent: (event) => { events.push(event.type); } },
-			[],
+			localReflections,
 			observations,
 			1,
 		);

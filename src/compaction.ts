@@ -605,8 +605,28 @@ export async function runPruner(
 	}
 
 	const target = Math.max(1, Math.floor(budgetTokens * PRUNER_TARGET_RATIO));
-	let pool = observations;
-	const coverageTags = deriveObservationCoverageTags(reflections, observations);
+	const allCoverageTags = deriveObservationCoverageTags(reflections, observations);
+
+	// Split observations: only cite/reinforced are eligible for pruning.
+	// Uncited observations are protected — their value hasn't been evaluated by the reflector.
+	const uncitedPool: ObservationRecord[] = [];
+	const prunablePool: ObservationRecord[] = [];
+	for (const obs of observations) {
+		const tag = allCoverageTags.get(obs.id) ?? "uncited";
+		if (tag === "uncited") {
+			uncitedPool.push(obs);
+		} else {
+			prunablePool.push(obs);
+		}
+	}
+
+	if (prunablePool.length === 0) {
+		return { observations, droppedIds: [], fellBack: false };
+	}
+
+	// Coverage tags for the prunable subset only
+	const coverageTags = deriveObservationCoverageTags(reflections, prunablePool);
+	let pool = prunablePool;
 	const allDropped: string[] = [];
 	let fellBack = false;
 
@@ -635,7 +655,9 @@ export async function runPruner(
 		allDropped.push(...result.droppedIds);
 	}
 
-	return { observations: pool, droppedIds: allDropped, fellBack };
+	// Merge back: uncited (always kept) + prunable that survived pruning
+	const finalObservations = [...uncitedPool, ...pool];
+	return { observations: finalObservations, droppedIds: allDropped, fellBack };
 }
 
 export function renderSummary(reflections: MemoryReflection[], observations: ObservationRecord[]): string {
