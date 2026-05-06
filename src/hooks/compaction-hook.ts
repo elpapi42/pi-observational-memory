@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import {
 	collectObservationsByCoverage,
 	findLastCompactionIndex,
@@ -7,6 +8,7 @@ import {
 } from "../branch.js";
 import { migrateLegacyReflections, renderSummary, runPruner, runReflector } from "../compaction.js";
 import { observationsToPromptLines, runObserver } from "../observer.js";
+import { CompactionProgressTracker } from "../progress.js";
 import type { Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import { estimateStringTokens } from "../tokens.js";
@@ -29,6 +31,9 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			return { cancel: true };
 		}
 		runtime.compactHookInFlight = true;
+		const progress = new CompactionProgressTracker();
+		const WIDGET_NAME = "om_compact_progress";
+		let clearWidget = () => {};
 		try {
 			runtime.ensureConfig(ctx.cwd);
 			const { preparation, branchEntries, signal } = event;
@@ -49,6 +54,23 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 				return { cancel: true };
 			}
 			runtime.resolveFailureNotified = false;
+
+			const updateWidget = () => {
+				if (!hasUI || !ui) return;
+				if (!progress.getPhase()) {
+					ui.setWidget(WIDGET_NAME, undefined);
+					return;
+				}
+				ui.setWidget(WIDGET_NAME, (_tui: any, theme: any) => {
+					return new Text(
+						progress.formatWidget(theme),
+						0, 0,
+					);
+				});
+			};
+			clearWidget = () => {
+				if (hasUI && ui) ui.setWidget(WIDGET_NAME, undefined);
+			};
 
 			let entries = branchEntries as Parameters<typeof getMemoryState>[0];
 
@@ -77,6 +99,8 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 						`Observational memory: sync catch-up observer running on ~${gapTokenEstimate.toLocaleString()}-token gap`,
 						"info",
 					);
+					progress.setPhase("observer", 1, 1);
+					updateWidget();
 					runtime.observerInFlight = true;
 					const gapCall = runObserver({
 						model: resolved.model as any,
@@ -150,18 +174,22 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 				if (hasUI) ui?.notify("Observational memory: running reflector + pruner...", "info");
 				try {
 					finalReflections = await runReflector(
-						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal },
+						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); } },
 						workingReflections,
 						workingObservations,
+						(pass, max) => { progress.setPhase("reflector", pass, max); updateWidget(); },
 					);
 
 					const prunerResult = await runPruner(
-						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal },
+						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); } },
 						finalReflections,
 						workingObservations,
 						runtime.config.reflectionThresholdTokens,
+						(pass, max) => { progress.setPhase("pruner", pass, max); updateWidget(); },
 					);
 					finalObservations = prunerResult.observations;
+					progress.addDroppedCount(prunerResult.droppedIds.length);
+					updateWidget();
 					if (prunerResult.fellBack && hasUI) {
 						ui?.notify(
 							"Observational memory: pruner run failed; kept observation set unchanged",
@@ -202,6 +230,8 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			};
 		} finally {
 			runtime.compactHookInFlight = false;
+			progress.clear();
+			clearWidget();
 		}
 	});
 }
