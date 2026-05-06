@@ -1,6 +1,6 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@mariozechner/pi-agent-core";
 import { Type, type Message, type Model } from "@mariozechner/pi-ai";
-import type { Static } from "@sinclair/typebox";
+import type { Static } from "typebox";
 import { hashId } from "./ids.js";
 import { observationsToPromptLines } from "./observer.js";
 import { buildPrunerPassGuidance, buildReflectorPassGuidance, CONTEXT_USAGE_INSTRUCTIONS, PRUNER_SYSTEM, REFLECTOR_SYSTEM } from "./prompts.js";
@@ -24,6 +24,7 @@ interface LlmArgs {
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
 	onEvent?: (event: import("@mariozechner/pi-agent-core").AgentEvent) => void;
+	maxToolCalls?: number;
 }
 
 function joinReflectionsOrEmpty(items: MemoryReflection[]): string {
@@ -311,6 +312,8 @@ async function runReflectorPass(
 ): Promise<{ reflections: MemoryReflection[]; failed: boolean }> {
 	const allowedObservationIds = observations.map((o) => o.id);
 	let currentReflections = reflections;
+	let lastAcceptedCount = 0;
+	let consecutiveEmptyCalls = 0;
 
 	const recordTool: AgentTool<typeof RecordReflectionsSchema> = {
 		name: "record_reflections",
@@ -328,6 +331,12 @@ async function runReflectorPass(
 				passContext,
 			);
 			currentReflections = result.reflections;
+			if (result.accepted === 0) {
+				consecutiveEmptyCalls++;
+			} else {
+				consecutiveEmptyCalls = 0;
+			}
+			lastAcceptedCount = result.accepted;
 			const parts: string[] = [];
 			parts.push(`Accepted ${result.accepted} reflection proposal${result.accepted === 1 ? "" : "s"}.`);
 			if (result.added) parts.push(`${result.added} new.`);
@@ -374,6 +383,9 @@ Crystallize long-lived reflections from the full observation pool for this pass.
 	};
 
 	const reasoning = (args.model as { reasoning?: unknown }).reasoning;
+	const maxToolCalls = args.maxToolCalls ?? 8;
+	let turnCount = 0;
+
 	const config: AgentLoopConfig = {
 		model: args.model as any,
 		apiKey: args.apiKey,
@@ -382,6 +394,12 @@ Crystallize long-lived reflections from the full observation pool for this pass.
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
 		...(reasoning ? { reasoning: "high" as const } : {}),
+		shouldStopAfterTurn: () => {
+			turnCount++;
+			if (turnCount >= maxToolCalls) return true;
+			if (consecutiveEmptyCalls >= 2) return true;
+			return false;
+		},
 	};
 
 	try {
@@ -463,6 +481,7 @@ async function runPrunerPass(
 ): Promise<PrunerPassResult> {
 	const idSet = new Set(observations.map((o) => o.id));
 	const dropped = new Set<string>();
+	let consecutiveEmptyCalls = 0;
 
 	const dropTool: AgentTool<typeof DropObservationsSchema> = {
 		name: "drop_observations",
@@ -486,6 +505,11 @@ async function runPrunerPass(
 				}
 				dropped.add(id);
 				valid.push(id);
+			}
+			if (valid.length === 0) {
+				consecutiveEmptyCalls++;
+			} else {
+				consecutiveEmptyCalls = 0;
 			}
 			const remaining = idSet.size - dropped.size;
 			const parts: string[] = [];
@@ -535,6 +559,9 @@ Decide which observations to remove from the kept set. Call drop_observations wi
 	};
 
 	const reasoning = (args.model as { reasoning?: unknown }).reasoning;
+	const maxToolCalls = args.maxToolCalls ?? 8;
+	let turnCount = 0;
+
 	const config: AgentLoopConfig = {
 		model: args.model as any,
 		apiKey: args.apiKey,
@@ -543,6 +570,12 @@ Decide which observations to remove from the kept set. Call drop_observations wi
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
 		...(reasoning ? { reasoning: "high" as const } : {}),
+		shouldStopAfterTurn: () => {
+			turnCount++;
+			if (turnCount >= maxToolCalls) return true;
+			if (consecutiveEmptyCalls >= 2) return true;
+			return false;
+		},
 	};
 
 	try {

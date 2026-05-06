@@ -8,6 +8,7 @@ export interface Config {
 	reflectionThresholdTokens: number;
 	passive: boolean;
 	compactionModel?: { provider: string; id: string };
+	compactionMaxToolCalls?: number;
 }
 
 export const DEFAULTS: Config = {

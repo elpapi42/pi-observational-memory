@@ -81,4 +81,16 @@ describe("loadConfig", () => {
 		});
 		expect(loadConfig(cwd, { PI_OBSERVATIONAL_MEMORY_PASSIVE: "invalid" })).toMatchObject({ passive: false });
 	});
+
+	it("loads compactionMaxToolCalls from settings", () => {
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": { compactionMaxToolCalls: 5 },
+		});
+		expect(loadConfig(cwd, {})).toMatchObject({ compactionMaxToolCalls: 5 });
+	});
+
+	it("defaults compactionMaxToolCalls to undefined", () => {
+		const config = loadConfig(cwd, {});
+		expect(config.compactionMaxToolCalls).toBeUndefined();
+	});
 });

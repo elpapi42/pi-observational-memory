@@ -210,4 +210,19 @@ describe("coverage-aware pruner prompts", () => {
 		// Only pass 1 runs because no drops cause early exit
 		expect(passStarts).toEqual(["1/5"]);
 	});
+
+	it("accepts maxToolCalls without error", async () => {
+		const loop = fakeAgentLoop((_prompts) => {
+			// No drops
+		});
+
+		const result = await runPruner(
+			{ model: {} as any, apiKey: "test", agentLoop: loop, maxToolCalls: 3 },
+			[],
+			observations,
+			1,
+		);
+
+		expect(result.droppedIds).toEqual([]);
+	});
 });

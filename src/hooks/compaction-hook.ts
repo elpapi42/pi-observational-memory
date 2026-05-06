@@ -176,7 +176,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 					progress.setPhase("reflector", 1, 3);
 					updateWidget();
 					finalReflections = await runReflector(
-						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); } },
+						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); }, maxToolCalls: runtime.config.compactionMaxToolCalls },
 						workingReflections,
 						workingObservations,
 						(pass, max) => { progress.setPhase("reflector", pass, max); updateWidget(); },
@@ -184,7 +184,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 
 					if (hasUI) ui?.notify("Observational memory: running pruner (up to 5 passes)...", "info");
 					const prunerResult = await runPruner(
-						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); } },
+						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); }, maxToolCalls: runtime.config.compactionMaxToolCalls },
 						finalReflections,
 						workingObservations,
 						runtime.config.reflectionThresholdTokens,
