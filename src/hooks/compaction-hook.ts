@@ -171,8 +171,10 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			let finalObservations = workingObservations;
 
 			if (observationTokens >= runtime.config.reflectionThresholdTokens) {
-				if (hasUI) ui?.notify("Observational memory: running reflector + pruner...", "info");
 				try {
+					if (hasUI) ui?.notify("Observational memory: running reflector (up to 3 passes)...", "info");
+					progress.setPhase("reflector", 1, 3);
+					updateWidget();
 					finalReflections = await runReflector(
 						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); } },
 						workingReflections,
@@ -180,6 +182,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 						(pass, max) => { progress.setPhase("reflector", pass, max); updateWidget(); },
 					);
 
+					if (hasUI) ui?.notify("Observational memory: running pruner (up to 5 passes)...", "info");
 					const prunerResult = await runPruner(
 						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); } },
 						finalReflections,
