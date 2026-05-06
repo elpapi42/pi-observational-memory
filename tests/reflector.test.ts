@@ -280,4 +280,53 @@ describe("runReflector multi-pass orchestration", () => {
 			"User decided multi-pass reflection should precede pruning tags.",
 		]);
 	});
+
+	it("calls onEvent callback with agent events during reflector passes", async () => {
+		const events: string[] = [];
+		const loop = fakeAgentLoop(async (_prompts, context) => {
+			const tool = context.tools[0];
+			await tool.execute("pass-1", {
+				reflections: [{ content: "User consistently prefers fork-based investigation.", supportingObservationIds: [obsA.id, obsB.id] }],
+			});
+		});
+
+		const emittingLoop = ((prompts: any[], context: any) => {
+			const inner = loop(prompts, context);
+			return {
+				async *[Symbol.asyncIterator]() {
+					yield { type: "tool_execution_start", toolCallId: "tc1", toolName: "record_reflections", args: {} };
+					yield { type: "tool_execution_end", toolCallId: "tc1", toolName: "record_reflections", result: {}, isError: false };
+				},
+				result: inner.result,
+			};
+		}) as any;
+
+		await runReflector(
+			{ model: {} as any, apiKey: "test", agentLoop: emittingLoop, onEvent: (event) => { events.push(event.type); } },
+			[],
+			observations,
+		);
+
+		expect(events).toContain("tool_execution_start");
+		expect(events).toContain("tool_execution_end");
+	});
+
+	it("calls onPassStart for each reflector pass", async () => {
+		const passStarts: string[] = [];
+		const loop = fakeAgentLoop(async (_prompts, context) => {
+			const tool = context.tools[0];
+			await tool.execute("pass-1", {
+				reflections: [{ content: "User consistently prefers fork-based investigation.", supportingObservationIds: [obsA.id, obsB.id] }],
+			});
+		});
+
+		await runReflector(
+			{ model: {} as any, apiKey: "test", agentLoop: loop },
+			[],
+			observations,
+			(pass, max) => { passStarts.push(`${pass}/${max}`); },
+		);
+
+		expect(passStarts).toEqual(["1/3", "2/3", "3/3"]);
+	});
 });

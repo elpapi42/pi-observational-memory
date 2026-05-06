@@ -161,4 +161,53 @@ describe("coverage-aware pruner prompts", () => {
 
 		await runReflector({ model: {} as any, apiKey: "test", agentLoop: loop }, [], observations);
 	});
+
+	it("calls onEvent callback with agent events during pruner passes", async () => {
+		const events: string[] = [];
+		const loop = fakeAgentLoop((_prompts) => {
+			// No drops — pruner returns immediately
+		});
+
+		const emittingLoop = ((prompts: any[], context: any) => {
+			const inner = loop(prompts, context);
+			return {
+				async *[Symbol.asyncIterator]() {
+					yield { type: "tool_execution_start", toolCallId: "tc1", toolName: "drop_observations", args: {} };
+					yield { type: "turn_start" };
+				},
+				result: inner.result,
+			};
+		}) as any;
+
+		await runPruner(
+			{ model: {} as any, apiKey: "test", agentLoop: emittingLoop, onEvent: (event) => { events.push(event.type); } },
+			[],
+			observations,
+			1,
+		);
+
+		expect(events).toContain("tool_execution_start");
+		expect(events).toContain("turn_start");
+	});
+
+	it("calls onPassStart for pruner passes that run", async () => {
+		const passStarts: string[] = [];
+		const loop = fakeAgentLoop((_prompts) => {
+			// No drops — pruner breaks after first pass with 0 drops
+		});
+		const localReflections: MemoryReflection[] = [
+			reflection("A cited.", [obsA.id]),
+		];
+
+		await runPruner(
+			{ model: {} as any, apiKey: "test", agentLoop: loop },
+			localReflections,
+			observations,
+			1,
+			(pass, max) => { passStarts.push(`${pass}/${max}`); },
+		);
+
+		// Only pass 1 runs because no drops cause early exit
+		expect(passStarts).toEqual(["1/5"]);
+	});
 });

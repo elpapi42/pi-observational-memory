@@ -23,6 +23,7 @@ interface LlmArgs {
 	headers?: Record<string, string>;
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
+	onEvent?: (event: import("@mariozechner/pi-agent-core").AgentEvent) => void;
 }
 
 function joinReflectionsOrEmpty(items: MemoryReflection[]): string {
@@ -386,8 +387,8 @@ Crystallize long-lived reflections from the full observation pool for this pass.
 	try {
 		const loop = args.agentLoop ?? agentLoop;
 		const stream = loop(prompts, context, config, args.signal);
-		for await (const _event of stream) {
-			// Drain events; the tool's execute already updates reflections.
+		for await (const event of stream) {
+			args.onEvent?.(event);
 		}
 		await stream.result();
 	} catch {
@@ -401,10 +402,12 @@ export async function runReflector(
 	args: LlmArgs,
 	reflections: MemoryReflection[],
 	observations: ObservationRecord[],
+	onPassStart?: (pass: number, maxPasses: number) => void,
 ): Promise<MemoryReflection[]> {
 	let currentReflections = reflections;
 
 	for (let pass = 1; pass <= REFLECTOR_MAX_PASSES; pass++) {
+		onPassStart?.(pass, REFLECTOR_MAX_PASSES);
 		const result = await runReflectorPass(args, currentReflections, observations, reflectorPassContext(pass));
 		currentReflections = result.reflections;
 		if (result.failed) break;
@@ -545,8 +548,8 @@ Decide which observations to remove from the kept set. Call drop_observations wi
 	try {
 		const loop = args.agentLoop ?? agentLoop;
 		const stream = loop(prompts, context, config, args.signal);
-		for await (const _event of stream) {
-			// Drain events; the tool's execute already records drops.
+		for await (const event of stream) {
+			args.onEvent?.(event);
 		}
 		await stream.result();
 	} catch {
@@ -562,6 +565,7 @@ export async function runPruner(
 	reflections: MemoryReflection[],
 	observations: ObservationRecord[],
 	budgetTokens: number,
+	onPassStart?: (pass: number, maxPasses: number) => void,
 ): Promise<PrunerResult> {
 	if (observations.length === 0) {
 		return { observations: [], droppedIds: [], fellBack: false };
@@ -577,6 +581,7 @@ export async function runPruner(
 		const poolTokens = observationPoolTokens(pool);
 		if (poolTokens <= target) break;
 
+		onPassStart?.(pass, PRUNER_MAX_PASSES);
 		const deltaTokens = poolTokens - target;
 		const result = await runPrunerPass(args, reflections, pool, {
 			poolTokens,
