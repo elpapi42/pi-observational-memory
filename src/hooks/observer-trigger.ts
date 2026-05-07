@@ -47,9 +47,11 @@ export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): voi
 		// the extension ctx (stale after session replacement/reload).
 		const hasUI = ctx.hasUI;
 		const ui = ctx.ui;
+		const model = ctx.model;
+		const modelRegistry = ctx.modelRegistry;
 
 		void runtime.launchObserverTask(ctx, "observer", async () => {
-			const resolved = await runtime.resolveModel(ctx as any);
+			const resolved = await runtime.resolveModel({ model, modelRegistry, hasUI, ui });
 			if (!resolved.ok) {
 				if (!runtime.resolveFailureNotified && hasUI && ui) {
 					ui.notify(
