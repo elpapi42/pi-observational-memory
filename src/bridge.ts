@@ -28,7 +28,14 @@
  *     behavior, or recall semantics.
  */
 
-import { getMemoryState, type Entry } from "./branch.js";
+import { existsSync, readFileSync } from "node:fs";
+
+import {
+	getMemoryState,
+	recallMemorySources,
+	type Entry,
+	type RecallMemorySourcesResult,
+} from "./branch.js";
 import {
 	isMemoryDetailsV3,
 	isMemoryDetailsV4,
@@ -208,6 +215,75 @@ export function exportFromMemoryDetails(
 	const snapshot = snapshotFromMemoryDetails(details);
 	if (!snapshot) return [];
 	return exportFromSnapshot(snapshot, opts);
+}
+
+/**
+ * Parse a Pi session JSONL file into the OM Entry[] shape recall expects.
+ *
+ * Lines that fail to JSON-parse are skipped rather than throwing — a
+ * partially corrupted session file should still allow recall of any
+ * intact entries. Returns null when the file does not exist or cannot
+ * be read.
+ */
+export function loadSessionEntries(sessionFile: string): Entry[] | null {
+	if (!sessionFile || sessionFile.length === 0) return null;
+	if (!existsSync(sessionFile)) return null;
+	let raw: string;
+	try {
+		raw = readFileSync(sessionFile, "utf-8");
+	} catch {
+		return null;
+	}
+	const entries: Entry[] = [];
+	for (const line of raw.split("\n")) {
+		const trimmed = line.trim();
+		if (trimmed.length === 0) continue;
+		try {
+			const parsed = JSON.parse(trimmed);
+			if (parsed && typeof parsed === "object" && typeof parsed.type === "string" && typeof parsed.id === "string") {
+				entries.push(parsed as Entry);
+			}
+		} catch {
+			// skip malformed line
+		}
+	}
+	return entries;
+}
+
+export interface RecallFromSessionFileResult {
+	/** When the session file could be read, the recall result for the given memory id. */
+	recall: RecallMemorySourcesResult | null;
+	/** Reason recall could not be attempted. */
+	unavailableReason?: "missing-session-file" | "unreadable-session-file" | "empty-session-file";
+}
+
+/**
+ * Resolve exact source evidence for an OM memory id (observation or
+ * reflection) by loading the session JSONL file and running OM's
+ * existing recall machinery against the parsed entries. Returns an
+ * unavailable reason rather than throwing when the session file is
+ * missing, unreadable, or empty — cross-session recall callers should
+ * surface that to the user with the stored OM record content as a
+ * fallback.
+ */
+export function recallSourcesFromSessionFile(
+	sessionFile: string,
+	memoryId: string,
+): RecallFromSessionFileResult {
+	if (!sessionFile || sessionFile.length === 0) {
+		return { recall: null, unavailableReason: "missing-session-file" };
+	}
+	if (!existsSync(sessionFile)) {
+		return { recall: null, unavailableReason: "missing-session-file" };
+	}
+	const entries = loadSessionEntries(sessionFile);
+	if (entries === null) {
+		return { recall: null, unavailableReason: "unreadable-session-file" };
+	}
+	if (entries.length === 0) {
+		return { recall: null, unavailableReason: "empty-session-file" };
+	}
+	return { recall: recallMemorySources(entries, memoryId) };
 }
 
 /** Re-export commonly used type guards for bridge consumers. */
