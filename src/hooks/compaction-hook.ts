@@ -191,7 +191,6 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 						(pass, max) => { progress.setPhase("pruner", pass, max); updateWidget(); },
 					);
 					finalObservations = prunerResult.observations;
-					progress.addDroppedCount(prunerResult.droppedIds.length);
 					updateWidget();
 					if (prunerResult.fellBack && hasUI) {
 						ui?.notify(

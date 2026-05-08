@@ -14,7 +14,9 @@ export class CompactionProgressTracker {
 	private maxPasses = 0;
 	private toolCallCount = 0;
 	private turnCount = 0;
-	private droppedCount = 0;
+	private reflectionsAdded = 0;
+	private reflectionsMerged = 0;
+	private observationsDropped = 0;
 	private completedPhases: CompactionPhase[] = [];
 
 	getPhase(): CompactionPhase | undefined {
@@ -46,14 +48,13 @@ export class CompactionProgressTracker {
 		this.maxPasses = maxPasses;
 		this.toolCallCount = 0;
 		this.turnCount = 0;
+		this.reflectionsAdded = 0;
+		this.reflectionsMerged = 0;
+		this.observationsDropped = 0;
 	}
 
 	setCompletedPhases(phases: CompactionPhase[]): void {
 		this.completedPhases = phases;
-	}
-
-	addDroppedCount(count: number): void {
-		this.droppedCount += count;
 	}
 
 	onEvent(event: AgentEvent): void {
@@ -62,6 +63,19 @@ export class CompactionProgressTracker {
 			case "tool_execution_start":
 				this.toolCallCount++;
 				break;
+			case "tool_execution_end": {
+				if (event.isError) break;
+				const details = (event.result as { details?: Record<string, unknown> } | undefined)?.details;
+				if (!details) break;
+				if (event.toolName === "record_reflections") {
+					this.reflectionsAdded += (details.added as number) ?? 0;
+					this.reflectionsMerged += (details.merged as number) ?? 0;
+				} else if (event.toolName === "drop_observations") {
+					const dropped = details.dropped;
+					this.observationsDropped += Array.isArray(dropped) ? dropped.length : 0;
+				}
+				break;
+			}
 			case "turn_start":
 				this.turnCount++;
 				break;
@@ -74,7 +88,9 @@ export class CompactionProgressTracker {
 		this.maxPasses = 0;
 		this.toolCallCount = 0;
 		this.turnCount = 0;
-		this.droppedCount = 0;
+		this.reflectionsAdded = 0;
+		this.reflectionsMerged = 0;
+		this.observationsDropped = 0;
 		this.completedPhases = [];
 	}
 
@@ -104,9 +120,13 @@ export class CompactionProgressTracker {
 		const tcLabel = this.toolCallCount === 1 ? "tool call" : "tool calls";
 		parts.push(theme.fg("muted", `${this.toolCallCount} ${tcLabel}`));
 
-		// Dropped count for pruner
-		if (this.phase === "pruner" && this.droppedCount > 0) {
-			parts.push(theme.fg("muted", `${this.droppedCount} dropped`));
+		// Delta counters: R+N (reflections added), M+N (merged), O-N (observations dropped)
+		const deltas: string[] = [];
+		if (this.reflectionsAdded > 0) deltas.push(`R+${this.reflectionsAdded}`);
+		if (this.reflectionsMerged > 0) deltas.push(`M+${this.reflectionsMerged}`);
+		if (this.observationsDropped > 0) deltas.push(`O-${this.observationsDropped}`);
+		if (deltas.length > 0) {
+			parts.push(theme.fg("accent", deltas.join(" ")));
 		}
 
 		return parts.join(theme.fg("dim", " · "));
