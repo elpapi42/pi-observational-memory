@@ -151,6 +151,32 @@ For the full list and tuning recipes, see **[docs/configuration.md](docs/configu
 | `/om-view` | Full dump of memory state: every reflection, every committed observation, every pending observation. Reflection and observation ids shown here can be used with `recall` |
 | `recall` agent tool | Recovers exact source evidence for a specific reflection or observation id on the current branch. It is for agent self-recovery and provenance, not a user command, semantic search, or transcript browser |
 
+## Bridge surface for downstream extensions
+
+`pi-observational-memory` exposes a small read-only bridge module at
+`src/bridge.ts` (importable as `pi-observational-memory/src/bridge.js`)
+for companion extensions that want to forward finalized memory into
+long-term storage without coupling to OM's internal source-module
+paths. The surface is intentionally minimal:
+
+| Helper | Purpose |
+|---|---|
+| `getMemoryStateFromBranch(entries)` | Bridge-friendly snapshot wrapper over the internal `getMemoryState()`. |
+| `snapshotFromMemoryDetails(details)` | Adapts `MemoryDetailsV3` / `MemoryDetailsV4` (returns null for unsupported input). |
+| `exportFromSnapshot(snapshot, opts)` | Returns version-neutral `BridgeRecord[]` with a default high+critical observation filter; reflections and pending observations are configurable. |
+| `exportFromMemoryDetails(details, opts)` | Convenience helper composing the two above. |
+| `loadSessionEntries(sessionFile)` | Parse a Pi session JSONL into `Entry[]`, skipping malformed lines. |
+| `recallSourcesFromSessionFile(sessionFile, memoryId)` | Recover exact source evidence for an OM id given a session file path. Returns an explicit `unavailableReason` (`missing-session-file`, `unreadable-session-file`, `empty-session-file`) instead of throwing. |
+
+Consumers must not mutate observation/reflection records returned by
+the bridge; the surface registers no Pi hooks, commands, or tools.
+
+The reference downstream consumer is
+[`om-to-mem-bridge`](https://github.com/KickingTheTV/pi-mem) (part of
+the Pi memory integration plan, U2/U5), which forwards high-signal
+compaction output into the pi-mem (claude-mem) cross-session worker
+and exposes a provenance-aware `global_recall` tool.
+
 ## Credits
 
 Inspired by [Mastra's Observational Memory](https://mastra.ai/blog/observational-memory) research (94.87% on LongMemEval). This is an independent implementation built for Pi's extension system.
