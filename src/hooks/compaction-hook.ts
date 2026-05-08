@@ -174,6 +174,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 				try {
 					if (hasUI) ui?.notify("Observational memory: running reflector (up to 3 passes)...", "info");
 					progress.setPhase("reflector", 1, 3);
+					progress.setStartingCounts(workingReflections.length, workingObservations.length);
 					updateWidget();
 					finalReflections = await runReflector(
 						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); }, maxToolCalls: runtime.config.compactionMaxToolCalls },

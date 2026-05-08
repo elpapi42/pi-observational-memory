@@ -67,6 +67,7 @@ describe("CompactionProgressTracker", () => {
 
 	it("formats widget text for pruner phase with observations dropped", () => {
 		const tracker = new CompactionProgressTracker();
+		tracker.setStartingCounts(10, 100);
 		tracker.setPhase("pruner", 3, 5);
 		tracker.onEvent({ type: "tool_execution_start", toolCallId: "tc1", toolName: "drop_observations", args: {} });
 		tracker.onEvent({
@@ -81,7 +82,7 @@ describe("CompactionProgressTracker", () => {
 		});
 		expect(text).toContain("Pruner");
 		expect(text).toContain("3/5");
-		expect(text).toContain("O-7");
+		expect(text).toContain("O 93(-7)");
 	});
 
 	it("formats widget text for observer phase", () => {
@@ -160,11 +161,12 @@ describe("CompactionProgressTracker", () => {
 		expect(tracker.formatWidget({ fg: (_c: string, t: string) => t })).toBe("");
 	});
 
-	// --- Compact delta counters (R+N, M+N, O-N) ---
+	// --- Delta counters: R total(+accumulated), M total, O remaining(-accumulated) ---
 
 	it("tracks reflections added from record_reflections tool_execution_end", () => {
 		const tracker = new CompactionProgressTracker();
 		tracker.setPhase("reflector", 1, 3);
+		tracker.setStartingCounts(15, 50);
 		tracker.onEvent({ type: "tool_execution_start", toolCallId: "tc1", toolName: "record_reflections", args: {} });
 		tracker.onEvent({
 			type: "tool_execution_end",
@@ -177,13 +179,14 @@ describe("CompactionProgressTracker", () => {
 			isError: false,
 		});
 		const text = tracker.formatWidget({ fg: (_c: string, t: string) => t });
-		expect(text).toContain("R+2");
-		expect(text).toContain("M+1");
+		expect(text).toContain("R 17(+2)");
+		expect(text).toContain("M 1");
 	});
 
-	it("accumulates reflection deltas across multiple tool calls", () => {
+	it("accumulates reflection deltas across multiple tool calls in same pass", () => {
 		const tracker = new CompactionProgressTracker();
 		tracker.setPhase("reflector", 1, 3);
+		tracker.setStartingCounts(10, 50);
 		// First call: 3 added, 1 merged
 		tracker.onEvent({ type: "tool_execution_start", toolCallId: "tc1", toolName: "record_reflections", args: {} });
 		tracker.onEvent({
@@ -203,11 +206,11 @@ describe("CompactionProgressTracker", () => {
 			isError: false,
 		});
 		const text = tracker.formatWidget({ fg: (_c: string, t: string) => t });
-		expect(text).toContain("R+5");
-		expect(text).toContain("M+1");
+		expect(text).toContain("R 15(+5)");
+		expect(text).toContain("M 1");
 	});
 
-	it("does not show R+0 when no reflections added", () => {
+	it("does not show R/M when no reflections added or merged", () => {
 		const tracker = new CompactionProgressTracker();
 		tracker.setPhase("reflector", 1, 3);
 		tracker.onEvent({ type: "tool_execution_start", toolCallId: "tc1", toolName: "record_reflections", args: {} });
@@ -219,13 +222,14 @@ describe("CompactionProgressTracker", () => {
 			isError: false,
 		});
 		const text = tracker.formatWidget({ fg: (_c: string, t: string) => t });
-		expect(text).not.toContain("R+");
-		expect(text).not.toContain("M+");
+		expect(text).not.toContain("R ");
+		expect(text).not.toContain("M ");
 	});
 
 	it("tracks observations dropped from drop_observations tool_execution_end", () => {
 		const tracker = new CompactionProgressTracker();
 		tracker.setPhase("pruner", 1, 5);
+		tracker.setStartingCounts(10, 20);
 		tracker.onEvent({ type: "tool_execution_start", toolCallId: "tc1", toolName: "drop_observations", args: {} });
 		tracker.onEvent({
 			type: "tool_execution_end",
@@ -238,12 +242,13 @@ describe("CompactionProgressTracker", () => {
 			isError: false,
 		});
 		const text = tracker.formatWidget({ fg: (_c: string, t: string) => t });
-		expect(text).toContain("O-3");
+		expect(text).toContain("O 17(-3)");
 	});
 
-	it("accumulates observation drops across multiple tool calls", () => {
+	it("accumulates observation drops across multiple tool calls in same pass", () => {
 		const tracker = new CompactionProgressTracker();
 		tracker.setPhase("pruner", 1, 5);
+		tracker.setStartingCounts(10, 300);
 		// First call: drop 4
 		tracker.onEvent({ type: "tool_execution_start", toolCallId: "tc1", toolName: "drop_observations", args: {} });
 		tracker.onEvent({
@@ -263,12 +268,13 @@ describe("CompactionProgressTracker", () => {
 			isError: false,
 		});
 		const text = tracker.formatWidget({ fg: (_c: string, t: string) => t });
-		expect(text).toContain("O-7");
+		expect(text).toContain("O 293(-7)");
 	});
 
-	it("replaces old 'N dropped' with O-N delta format for pruner", () => {
+	it("shows O remaining(-accumulated) delta format for pruner", () => {
 		const tracker = new CompactionProgressTracker();
 		tracker.setPhase("pruner", 1, 5);
+		tracker.setStartingCounts(10, 100);
 		tracker.onEvent({ type: "tool_execution_start", toolCallId: "tc1", toolName: "drop_observations", args: {} });
 		tracker.onEvent({
 			type: "tool_execution_end",
@@ -278,29 +284,40 @@ describe("CompactionProgressTracker", () => {
 			isError: false,
 		});
 		const text = tracker.formatWidget({ fg: (_c: string, t: string) => t });
-		expect(text).toContain("O-1");
+		expect(text).toContain("O 99(-1)");
 		expect(text).not.toContain("dropped");
 	});
 
-	it("resets delta counters when phase changes", () => {
+	it("preserves deltas across passes within same phase", () => {
 		const tracker = new CompactionProgressTracker();
+		tracker.setStartingCounts(10, 50);
 		tracker.setPhase("reflector", 1, 3);
 		tracker.onEvent({ type: "tool_execution_start", toolCallId: "tc1", toolName: "record_reflections", args: {} });
 		tracker.onEvent({
 			type: "tool_execution_end",
 			toolCallId: "tc1",
 			toolName: "record_reflections",
-			result: { content: [], details: { accepted: 2, added: 2, merged: 0, duplicates: 0, unsupported: 0 } },
+			result: { content: [], details: { accepted: 3, added: 3, merged: 0, duplicates: 0, unsupported: 0 } },
 			isError: false,
 		});
-		// Transition to pruner
-		tracker.setPhase("pruner", 1, 5);
+		// Pass 2 — same phase, deltas should accumulate
+		tracker.setPhase("reflector", 2, 3);
+		tracker.onEvent({ type: "tool_execution_start", toolCallId: "tc2", toolName: "record_reflections", args: {} });
+		tracker.onEvent({
+			type: "tool_execution_end",
+			toolCallId: "tc2",
+			toolName: "record_reflections",
+			result: { content: [], details: { accepted: 2, added: 2, merged: 1, duplicates: 0, unsupported: 0 } },
+			isError: false,
+		});
 		const text = tracker.formatWidget({ fg: (_c: string, t: string) => t });
-		expect(text).not.toContain("R+");
+		expect(text).toContain("R 15(+5)");
+		expect(text).toContain("M 1");
 	});
 
-	it("clears delta counters", () => {
+	it("resets deltas when phase changes", () => {
 		const tracker = new CompactionProgressTracker();
+		tracker.setStartingCounts(10, 50);
 		tracker.setPhase("reflector", 1, 3);
 		tracker.onEvent({ type: "tool_execution_start", toolCallId: "tc1", toolName: "record_reflections", args: {} });
 		tracker.onEvent({
@@ -310,14 +327,15 @@ describe("CompactionProgressTracker", () => {
 			result: { content: [], details: { accepted: 2, added: 2, merged: 0, duplicates: 0, unsupported: 0 } },
 			isError: false,
 		});
-		tracker.clear();
-		tracker.setPhase("reflector", 1, 3);
+		// Transition to pruner — deltas reset
+		tracker.setPhase("pruner", 1, 5);
 		const text = tracker.formatWidget({ fg: (_c: string, t: string) => t });
-		expect(text).not.toContain("R+");
+		expect(text).not.toContain("R 12(+2)");
 	});
 
 	it("ignores tool_execution_end for unknown tools", () => {
 		const tracker = new CompactionProgressTracker();
+		tracker.setStartingCounts(10, 50);
 		tracker.setPhase("reflector", 1, 3);
 		tracker.onEvent({ type: "tool_execution_start", toolCallId: "tc1", toolName: "record_reflections", args: {} });
 		tracker.onEvent({
@@ -328,11 +346,12 @@ describe("CompactionProgressTracker", () => {
 			isError: false,
 		});
 		const text = tracker.formatWidget({ fg: (_c: string, t: string) => t });
-		expect(text).not.toContain("R+");
+		expect(text).not.toContain("R 15(+5)");
 	});
 
 	it("ignores tool_execution_end with missing details", () => {
 		const tracker = new CompactionProgressTracker();
+		tracker.setStartingCounts(10, 50);
 		tracker.setPhase("pruner", 1, 5);
 		tracker.onEvent({ type: "tool_execution_start", toolCallId: "tc1", toolName: "drop_observations", args: {} });
 		tracker.onEvent({
@@ -343,11 +362,12 @@ describe("CompactionProgressTracker", () => {
 			isError: false,
 		});
 		const text = tracker.formatWidget({ fg: (_c: string, t: string) => t });
-		expect(text).not.toContain("O-");
+		expect(text).not.toContain("O 50(-1)");
 	});
 
 	it("ignores tool_execution_end when isError is true", () => {
 		const tracker = new CompactionProgressTracker();
+		tracker.setStartingCounts(10, 50);
 		tracker.setPhase("reflector", 1, 3);
 		tracker.onEvent({ type: "tool_execution_start", toolCallId: "tc1", toolName: "record_reflections", args: {} });
 		tracker.onEvent({
@@ -358,6 +378,6 @@ describe("CompactionProgressTracker", () => {
 			isError: true,
 		});
 		const text = tracker.formatWidget({ fg: (_c: string, t: string) => t });
-		expect(text).not.toContain("R+");
+		expect(text).not.toContain("R 15(+5)");
 	});
 });

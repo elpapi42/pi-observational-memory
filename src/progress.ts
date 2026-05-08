@@ -14,6 +14,10 @@ export class CompactionProgressTracker {
 	private maxPasses = 0;
 	private toolCallCount = 0;
 	private turnCount = 0;
+	// Starting counts before compaction tools run
+	private startingReflections = 0;
+	private startingObservations = 0;
+	// Accumulated deltas across all passes within a phase
 	private reflectionsAdded = 0;
 	private reflectionsMerged = 0;
 	private observationsDropped = 0;
@@ -43,14 +47,22 @@ export class CompactionProgressTracker {
 		if (this.phase && this.phase !== phase && !this.completedPhases.includes(this.phase)) {
 			this.completedPhases.push(this.phase);
 		}
+		// Reset deltas when transitioning to a different phase
+		if (this.phase !== phase) {
+			this.reflectionsAdded = 0;
+			this.reflectionsMerged = 0;
+			this.observationsDropped = 0;
+		}
 		this.phase = phase;
 		this.pass = pass;
 		this.maxPasses = maxPasses;
 		this.toolCallCount = 0;
 		this.turnCount = 0;
-		this.reflectionsAdded = 0;
-		this.reflectionsMerged = 0;
-		this.observationsDropped = 0;
+	}
+
+	setStartingCounts(reflections: number, observations: number): void {
+		this.startingReflections = reflections;
+		this.startingObservations = observations;
 	}
 
 	setCompletedPhases(phases: CompactionPhase[]): void {
@@ -71,8 +83,7 @@ export class CompactionProgressTracker {
 					this.reflectionsAdded += (details.added as number) ?? 0;
 					this.reflectionsMerged += (details.merged as number) ?? 0;
 				} else if (event.toolName === "drop_observations") {
-					const dropped = details.dropped;
-					this.observationsDropped += Array.isArray(dropped) ? dropped.length : 0;
+					this.observationsDropped += Array.isArray(details.dropped) ? details.dropped.length : 0;
 				}
 				break;
 			}
@@ -88,6 +99,8 @@ export class CompactionProgressTracker {
 		this.maxPasses = 0;
 		this.toolCallCount = 0;
 		this.turnCount = 0;
+		this.startingReflections = 0;
+		this.startingObservations = 0;
 		this.reflectionsAdded = 0;
 		this.reflectionsMerged = 0;
 		this.observationsDropped = 0;
@@ -120,11 +133,19 @@ export class CompactionProgressTracker {
 		const tcLabel = this.toolCallCount === 1 ? "tool call" : "tool calls";
 		parts.push(theme.fg("muted", `${this.toolCallCount} ${tcLabel}`));
 
-		// Delta counters: R+N (reflections added), M+N (merged), O-N (observations dropped)
+		// Delta counters: R total(+accumulated), M total(+accumulated), O remaining(-accumulated)
 		const deltas: string[] = [];
-		if (this.reflectionsAdded > 0) deltas.push(`R+${this.reflectionsAdded}`);
-		if (this.reflectionsMerged > 0) deltas.push(`M+${this.reflectionsMerged}`);
-		if (this.observationsDropped > 0) deltas.push(`O-${this.observationsDropped}`);
+		if (this.reflectionsAdded > 0) {
+			const total = this.startingReflections + this.reflectionsAdded;
+			deltas.push(`R ${total}(+${this.reflectionsAdded})`);
+		}
+		if (this.reflectionsMerged > 0) {
+			deltas.push(`M ${this.reflectionsMerged}`);
+		}
+		if (this.observationsDropped > 0) {
+			const remaining = this.startingObservations - this.observationsDropped;
+			deltas.push(`O ${remaining}(-${this.observationsDropped})`);
+		}
 		if (deltas.length > 0) {
 			parts.push(theme.fg("accent", deltas.join(" ")));
 		}
