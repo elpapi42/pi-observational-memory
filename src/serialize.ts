@@ -58,8 +58,10 @@ function textAndPlaceholders(
 	return parts.join("\n");
 }
 
-function textOnly(content: string | Array<{ type?: string; text?: string }>): string {
+function textOnly(content: unknown): string {
+	if (content == null) return "";
 	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
 	return content
 		.filter((b): b is TextContent => b?.type === "text" && typeof b.text === "string")
 		.map((b) => b.text)

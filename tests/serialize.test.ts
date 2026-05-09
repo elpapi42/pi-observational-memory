@@ -65,6 +65,19 @@ describe("source-addressable observer serialization", () => {
 			"[User @ 2026-05-02 10:00]: Please remember this decision.",
 		);
 	});
+
+	it("treats null, undefined, and non-array message content as empty text", () => {
+		const source = serializeSourceAddressedBranchEntries([
+			messageEntry({ id: "entry-null", message: { role: "user", timestamp: "2026-05-02 10:03", content: null } }),
+			messageEntry({ id: "entry-missing", message: { role: "user", timestamp: "2026-05-02 10:04" } }),
+			messageEntry({ id: "entry-object", message: { role: "toolResult", timestamp: "2026-05-02 10:05", toolName: "read", content: { unexpected: true } } }),
+		]);
+
+		expect(source.sourceEntryIds).toEqual(["entry-null", "entry-missing", "entry-object"]);
+		expect(source.text).toContain("[User @ 2026-05-02 10:03]: ");
+		expect(source.text).toContain("[User @ 2026-05-02 10:04]: ");
+		expect(source.text).toContain("[Tool result for read @ 2026-05-02 10:05]: ");
+	});
 });
 
 describe("recall source rendering", () => {
