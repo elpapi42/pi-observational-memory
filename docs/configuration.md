@@ -14,6 +14,7 @@ If you haven't read **[concepts.md](concepts.md)** yet, do that first — this d
   - [`reflectionThresholdTokens`](#reflectionthresholdtokens--default-30000)
   - [`passive`](#passive--default-false)
   - [`compactionModel`](#compactionmodel--default-session-model)
+  - [`compactionMaxToolCalls`](#compactionmaxtoolcalls--default-not-set)
 - [Pi compaction settings the extension depends on](#pi-compaction-settings-the-extension-depends-on)
   - [`keepRecentTokens`](#keeprecenttokens--pi-setting-default-20000)
   - [`reserveTokens`](#reservetokens--pi-setting-default-16384)
@@ -60,7 +61,7 @@ Every setting at its default value:
 
 You don't need any of these to start — defaults work well for most sessions.
 
-One setting doesn't have a default and is easy to miss: **`compactionModel`**. Left unset, the observer / reflector / pruner all use the session model. Pointing them at a cheaper or faster model instead is usually the single biggest token-cost lever the extension exposes. A realistic settings file that overrides it looks like this:
+Two settings don't have defaults and are easy to miss: **`compactionModel`** and **`compactionMaxToolCalls`**. Left unset, the observer / reflector / pruner all use the session model with no tool call cap and no uncited observation protection. A realistic settings file that overrides both looks like this:
 
 ```json
 {
@@ -69,7 +70,8 @@ One setting doesn't have a default and is easy to miss: **`compactionModel`**. L
     "compactionThresholdTokens": 50000,
     "reflectionThresholdTokens": 30000,
     "passive": false,
-    "compactionModel": { "provider": "openrouter", "id": "google/gemma-4-31b-it" }
+    "compactionModel": { "provider": "openrouter", "id": "google/gemma-4-31b-it" },
+    "compactionMaxToolCalls": 8
   },
   "compaction": {
     "keepRecentTokens": 20000
@@ -140,6 +142,30 @@ An optional `{ provider, id }` override for the observer, the reflector, and the
 **Why you'd set this.** These three roles are structurally simpler than general coding: the observer summarizes fixed chunks, the reflector distills patterns, the pruner drops ids. A smaller, faster, or cheaper model is usually appropriate. Pointing them at one lets you offload background memory work without changing the main coding agent's model — which is often the single biggest token-cost lever the extension exposes.
 
 **Failure modes.** If the configured model is not found in the registry, the extension falls back to the session model with a warning. If no API key is available for the chosen model, the observer is skipped (warning once) and the compaction hook cancels the compaction (surfacing a clear error) rather than silently falling back.
+
+### `compactionMaxToolCalls` — default: not set
+
+An optional integer that caps the number of tool calls per reflector or pruner pass. When set to a positive number, two things happen:
+
+1. **Tool call cap.** Each reflector and pruner pass stops after this many tool calls (across all `record_reflections` or `drop_observations` invocations). The agents also stop early when two consecutive tool calls produce no new results (`consecutiveEmptyCalls >= 2`), regardless of this cap.
+
+2. **Uncited observation protection.** When the reflector's tool calls are capped, it may not have enough turns to cite every valuable observation. Observations left uncited are *artifacts of the limit*, not quality signals. To prevent the pruner from dropping them, uncited observations are automatically excluded from the pruner pool when this setting is active. They are merged back into the final observation set unchanged after pruning.
+
+**Not set** (default): no tool call cap, no uncited protection. Both reflector and pruner run until `consecutiveEmptyCalls >= 2` stops them. All observations go to the pruner with advisory `[coverage: uncited]` tags, and the LLM decides based on the prompt guidance.
+
+**Set to 0**: treated as "not set" — unlimited tool calls, no uncited protection.
+
+```json
+{
+  "observational-memory": {
+    "compactionMaxToolCalls": 8
+  }
+}
+```
+
+**Why you'd set this.** To control LLM cost per compaction pass. Without a cap, a complex observation pool could drive many tool calls. With a cap, you trade completeness for predictable cost — and uncited protection ensures the trade-off doesn't silently lose valuable observations.
+
+**Why the default is unset.** Unlimited tool calls with no uncited protection gives the reflector full coverage. In that mode, uncited truly means "the reflector reviewed this and chose not to cite it" — which is a quality signal the pruner can safely act on.
 
 ---
 

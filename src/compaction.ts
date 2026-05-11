@@ -383,7 +383,7 @@ Crystallize long-lived reflections from the full observation pool for this pass.
 	};
 
 	const reasoning = (args.model as { reasoning?: unknown }).reasoning;
-	const maxToolCalls = args.maxToolCalls ?? 8;
+	const effectiveMaxToolCalls = args.maxToolCalls && args.maxToolCalls > 0 ? args.maxToolCalls : undefined;
 	let turnCount = 0;
 
 	const config: AgentLoopConfig = {
@@ -396,7 +396,7 @@ Crystallize long-lived reflections from the full observation pool for this pass.
 		...(reasoning ? { reasoning: "high" as const } : {}),
 		shouldStopAfterTurn: () => {
 			turnCount++;
-			if (turnCount >= maxToolCalls) return true;
+			if (effectiveMaxToolCalls !== undefined && turnCount >= effectiveMaxToolCalls) return true;
 			if (consecutiveEmptyCalls >= 2) return true;
 			return false;
 		},
@@ -559,7 +559,7 @@ Decide which observations to remove from the kept set. Call drop_observations wi
 	};
 
 	const reasoning = (args.model as { reasoning?: unknown }).reasoning;
-	const maxToolCalls = args.maxToolCalls ?? 8;
+	const effectiveMaxToolCalls = args.maxToolCalls && args.maxToolCalls > 0 ? args.maxToolCalls : undefined;
 	let turnCount = 0;
 
 	const config: AgentLoopConfig = {
@@ -572,7 +572,7 @@ Decide which observations to remove from the kept set. Call drop_observations wi
 		...(reasoning ? { reasoning: "high" as const } : {}),
 		shouldStopAfterTurn: () => {
 			turnCount++;
-			if (turnCount >= maxToolCalls) return true;
+			if (effectiveMaxToolCalls !== undefined && turnCount >= effectiveMaxToolCalls) return true;
 			if (consecutiveEmptyCalls >= 2) return true;
 			return false;
 		},
@@ -607,26 +607,39 @@ export async function runPruner(
 	const target = Math.max(1, Math.floor(budgetTokens * PRUNER_TARGET_RATIO));
 	const allCoverageTags = deriveObservationCoverageTags(reflections, observations);
 
-	// Split observations: only cite/reinforced are eligible for pruning.
-	// Uncited observations are protected — their value hasn't been evaluated by the reflector.
-	const uncitedPool: ObservationRecord[] = [];
-	const prunablePool: ObservationRecord[] = [];
-	for (const obs of observations) {
-		const tag = allCoverageTags.get(obs.id) ?? "uncited";
-		if (tag === "uncited") {
-			uncitedPool.push(obs);
-		} else {
-			prunablePool.push(obs);
+	// When compactionMaxToolCalls is set, the reflector may not have had enough
+	// tool calls to cite all valuable observations. In that case, uncited observations
+	// are protected from pruning — their uncited status is an artifact of the limit,
+	// not a quality signal. When no limit is set, all observations go to the pruner
+	// with advisory coverage tags.
+	const protectUncited = args.maxToolCalls !== undefined && args.maxToolCalls > 0;
+
+	let pool: ObservationRecord[];
+	let uncitedPool: ObservationRecord[] = [];
+	let coverageTags: ReadonlyMap<string, ObservationCoverageTag>;
+
+	if (protectUncited) {
+		const prunablePool: ObservationRecord[] = [];
+		for (const obs of observations) {
+			const tag = allCoverageTags.get(obs.id) ?? "uncited";
+			if (tag === "uncited") {
+				uncitedPool.push(obs);
+			} else {
+				prunablePool.push(obs);
+			}
 		}
+
+		if (prunablePool.length === 0) {
+			return { observations, droppedIds: [], fellBack: false };
+		}
+
+		coverageTags = deriveObservationCoverageTags(reflections, prunablePool);
+		pool = prunablePool;
+	} else {
+		coverageTags = allCoverageTags;
+		pool = observations;
 	}
 
-	if (prunablePool.length === 0) {
-		return { observations, droppedIds: [], fellBack: false };
-	}
-
-	// Coverage tags for the prunable subset only
-	const coverageTags = deriveObservationCoverageTags(reflections, prunablePool);
-	let pool = prunablePool;
 	const allDropped: string[] = [];
 	let fellBack = false;
 
@@ -655,9 +668,12 @@ export async function runPruner(
 		allDropped.push(...result.droppedIds);
 	}
 
-	// Merge back: uncited (always kept) + prunable that survived pruning
-	const finalObservations = [...uncitedPool, ...pool];
-	return { observations: finalObservations, droppedIds: allDropped, fellBack };
+	if (protectUncited) {
+		// Merge back: uncited (always kept) + prunable that survived pruning
+		const finalObservations = [...uncitedPool, ...pool];
+		return { observations: finalObservations, droppedIds: allDropped, fellBack };
+	}
+	return { observations: pool, droppedIds: allDropped, fellBack };
 }
 
 export function renderSummary(reflections: MemoryReflection[], observations: ObservationRecord[]): string {
