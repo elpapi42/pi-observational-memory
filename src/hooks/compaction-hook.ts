@@ -155,8 +155,35 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			if (gapObservationData) deltaObservationData.push(gapObservationData);
 
 			if (deltaObservationData.length === 0) {
-				if (hasUI) ui?.notify("Observational memory: nothing to compact yet", "warning");
-				return { cancel: true };
+				// No new observations since last compaction. If we have existing memory,
+				// carry it forward in a no-op compaction so it survives Pi's compaction.
+				// If there is truly nothing (no prior memory either), cancel.
+				if (memoryState.committedObs.length === 0 && memoryState.reflections.length === 0) {
+					if (hasUI) ui?.notify("Observational memory: nothing to compact yet", "warning");
+					return { cancel: true };
+				}
+
+				// Carry forward existing memory without running reflector/pruner
+				const workingReflections: MemoryReflection[] = migrateLegacyReflections(memoryState.reflections);
+				const summary = renderSummary(workingReflections, memoryState.committedObs);
+				const details: MemoryDetailsV4 = {
+					type: "observational-memory",
+					version: 4,
+					observations: memoryState.committedObs,
+					reflections: workingReflections,
+				};
+				if (hasUI) ui?.notify(
+					`Observational memory: no new observations — carrying forward ${memoryState.committedObs.length} observation${memoryState.committedObs.length === 1 ? "" : "s"}, ${workingReflections.length} reflection${workingReflections.length === 1 ? "" : "s"}`,
+					"info",
+				);
+				return {
+					compaction: {
+						summary,
+						firstKeptEntryId,
+						tokensBefore,
+						details,
+					},
+				};
 			}
 
 			const workingReflections: MemoryReflection[] = migrateLegacyReflections(memoryState.reflections);
