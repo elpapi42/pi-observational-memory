@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeSourceEntryIds } from "../src/observer.js";
+import { normalizeSourceEntryIds, OBSERVATION_TIMESTAMP_PATTERN } from "../src/observer.js";
+
+describe("OBSERVATION_TIMESTAMP_PATTERN", () => {
+	it("matches local minute timestamps without regex shorthand escapes", () => {
+		expect(OBSERVATION_TIMESTAMP_PATTERN).not.toContain("\\d");
+
+		const pattern = new RegExp(OBSERVATION_TIMESTAMP_PATTERN);
+		expect(pattern.test("2026-05-02 10:30")).toBe(true);
+		expect(pattern.test("2026-5-02 10:30")).toBe(false);
+		expect(pattern.test("2026-05-02T10:30")).toBe(false);
+		expect(pattern.test("2026-05-02 10:30:00")).toBe(false);
+	});
+});
 
 describe("normalizeSourceEntryIds", () => {
 	const allowed = ["entry-a", "entry-b", "entry-c"];
