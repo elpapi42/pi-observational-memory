@@ -55,7 +55,6 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 				ctx.compact({
 					onComplete: () => {
 						runtime.compactInFlight = false;
-						if (hasUI) ui?.notify("Observational memory: compaction complete", "info");
 					},
 					onError: (error) => {
 						runtime.compactInFlight = false;
