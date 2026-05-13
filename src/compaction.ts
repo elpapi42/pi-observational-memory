@@ -605,40 +605,8 @@ export async function runPruner(
 	}
 
 	const target = Math.max(1, Math.floor(budgetTokens * PRUNER_TARGET_RATIO));
-	const allCoverageTags = deriveObservationCoverageTags(reflections, observations);
-
-	// When compactionMaxToolCalls is set, the reflector may not have had enough
-	// tool calls to cite all valuable observations. In that case, uncited observations
-	// are protected from pruning — their uncited status is an artifact of the limit,
-	// not a quality signal. When no limit is set, all observations go to the pruner
-	// with advisory coverage tags.
-	const protectUncited = args.maxToolCalls !== undefined && args.maxToolCalls > 0;
-
-	let pool: ObservationRecord[];
-	let uncitedPool: ObservationRecord[] = [];
-	let coverageTags: ReadonlyMap<string, ObservationCoverageTag>;
-
-	if (protectUncited) {
-		const prunablePool: ObservationRecord[] = [];
-		for (const obs of observations) {
-			const tag = allCoverageTags.get(obs.id) ?? "uncited";
-			if (tag === "uncited") {
-				uncitedPool.push(obs);
-			} else {
-				prunablePool.push(obs);
-			}
-		}
-
-		if (prunablePool.length === 0) {
-			return { observations, droppedIds: [], fellBack: false };
-		}
-
-		coverageTags = deriveObservationCoverageTags(reflections, prunablePool);
-		pool = prunablePool;
-	} else {
-		coverageTags = allCoverageTags;
-		pool = observations;
-	}
+	const coverageTags = deriveObservationCoverageTags(reflections, observations);
+	const pool = observations;
 
 	const allDropped: string[] = [];
 	let fellBack = false;
@@ -668,11 +636,6 @@ export async function runPruner(
 		allDropped.push(...result.droppedIds);
 	}
 
-	if (protectUncited) {
-		// Merge back: uncited (always kept) + prunable that survived pruning
-		const finalObservations = [...uncitedPool, ...pool];
-		return { observations: finalObservations, droppedIds: allDropped, fellBack };
-	}
 	return { observations: pool, droppedIds: allDropped, fellBack };
 }
 
