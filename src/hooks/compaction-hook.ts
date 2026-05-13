@@ -5,7 +5,17 @@ import {
 	gapRawEntries,
 	getMemoryState,
 } from "../branch.js";
-import { migrateLegacyReflections, observationPoolTokens, renderSummary, runPruner, runReflector } from "../compaction.js";
+import {
+	coverageTagCounts,
+	migrateLegacyReflections,
+	observationPoolTokens,
+	renderSummary,
+	runPruner,
+	runReflector,
+	type CoverageTagCounts,
+	type PrunerResult,
+	type ReflectorStats,
+} from "../compaction.js";
 import { observationsToPromptLines, runObserver } from "../observer.js";
 import type { Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
@@ -18,6 +28,23 @@ import {
 	type ObservationEntryData,
 	type ObservationRecord,
 } from "../types.js";
+
+function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
+	return `${count.toLocaleString()} ${count === 1 ? singular : pluralForm}`;
+}
+
+function formatCoverageCounts(counts: CoverageTagCounts): string {
+	return `${counts.uncited.toLocaleString()}/${counts.cited.toLocaleString()}/${counts.reinforced.toLocaleString()} uncited/cited/reinforced`;
+}
+
+function formatReflectorStats(stats: ReflectorStats): string {
+	const failed = stats.failedPass === undefined ? "" : `, failed pass ${stats.failedPass}`;
+	return `reflector ${plural(stats.toolCalls, "tool call")}, +${stats.added.toLocaleString()} added, ${stats.merged.toLocaleString()} merged, ${stats.promoted.toLocaleString()} promoted, ${stats.duplicates.toLocaleString()} duplicate/no-op, ${stats.unsupported.toLocaleString()} unsupported${failed}`;
+}
+
+function formatPrunerStats(result: PrunerResult): string {
+	return `pruner dropped ${plural(result.droppedIds.length, "observation")} in ${plural(result.passes.length, "pass", "passes")}, stop: ${result.stopReason}`;
+}
 
 export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.on("session_before_compact", async (event, ctx) => {
@@ -131,7 +158,12 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			if (gapObservationData) deltaObservationData.push(gapObservationData);
 
 			if (deltaObservationData.length === 0) {
-				if (hasUI) ui?.notify("Observational memory: nothing to compact yet", "warning");
+				if (hasUI) {
+					ui?.notify(
+						`Observational memory: nothing to compact yet — ${plural(memoryState.committedObs.length, "committed observation")} and ${plural(memoryState.pendingObs.length, "pending observation")}; no eligible delta before compact boundary`,
+						"warning",
+					);
+				}
 				return { cancel: true };
 			}
 
@@ -149,11 +181,14 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			if (observationTokens >= runtime.config.reflectionThresholdTokens) {
 				if (hasUI) ui?.notify("Observational memory: running reflector + pruner...", "info");
 				try {
-					finalReflections = await runReflector(
+					const coverageBefore = coverageTagCounts(workingReflections, workingObservations);
+					const reflectorResult = await runReflector(
 						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal },
 						workingReflections,
 						workingObservations,
 					);
+					finalReflections = reflectorResult.reflections;
+					const coverageAfter = coverageTagCounts(finalReflections, workingObservations);
 
 					const prunerResult = await runPruner(
 						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal },
@@ -162,6 +197,12 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 						runtime.config.reflectionThresholdTokens,
 					);
 					finalObservations = prunerResult.observations;
+					if (hasUI) {
+						ui?.notify(
+							`Observational memory: diagnostics — ${formatReflectorStats(reflectorResult.stats)}; coverage ${formatCoverageCounts(coverageBefore)} → ${formatCoverageCounts(coverageAfter)}; ${formatPrunerStats(prunerResult)}`,
+							"info",
+						);
+					}
 					if (prunerResult.fellBack && hasUI) {
 						ui?.notify(
 							"Observational memory: pruner run failed; kept observation set unchanged",

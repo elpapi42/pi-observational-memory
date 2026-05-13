@@ -178,7 +178,35 @@ describe("coverage-aware pruner prompts", () => {
 
 		const result = await runPruner({ model: {} as any, apiKey: "test", agentLoop: loop }, reflections, observations, 1);
 
-		expect(result).toEqual({ observations, droppedIds: [], fellBack: false });
+		expect(result).toMatchObject({
+			observations,
+			droppedIds: [],
+			fellBack: false,
+			stopReason: "zero_drops",
+			passes: [{ pass: 1, dropped: 0, remaining: observations.length, fellBack: false }],
+		});
+	});
+
+	it("reports dropped observations and under-target stop reason", async () => {
+		const loop = fakeAgentLoop(async (_prompts, context) => {
+			await context.tools[0].execute("drop-1", { ids: [obsC.id] });
+		});
+		const reflections: MemoryReflection[] = [
+			reflection("A cited.", [obsA.id]),
+			reflection("B cited.", [obsB.id]),
+			reflection("C cited.", [obsC.id]),
+		];
+		const targetBudget = Math.ceil((observationPoolTokens([obsA, obsB]) + 1) / 0.8);
+
+		const result = await runPruner({ model: {} as any, apiKey: "test", agentLoop: loop }, reflections, observations, targetBudget);
+
+		expect(result.observations).toEqual([obsA, obsB]);
+		expect(result.droppedIds).toEqual([obsC.id]);
+		expect(result.fellBack).toBe(false);
+		expect(result.stopReason).toBe("under_target");
+		expect(result.passes).toMatchObject([
+			{ pass: 1, dropped: 1, remaining: 2, fellBack: false },
+		]);
 	});
 
 	it("does not add coverage tags to reflector prompts", async () => {

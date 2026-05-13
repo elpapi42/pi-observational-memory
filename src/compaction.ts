@@ -35,6 +35,12 @@ function joinObservationsOrEmpty(items: ObservationRecord[]): string {
 
 export type ObservationCoverageTag = "uncited" | "cited" | "reinforced";
 
+export interface CoverageTagCounts {
+	uncited: number;
+	cited: number;
+	reinforced: number;
+}
+
 export function deriveObservationCoverageTags(
 	reflections: MemoryReflection[],
 	observations: ObservationRecord[],
@@ -55,6 +61,18 @@ export function deriveObservationCoverageTags(
 		tags.set(observation.id, count === 0 ? "uncited" : count >= 4 ? "reinforced" : "cited");
 	}
 	return tags;
+}
+
+export function coverageTagCounts(
+	reflections: MemoryReflection[],
+	observations: ObservationRecord[],
+): CoverageTagCounts {
+	const tags = deriveObservationCoverageTags(reflections, observations);
+	const counts: CoverageTagCounts = { uncited: 0, cited: 0, reinforced: 0 };
+	for (const observation of observations) {
+		counts[tags.get(observation.id) ?? "uncited"]++;
+	}
+	return counts;
 }
 
 export function renderObservationsForPrunerPrompt(
@@ -177,6 +195,83 @@ export interface ApplyReflectionProposalsResult {
 	promoted: number;
 	duplicates: number;
 	unsupported: number;
+}
+
+export interface ReflectorPassStats {
+	pass: number;
+	toolCalls: number;
+	accepted: number;
+	added: number;
+	merged: number;
+	promoted: number;
+	duplicates: number;
+	unsupported: number;
+	failed: boolean;
+}
+
+export interface ReflectorStats {
+	passes: ReflectorPassStats[];
+	toolCalls: number;
+	accepted: number;
+	added: number;
+	merged: number;
+	promoted: number;
+	duplicates: number;
+	unsupported: number;
+	failedPass?: number;
+}
+
+export interface ReflectorResult {
+	reflections: MemoryReflection[];
+	stats: ReflectorStats;
+}
+
+function emptyReflectorPassStats(pass: number): ReflectorPassStats {
+	return {
+		pass,
+		toolCalls: 0,
+		accepted: 0,
+		added: 0,
+		merged: 0,
+		promoted: 0,
+		duplicates: 0,
+		unsupported: 0,
+		failed: false,
+	};
+}
+
+function addReflectionProposalStats(target: ReflectorPassStats, result: ApplyReflectionProposalsResult): void {
+	target.toolCalls++;
+	target.accepted += result.accepted;
+	target.added += result.added;
+	target.merged += result.merged;
+	target.promoted += result.promoted;
+	target.duplicates += result.duplicates;
+	target.unsupported += result.unsupported;
+}
+
+function aggregateReflectorStats(passes: ReflectorPassStats[]): ReflectorStats {
+	const stats: ReflectorStats = {
+		passes,
+		toolCalls: 0,
+		accepted: 0,
+		added: 0,
+		merged: 0,
+		promoted: 0,
+		duplicates: 0,
+		unsupported: 0,
+	};
+	for (const pass of passes) {
+		stats.toolCalls += pass.toolCalls;
+		stats.accepted += pass.accepted;
+		stats.added += pass.added;
+		stats.merged += pass.merged;
+		stats.promoted += pass.promoted;
+		stats.duplicates += pass.duplicates;
+		stats.unsupported += pass.unsupported;
+		if (pass.failed && stats.failedPass === undefined) stats.failedPass = pass.pass;
+	}
+	return stats;
 }
 
 function reflectorPassContext(pass: number): ReflectorPassContext {
@@ -307,9 +402,10 @@ async function runReflectorPass(
 	reflections: MemoryReflection[],
 	observations: ObservationRecord[],
 	passContext: ReflectorPassContext,
-): Promise<{ reflections: MemoryReflection[]; failed: boolean }> {
+): Promise<{ reflections: MemoryReflection[]; stats: ReflectorPassStats }> {
 	const allowedObservationIds = observations.map((o) => o.id);
 	let currentReflections = reflections;
+	const stats = emptyReflectorPassStats(passContext.pass);
 
 	const recordTool: AgentTool<typeof RecordReflectionsSchema> = {
 		name: "record_reflections",
@@ -327,6 +423,7 @@ async function runReflectorPass(
 				passContext,
 			);
 			currentReflections = result.reflections;
+			addReflectionProposalStats(stats, result);
 			const parts: string[] = [];
 			parts.push(`Accepted ${result.accepted} reflection proposal${result.accepted === 1 ? "" : "s"}.`);
 			if (result.added) parts.push(`${result.added} new.`);
@@ -391,32 +488,49 @@ Crystallize long-lived reflections from the full observation pool for this pass.
 		}
 		await stream.result();
 	} catch {
-		return { reflections: currentReflections, failed: true };
+		stats.failed = true;
+		return { reflections: currentReflections, stats };
 	}
 
-	return { reflections: currentReflections, failed: false };
+	return { reflections: currentReflections, stats };
 }
 
 export async function runReflector(
 	args: LlmArgs,
 	reflections: MemoryReflection[],
 	observations: ObservationRecord[],
-): Promise<MemoryReflection[]> {
+): Promise<ReflectorResult> {
 	let currentReflections = reflections;
+	const passes: ReflectorPassStats[] = [];
 
 	for (let pass = 1; pass <= REFLECTOR_MAX_PASSES; pass++) {
 		const result = await runReflectorPass(args, currentReflections, observations, reflectorPassContext(pass));
 		currentReflections = result.reflections;
-		if (result.failed) break;
+		passes.push(result.stats);
+		if (result.stats.failed) break;
 	}
 
-	return currentReflections;
+	return { reflections: currentReflections, stats: aggregateReflectorStats(passes) };
+}
+
+export type PrunerStopReason = "empty" | "under_target" | "fell_back" | "zero_drops" | "max_passes";
+
+export interface PrunerPassStats {
+	pass: number;
+	poolTokens: number;
+	targetTokens: number;
+	deltaTokens: number;
+	dropped: number;
+	remaining: number;
+	fellBack: boolean;
 }
 
 export interface PrunerResult {
 	observations: ObservationRecord[];
 	droppedIds: string[];
 	fellBack: boolean;
+	passes: PrunerPassStats[];
+	stopReason: PrunerStopReason;
 }
 
 const DropObservationsSchema = Type.Object({
@@ -564,18 +678,23 @@ export async function runPruner(
 	budgetTokens: number,
 ): Promise<PrunerResult> {
 	if (observations.length === 0) {
-		return { observations: [], droppedIds: [], fellBack: false };
+		return { observations: [], droppedIds: [], fellBack: false, passes: [], stopReason: "empty" };
 	}
 
 	const target = Math.max(1, Math.floor(budgetTokens * PRUNER_TARGET_RATIO));
 	let pool = observations;
 	const coverageTags = deriveObservationCoverageTags(reflections, observations);
 	const allDropped: string[] = [];
+	const passes: PrunerPassStats[] = [];
 	let fellBack = false;
+	let stopReason: PrunerStopReason | undefined;
 
 	for (let pass = 1; pass <= PRUNER_MAX_PASSES; pass++) {
 		const poolTokens = observationPoolTokens(pool);
-		if (poolTokens <= target) break;
+		if (poolTokens <= target) {
+			stopReason = "under_target";
+			break;
+		}
 
 		const deltaTokens = poolTokens - target;
 		const result = await runPrunerPass(args, reflections, pool, {
@@ -586,18 +705,32 @@ export async function runPruner(
 			maxPasses: PRUNER_MAX_PASSES,
 			coverageTags,
 		});
+		passes.push({
+			pass,
+			poolTokens,
+			targetTokens: target,
+			deltaTokens,
+			dropped: result.droppedIds.length,
+			remaining: result.kept.length,
+			fellBack: result.fellBack,
+		});
 
 		if (result.fellBack) {
 			fellBack = true;
+			stopReason = "fell_back";
 			break;
 		}
-		if (result.droppedIds.length === 0) break;
+		if (result.droppedIds.length === 0) {
+			stopReason = "zero_drops";
+			break;
+		}
 
 		pool = result.kept;
 		allDropped.push(...result.droppedIds);
 	}
 
-	return { observations: pool, droppedIds: allDropped, fellBack };
+	stopReason ??= observationPoolTokens(pool) <= target ? "under_target" : "max_passes";
+	return { observations: pool, droppedIds: allDropped, fellBack, passes, stopReason };
 }
 
 export function renderSummary(reflections: MemoryReflection[], observations: ObservationRecord[]): string {
