@@ -5,6 +5,7 @@ import {
 	rawTokensSinceLastBound,
 	rawTokensSinceLastCompaction,
 } from "../branch.js";
+import { observationPoolTokens as estimateObservationPoolTokens } from "../compaction.js";
 import { countByRelevance, formatRelevanceHistogram } from "../relevance.js";
 import type { Runtime } from "../runtime.js";
 import { estimateStringTokens } from "../tokens.js";
@@ -21,12 +22,12 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 
 			const { reflections: committedRefs, committedObs, pendingObs } = getMemoryState(entries);
 			const committedRefItems = committedRefs as MemoryReflection[];
-			const committedObsTokens = committedObs.reduce((s, r) => s + estimateStringTokens(r.content), 0);
+			const committedObsTokens = estimateObservationPoolTokens(committedObs);
 			const committedObsCount = committedObs.length;
 			const committedRefsTokens = committedRefItems.reduce((s, r) => s + estimateStringTokens(reflectionContent(r)), 0);
 			const committedRefsCount = committedRefItems.length;
 
-			const pendingObsTokens = pendingObs.reduce((s, r) => s + estimateStringTokens(r.content), 0);
+			const pendingObsTokens = estimateObservationPoolTokens(pendingObs);
 			const pendingObsCount = pendingObs.length;
 
 			const relevanceHistogram = countByRelevance([...committedObs, ...pendingObs]);

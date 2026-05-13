@@ -13,8 +13,12 @@ const REFLECTOR_MAX_PASSES = 3;
 const PRUNER_MAX_PASSES = 5;
 const PRUNER_TARGET_RATIO = 0.8;
 
-function observationPoolTokens(observations: ObservationRecord[]): number {
-	return observations.reduce((sum, o) => sum + estimateStringTokens(o.content), 0);
+export function observationPoolTokens(observations: ObservationRecord[]): number {
+	// Use the rendered observation lines, not only bare content. The compaction
+	// summary includes id/timestamp/relevance metadata for every observation, and
+	// short observations can otherwise look cheap enough to skip pruning while the
+	// actual summary grows large enough to keep the actor near the context limit.
+	return estimateStringTokens(observationsToPromptLines(observations).join("\n"));
 }
 
 interface LlmArgs {
