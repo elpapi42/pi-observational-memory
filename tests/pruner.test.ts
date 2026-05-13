@@ -184,14 +184,13 @@ describe("coverage-aware pruner prompts", () => {
 		expect(result.observations.length).toBe(observations.length);
 	});
 
-	it("excludes uncited observations from the pruner pool when maxToolCalls is set", async () => {
+	it("passes all observations including uncited to the pruner pool regardless of maxToolCalls", async () => {
 		const loop = fakeAgentLoop((prompts) => {
 			const text = promptText(prompts);
-			// Only cited/reinforced observations are passed to the pruner
+			// All observations are passed to the pruner with coverage tags, even when maxToolCalls is set
 			expect(text).toContain(`[${obsA.id}] ${obsA.timestamp} [high] [coverage: cited] ${obsA.content}`);
 			expect(text).toContain(`[${obsB.id}] ${obsB.timestamp} [medium] [coverage: reinforced] ${obsB.content}`);
-			// Uncited observations are excluded from the pruner pool when maxToolCalls is set
-			expect(text).not.toContain(`[${obsC.id}]`);
+			expect(text).toContain(`[${obsC.id}] ${obsC.timestamp} [low] [coverage: uncited] ${obsC.content}`);
 		});
 		const reflections: MemoryReflection[] = [
 			reflection("A cited.", [obsA.id]),
@@ -201,9 +200,8 @@ describe("coverage-aware pruner prompts", () => {
 			reflection("B cited 4.", [obsB.id]),
 		];
 
-		const result = await runPruner({ model: {} as any, apiKey: "test", agentLoop: loop, maxToolCalls: 8 }, reflections, observations, 1);
+		const result = await runPruner({ model: {} as any, apiKey: "test", agentLoop: loop, maxToolCalls: 32 }, reflections, observations, 1);
 
-		// All observations returned: uncited (always kept) + prunable (no drops)
 		expect(result.droppedIds).toEqual([]);
 		expect(result.observations.length).toBe(observations.length);
 	});
