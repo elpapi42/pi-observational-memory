@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
+import { debugLog, withDebugLogContext } from "../debug-log.js";
 import {
 	collectObservationsByCoverage,
 	findLastCompactionIndex,
@@ -63,6 +64,8 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 		let clearWidget = () => {};
 		try {
 			runtime.ensureConfig(ctx.cwd);
+			const runId = `compaction-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+			return await withDebugLogContext({ enabled: runtime.config.debugLog === true, cwd: ctx.cwd, runId }, async () => {
 			const { preparation, branchEntries, signal } = event;
 			const { firstKeptEntryId, tokensBefore } = preparation;
 
@@ -70,9 +73,17 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			// the extension ctx may become stale (e.g. after session replacement/reload).
 			const hasUI = ctx.hasUI;
 			const ui = ctx.ui;
+			debugLog("compaction.start", {
+				firstKeptEntryId,
+				tokensBefore,
+				branchEntryCount: branchEntries.length,
+				reflectionThresholdTokens: runtime.config.reflectionThresholdTokens,
+				compactionMaxToolCalls: runtime.config.compactionMaxToolCalls,
+			});
 
 			const resolved = await runtime.resolveModel(ctx as any);
 			if (!resolved.ok) {
+				debugLog("compaction.model_unavailable", { reason: resolved.reason });
 				if (hasUI) ui?.notify(
 					`Observational memory: cannot compact — ${resolved.reason}. ` +
 					"Fix the model/API key and try /compact manually.",
@@ -109,6 +120,11 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			}
 
 			const memoryState = getMemoryState(entries);
+			debugLog("compaction.memory_state", {
+				committedObservations: memoryState.committedObs.length,
+				pendingObservations: memoryState.pendingObs.length,
+				reflections: memoryState.reflections.length,
+			});
 
 			let gapObservationData: ObservationEntryData | null = null;
 			const gap = gapRawEntries(entries, firstKeptEntryId);
@@ -122,6 +138,13 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 						...memoryState.pendingObs,
 					]);
 					const gapTokenEstimate = estimateStringTokens(gapChunk);
+					debugLog("compaction.sync_catchup.start", {
+						gapEntryCount: gap.length,
+						sourceEntryIds,
+						gapFromId,
+						gapUpToId,
+						tokenEstimate: gapTokenEstimate,
+					});
 					if (hasUI) ui?.notify(
 						`Observational memory: sync catch-up observer running on ~${gapTokenEstimate.toLocaleString()}-token gap`,
 						"info",
@@ -151,12 +174,20 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 								coversUpToId: gapUpToId,
 								tokenCount: observationTokens,
 							};
+							debugLog("compaction.sync_catchup.records", {
+								count: records.length,
+								observationTokens,
+								coversFromId: gapFromId,
+								coversUpToId: gapUpToId,
+								records,
+							});
 							pi.appendEntry(OBSERVATION_CUSTOM_TYPE, gapObservationData);
 							if (hasUI && ui) ui.notify(
 								`Observational memory: sync catch-up recorded ${records.length} observation${records.length === 1 ? "" : "s"} (~${observationTokens.toLocaleString()} tokens)`,
 								"info",
 							);
 						} else if (hasUI && ui) {
+							debugLog("compaction.sync_catchup.empty", { gapEntryCount: gap.length });
 							ui.notify(
 								"Observational memory: sync catch-up observer returned empty — proceeding with compaction",
 								"warning",
@@ -164,6 +195,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 						}
 					} catch (error) {
 						const msg = error instanceof Error ? error.message : String(error);
+						debugLog("compaction.sync_catchup.error", { gapEntryCount: gap.length, errorMessage: msg });
 						if (hasUI && ui) ui.notify(
 							`Observational memory: sync catch-up observer failed: ${msg}. Cancelling compaction — ${gap.length} unobserved raw entries would be pruned without coverage. Try /compact again.`,
 							"warning",
@@ -180,12 +212,24 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			const priorFirstKeptEntryId = priorCompactionIdx >= 0 ? entries[priorCompactionIdx].firstKeptEntryId : undefined;
 			const deltaObservationData = collectObservationsByCoverage(entries, priorFirstKeptEntryId, firstKeptEntryId);
 			if (gapObservationData) deltaObservationData.push(gapObservationData);
+			debugLog("compaction.delta", {
+				priorFirstKeptEntryId,
+				firstKeptEntryId,
+				deltaObservationEntries: deltaObservationData.length,
+				deltaObservationRecords: deltaObservationData.reduce((sum, data) => sum + data.records.length, 0),
+				gapObservationRecords: gapObservationData?.records.length ?? 0,
+			});
 
 			if (deltaObservationData.length === 0) {
 				// No new observations since last compaction. If we have existing memory,
 				// carry it forward in a no-op compaction so it survives Pi's compaction.
 				// If there is truly nothing (no prior memory either), cancel.
 				if (memoryState.committedObs.length === 0 && memoryState.reflections.length === 0) {
+					debugLog("compaction.no_delta_cancel", {
+						committedObservations: memoryState.committedObs.length,
+						pendingObservations: memoryState.pendingObs.length,
+						reflections: memoryState.reflections.length,
+					});
 					if (hasUI) {
 						ui?.notify(
 							`Observational memory: nothing to compact yet — ${plural(memoryState.committedObs.length, "committed observation")} and ${plural(memoryState.pendingObs.length, "pending observation")}; no eligible delta before compact boundary`,
@@ -197,6 +241,10 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 
 				// Carry forward existing memory without running reflector/pruner
 				const workingReflections: MemoryReflection[] = migrateLegacyReflections(memoryState.reflections);
+				debugLog("compaction.no_delta_carry_forward", {
+					observations: memoryState.committedObs.length,
+					reflections: workingReflections.length,
+				});
 				const summary = renderSummary(workingReflections, memoryState.committedObs);
 				const details: MemoryDetailsV4 = {
 					type: "observational-memory",
@@ -225,12 +273,24 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			];
 
 			const observationTokens = observationPoolTokens(workingObservations);
+			debugLog("compaction.reflect_prune.gate", {
+				observationTokens,
+				reflectionThresholdTokens: runtime.config.reflectionThresholdTokens,
+				willRun: observationTokens >= runtime.config.reflectionThresholdTokens,
+				workingObservations: workingObservations.length,
+				workingReflections: workingReflections.length,
+			});
 
 			let finalReflections = workingReflections;
 			let finalObservations = workingObservations;
 
 			if (observationTokens >= runtime.config.reflectionThresholdTokens) {
 				try {
+					debugLog("compaction.reflect_prune.start", {
+						workingObservations: workingObservations.length,
+						workingReflections: workingReflections.length,
+						observationTokens,
+					});
 					if (hasUI) ui?.notify("Observational memory: running reflector + pruner...", "info");
 					progress.setPhase("reflector", 1, 3);
 					progress.setStartingCounts(workingReflections.length, workingObservations.length);
@@ -244,8 +304,15 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 					);
 					finalReflections = reflectorResult.reflections;
 					const coverageAfter = coverageTagCounts(finalReflections, workingObservations);
+					debugLog("compaction.reflector.result", {
+						stats: reflectorResult.stats,
+						coverageBefore,
+						coverageAfter,
+						beforeReflections: workingReflections.length,
+						afterReflections: finalReflections.length,
+					});
 
-						const prunerResult = await runPruner(
+					const prunerResult = await runPruner(
 						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); }, maxToolCalls: runtime.config.compactionMaxToolCalls },
 						finalReflections,
 						workingObservations,
@@ -253,6 +320,14 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 						(pass, max) => { progress.setPhase("pruner", pass, max); updateWidget(); },
 					);
 					finalObservations = prunerResult.observations;
+					debugLog("compaction.pruner.result", {
+						stopReason: prunerResult.stopReason,
+						fellBack: prunerResult.fellBack,
+						droppedIds: prunerResult.droppedIds,
+						passes: prunerResult.passes,
+						beforeObservations: workingObservations.length,
+						afterObservations: finalObservations.length,
+					});
 					updateWidget();
 					if (hasUI) {
 						ui?.notify(
@@ -268,6 +343,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 					}
 				} catch (error) {
 					const msg = error instanceof Error ? error.message : String(error);
+					debugLog("compaction.reflect_prune.error", { errorMessage: msg });
 					if (hasUI) ui?.notify(`Observational memory: reflect/prune failed: ${msg}`, "warning");
 				}
 			}
@@ -284,6 +360,12 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 				observations: finalObservations,
 				reflections: finalReflections,
 			};
+			debugLog("compaction.result", {
+				finalObservations: finalObservations.length,
+				finalReflections: finalReflections.length,
+				firstKeptEntryId,
+				tokensBefore,
+			});
 
 			if (hasUI) ui?.notify(
 				`Observational memory: compaction assembled — ${finalObservations.length} observation${finalObservations.length === 1 ? "" : "s"}, ${finalReflections.length} reflection${finalReflections.length === 1 ? "" : "s"}`,
@@ -298,6 +380,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 					details,
 				},
 			};
+			});
 		} finally {
 			runtime.compactHookInFlight = false;
 			progress.clear();

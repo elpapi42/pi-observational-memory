@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { debugLog, withDebugLogContext } from "../debug-log.js";
 import {
 	firstRawIdAfter,
 	getMemoryState,
@@ -42,6 +43,7 @@ export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): voi
 			`Observational memory: observer running on ~${tokens.toLocaleString()}-token chunk`,
 			"info",
 		);
+		const runId = `observer-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
 
 		// Capture ctx properties synchronously — the async work below may outlive
 		// the extension ctx (stale after session replacement/reload).
@@ -49,50 +51,75 @@ export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): voi
 		const ui = ctx.ui;
 		const model = ctx.model;
 		const modelRegistry = ctx.modelRegistry;
+		const cwd = ctx.cwd;
 
-		void runtime.launchObserverTask(ctx, "observer", async () => {
-			const resolved = await runtime.resolveModel({ model, modelRegistry, hasUI, ui });
-			if (!resolved.ok) {
-				if (!runtime.resolveFailureNotified && hasUI && ui) {
-					ui.notify(
-						`Observational memory: observer skipped — ${resolved.reason}`,
+		void runtime.launchObserverTask(ctx, "observer", async () => withDebugLogContext({ enabled: runtime.config.debugLog === true, cwd, runId }, async () => {
+			try {
+				debugLog("observer.start", {
+					tokens,
+					coversFromId,
+					coversUpToId,
+					sourceEntryIds,
+					sourceEntryCount: sourceEntryIds.length,
+					priorReflections: reflections.length,
+					priorObservations: priorObservationLines.length,
+				});
+				const resolved = await runtime.resolveModel({ model, modelRegistry, hasUI, ui });
+				if (!resolved.ok) {
+					debugLog("observer.model_unavailable", { reason: resolved.reason });
+					if (!runtime.resolveFailureNotified && hasUI && ui) {
+						ui.notify(
+							`Observational memory: observer skipped — ${resolved.reason}`,
+							"warning",
+						);
+						runtime.resolveFailureNotified = true;
+					}
+					return;
+				}
+				runtime.resolveFailureNotified = false;
+
+				const records = await runObserver({
+					model: resolved.model as any,
+					apiKey: resolved.apiKey,
+					headers: resolved.headers,
+					priorReflections: reflections.map(reflectionToPromptLine),
+					priorObservations: priorObservationLines,
+					chunk,
+					allowedSourceEntryIds: sourceEntryIds,
+				});
+				if (!records || records.length === 0) {
+					debugLog("observer.empty", { coversFromId, coversUpToId });
+					if (hasUI && ui) ui.notify(
+						"Observational memory: observer returned no observations",
 						"warning",
 					);
-					runtime.resolveFailureNotified = true;
+					return;
 				}
-				return;
-			}
-			runtime.resolveFailureNotified = false;
 
-			const records = await runObserver({
-				model: resolved.model as any,
-				apiKey: resolved.apiKey,
-				headers: resolved.headers,
-				priorReflections: reflections.map(reflectionToPromptLine),
-				priorObservations: priorObservationLines,
-				chunk,
-				allowedSourceEntryIds: sourceEntryIds,
-			});
-			if (!records || records.length === 0) {
+				const observationTokens = records.reduce((sum, r) => sum + estimateStringTokens(r.content), 0);
+				const data: ObservationEntryData = {
+					records,
+					coversFromId,
+					coversUpToId,
+					tokenCount: observationTokens,
+				};
+				debugLog("observer.records", {
+					count: records.length,
+					observationTokens,
+					coversFromId,
+					coversUpToId,
+					records,
+				});
+				pi.appendEntry(OBSERVATION_CUSTOM_TYPE, data);
+				debugLog("observer.appended", { count: records.length, tokenCount: observationTokens, coversFromId, coversUpToId });
 				if (hasUI && ui) ui.notify(
-					"Observational memory: observer returned no observations",
-					"warning",
+					`Observational memory: ${records.length} observation${records.length === 1 ? "" : "s"} recorded (~${observationTokens.toLocaleString()} tokens)`,
+					"info",
 				);
-				return;
+			} catch (error) {
+				debugLog("observer.error", { errorMessage: error instanceof Error ? error.message : String(error) });
+				throw error;
 			}
-
-			const observationTokens = records.reduce((sum, r) => sum + estimateStringTokens(r.content), 0);
-			const data: ObservationEntryData = {
-				records,
-				coversFromId,
-				coversUpToId,
-				tokenCount: observationTokens,
-			};
-			pi.appendEntry(OBSERVATION_CUSTOM_TYPE, data);
-			if (hasUI && ui) ui.notify(
-				`Observational memory: ${records.length} observation${records.length === 1 ? "" : "s"} recorded (~${observationTokens.toLocaleString()} tokens)`,
-				"info",
-			);
-		});
+		}));
 	});
 }

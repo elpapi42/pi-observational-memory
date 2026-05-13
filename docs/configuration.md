@@ -13,6 +13,7 @@ If you haven't read **[concepts.md](concepts.md)** yet, do that first — this d
   - [`compactionThresholdTokens`](#compactionthresholdtokens--default-50000)
   - [`reflectionThresholdTokens`](#reflectionthresholdtokens--default-30000)
   - [`passive`](#passive--default-false)
+  - [`debugLog`](#debuglog--default-false)
   - [`compactionModel`](#compactionmodel--default-session-model)
   - [`compactionMaxToolCalls`](#compactionmaxtoolcalls--default-not-set)
 - [Pi compaction settings the extension depends on](#pi-compaction-settings-the-extension-depends-on)
@@ -49,7 +50,8 @@ Every setting at its default value:
     "observationThresholdTokens": 1000,
     "compactionThresholdTokens": 50000,
     "reflectionThresholdTokens": 30000,
-    "passive": false
+    "passive": false,
+    "debugLog": false
   },
   "compaction": {
     "enabled": true,
@@ -70,6 +72,7 @@ Two settings don't have defaults and are easy to miss: **`compactionModel`** and
     "compactionThresholdTokens": 50000,
     "reflectionThresholdTokens": 30000,
     "passive": false,
+    "debugLog": false,
     "compactionModel": { "provider": "openrouter", "id": "google/gemma-4-31b-it" },
     "compactionMaxToolCalls": 32
   },
@@ -126,6 +129,24 @@ When `true`, observational memory becomes reactive instead of proactive: the bac
 Manual `/compact` and Pi's own window-pressure compaction still use the custom compaction hook. That means the sync catch-up observer, reflector, pruner, `/om-status`, `/om-view`, and `recall` remain available; passive mode only stops the extension from doing memory work on its own between compactions.
 
 You can override this setting for a shell/session with `PI_OBSERVATIONAL_MEMORY_PASSIVE`. Recognized truthy values are `1`, `true`, `yes`, and `on`; recognized falsy values are `0`, `false`, `no`, and `off`. The environment variable is read after global and project settings, so it wins over both when set to a recognized value.
+
+### `debugLog` — default `false`
+
+When `true`, the extension writes a structured JSONL debug log to Pi's global agent directory: `~/.pi/agent/observational-memory/debug.ndjson`.
+
+This log is for diagnosing extension behavior when notifications or the progress widget are not enough. It records observer, compaction, reflector, and pruner lifecycle events, including derived observation and reflection content, observation ids, reflection ids, source/support ids, pruning stop reasons, pass stats, and caught model-loop errors. It does **not** intentionally log API keys, provider headers, or raw serialized transcript chunks.
+
+```json
+{
+  "observational-memory": {
+    "debugLog": true
+  }
+}
+```
+
+Treat this file as sensitive local debugging evidence: it can contain project details, user preferences, file paths, error messages, and memory content. Enable it only while debugging, do not commit or share it casually, and delete or rotate it when done. The logger is best-effort and capped with simple rotation; failures to write the debug log never change memory behavior.
+
+Like other extension settings, `debugLog` is loaded when the extension runtime loads. After changing it, run `/reload` or restart Pi for the new value to take effect.
 
 ### `compactionModel` — default: session model
 

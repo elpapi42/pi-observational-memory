@@ -1,6 +1,7 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@mariozechner/pi-agent-core";
 import { Type, type Message, type Model } from "@mariozechner/pi-ai";
 import type { Static } from "typebox";
+import { debugLog, isDebugLogEnabled } from "./debug-log.js";
 import { hashId } from "./ids.js";
 import { observationsToPromptLines } from "./observer.js";
 import { buildPrunerPassGuidance, buildReflectorPassGuidance, CONTEXT_USAGE_INSTRUCTIONS, PRUNER_SYSTEM, REFLECTOR_SYSTEM } from "./prompts.js";
@@ -409,6 +410,14 @@ async function runReflectorPass(
 	let currentReflections = reflections;
 	const stats = emptyReflectorPassStats(passContext.pass);
 	let consecutiveEmptyCalls = 0;
+	debugLog("reflector.pass.start", {
+		pass: passContext.pass,
+		maxPasses: passContext.maxPasses,
+		minSupportingObservationIds: passContext.minSupportingObservationIds,
+		reflectionCount: reflections.length,
+		observationCount: observations.length,
+		observationIds: isDebugLogEnabled() ? allowedObservationIds : undefined,
+	});
 
 	const recordTool: AgentTool<typeof RecordReflectionsSchema> = {
 		name: "record_reflections",
@@ -444,6 +453,20 @@ async function runReflectorPass(
 				);
 			}
 			parts.push("Call record_reflections again if more should be crystallized for this pass; otherwise stop and emit a short plain-text confirmation.");
+			debugLog("reflector.tool_call", {
+				pass: passContext.pass,
+				accepted: result.accepted,
+				added: result.added,
+				merged: result.merged,
+				promoted: result.promoted,
+				duplicates: result.duplicates,
+				unsupported: result.unsupported,
+				currentReflectionCount: currentReflections.length,
+				proposals: params.reflections.map((reflection: ReflectionProposal) => ({
+					content: reflection.content,
+					supportingObservationIds: reflection.supportingObservationIds,
+				})),
+			});
 			return {
 				content: [{ type: "text", text: parts.join(" ") }],
 				details: result,
@@ -497,15 +520,28 @@ Crystallize long-lived reflections from the full observation pool for this pass.
 		},
 	};
 
+	let firstEventSeen = false;
 	try {
+		debugLog("reflector.agent_loop.before_call", { pass: passContext.pass });
 		const loop = args.agentLoop ?? agentLoop;
 		const stream = loop(prompts, context, config, args.signal);
+		debugLog("reflector.agent_loop.stream_created", { pass: passContext.pass });
 		for await (const event of stream) {
+			if (!firstEventSeen) {
+				firstEventSeen = true;
+				debugLog("reflector.agent_loop.first_event", { pass: passContext.pass, type: event.type });
+			}
 			args.onEvent?.(event);
 		}
 		await stream.result();
-	} catch {
+		debugLog("reflector.pass.result", { pass: passContext.pass, stats, reflectionCount: currentReflections.length });
+	} catch (error) {
 		stats.failed = true;
+		debugLog("reflector.agent_loop.error", {
+			pass: passContext.pass,
+			firstEventSeen,
+			errorMessage: error instanceof Error ? error.message : String(error),
+		});
 		return { reflections: currentReflections, stats };
 	}
 
@@ -518,6 +554,19 @@ export async function runReflector(
 	observations: ObservationRecord[],
 	onPassStart?: (pass: number, maxPasses: number) => void,
 ): Promise<ReflectorResult> {
+	debugLog("reflector.start", {
+		reflectionCount: reflections.length,
+		observationCount: observations.length,
+		observations: isDebugLogEnabled()
+			? observations.map((observation) => ({
+				id: observation.id,
+				timestamp: observation.timestamp,
+				relevance: observation.relevance,
+				content: observation.content,
+				sourceEntryIds: observation.sourceEntryIds,
+			}))
+			: undefined,
+	});
 	let currentReflections = reflections;
 	const passes: ReflectorPassStats[] = [];
 
@@ -529,7 +578,15 @@ export async function runReflector(
 		if (result.stats.failed) break;
 	}
 
-	return { reflections: currentReflections, stats: aggregateReflectorStats(passes) };
+	const result = { reflections: currentReflections, stats: aggregateReflectorStats(passes) };
+	debugLog("reflector.result", {
+		stats: result.stats,
+		reflectionCount: result.reflections.length,
+		reflections: isDebugLogEnabled()
+			? result.reflections.map((reflection) => typeof reflection === "string" ? { legacyString: true, content: reflection } : reflection)
+			: undefined,
+	});
+	return result;
 }
 
 export type PrunerStopReason = "empty" | "under_target" | "fell_back" | "zero_drops" | "max_passes";
@@ -594,6 +651,16 @@ async function runPrunerPass(
 	const idSet = new Set(observations.map((o) => o.id));
 	const dropped = new Set<string>();
 	let consecutiveEmptyCalls = 0;
+	debugLog("pruner.pass.start", {
+		pass: passContext.pass,
+		maxPasses: passContext.maxPasses,
+		poolTokens: passContext.poolTokens,
+		targetTokens: passContext.targetTokens,
+		deltaTokens: passContext.deltaTokens,
+		observationCount: observations.length,
+		reflectionCount: reflections.length,
+		observationIds: isDebugLogEnabled() ? observations.map((observation) => observation.id) : undefined,
+	});
 
 	const dropTool: AgentTool<typeof DropObservationsSchema> = {
 		name: "drop_observations",
@@ -630,6 +697,15 @@ async function runPrunerPass(
 			if (already.length) parts.push(`Already dropped: ${already.join(", ")}.`);
 			parts.push(`Remaining kept: ${remaining} of ${idSet.size}.`);
 			parts.push("Call drop_observations again if more should be removed; otherwise stop and emit a short plain-text confirmation.");
+			debugLog("pruner.tool_call", {
+				pass: passContext.pass,
+				requestedIds: params.ids,
+				dropped: valid,
+				unknown,
+				already,
+				remaining,
+				reason: params.reason,
+			});
 			return {
 				content: [{ type: "text", text: parts.join(" ") }],
 				details: { dropped: valid, unknown, already, remaining },
@@ -690,19 +766,47 @@ Decide which observations to remove from the kept set. Call drop_observations wi
 		},
 	};
 
+	let agentLoopCalled = false;
+	let streamCreated = false;
+	let firstEventSeen = false;
 	try {
+		debugLog("pruner.agent_loop.before_call", { pass: passContext.pass });
 		const loop = args.agentLoop ?? agentLoop;
+		agentLoopCalled = true;
 		const stream = loop(prompts, context, config, args.signal);
+		streamCreated = true;
+		debugLog("pruner.agent_loop.stream_created", { pass: passContext.pass });
 		for await (const event of stream) {
+			if (!firstEventSeen) {
+				firstEventSeen = true;
+				debugLog("pruner.agent_loop.first_event", { pass: passContext.pass, type: event.type });
+			}
 			args.onEvent?.(event);
 		}
 		await stream.result();
-	} catch {
+	} catch (error) {
+		debugLog("pruner.agent_loop.error", {
+			pass: passContext.pass,
+			agentLoopCalled,
+			streamCreated,
+			firstEventSeen,
+			errorMessage: error instanceof Error ? error.message : String(error),
+		});
 		return { kept: observations, droppedIds: [], fellBack: true };
 	}
 
 	const kept = observations.filter((o) => !dropped.has(o.id));
-	return { kept, droppedIds: Array.from(dropped), fellBack: false };
+	const droppedIds = Array.from(dropped);
+	debugLog("pruner.pass.result", {
+		pass: passContext.pass,
+		droppedIds,
+		dropped: droppedIds.length,
+		remaining: kept.length,
+		agentLoopCalled,
+		streamCreated,
+		firstEventSeen,
+	});
+	return { kept, droppedIds, fellBack: false };
 }
 
 export async function runPruner(
@@ -712,8 +816,22 @@ export async function runPruner(
 	budgetTokens: number,
 	onPassStart?: (pass: number, maxPasses: number) => void,
 ): Promise<PrunerResult> {
+	debugLog("pruner.start", {
+		reflectionCount: reflections.length,
+		observationCount: observations.length,
+		budgetTokens,
+	});
 	if (observations.length === 0) {
-		return { observations: [], droppedIds: [], fellBack: false, passes: [], stopReason: "empty" };
+		const result: PrunerResult = { observations: [], droppedIds: [], fellBack: false, passes: [], stopReason: "empty" };
+		debugLog("pruner.result", {
+			stopReason: result.stopReason,
+			fellBack: result.fellBack,
+			droppedIds: result.droppedIds,
+			dropped: result.droppedIds.length,
+			passes: result.passes,
+			finalObservationCount: result.observations.length,
+		});
+		return result;
 	}
 
 	const target = Math.max(1, Math.floor(budgetTokens * PRUNER_TARGET_RATIO));
@@ -729,6 +847,7 @@ export async function runPruner(
 		const poolTokens = observationPoolTokens(pool);
 		if (poolTokens <= target) {
 			stopReason = "under_target";
+			debugLog("pruner.under_target", { pass, poolTokens, targetTokens: target, observationCount: pool.length });
 			break;
 		}
 
@@ -767,7 +886,16 @@ export async function runPruner(
 	}
 
 	stopReason ??= observationPoolTokens(pool) <= target ? "under_target" : "max_passes";
-	return { observations: pool, droppedIds: allDropped, fellBack, passes, stopReason };
+	const result = { observations: pool, droppedIds: allDropped, fellBack, passes, stopReason };
+	debugLog("pruner.result", {
+		stopReason: result.stopReason,
+		fellBack: result.fellBack,
+		droppedIds: result.droppedIds,
+		dropped: result.droppedIds.length,
+		passes: result.passes,
+		finalObservationCount: result.observations.length,
+	});
+	return result;
 }
 
 export function renderSummary(reflections: MemoryReflection[], observations: ObservationRecord[]): string {

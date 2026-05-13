@@ -7,6 +7,7 @@ export interface Config {
 	compactionThresholdTokens: number;
 	reflectionThresholdTokens: number;
 	passive: boolean;
+	debugLog: boolean;
 	compactionModel?: { provider: string; id: string };
 	compactionMaxToolCalls?: number;
 }
@@ -16,6 +17,7 @@ export const DEFAULTS: Config = {
 	compactionThresholdTokens: 50_000,
 	reflectionThresholdTokens: 30_000,
 	passive: false,
+	debugLog: false,
 };
 
 const SETTINGS_KEY = "observational-memory";
@@ -24,6 +26,7 @@ const PASSIVE_ENV = "PI_OBSERVATIONAL_MEMORY_PASSIVE";
 function normalizeSettingsConfig(value: Partial<Config>): Partial<Config> {
 	const normalized = { ...value };
 	if ("passive" in normalized && typeof normalized.passive !== "boolean") delete normalized.passive;
+	if ("debugLog" in normalized && typeof normalized.debugLog !== "boolean") delete normalized.debugLog;
 	return normalized;
 }
 

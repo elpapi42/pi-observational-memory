@@ -1,12 +1,21 @@
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 const agentLoopMock = vi.hoisted(() => vi.fn());
+const codingAgentMock = vi.hoisted(() => ({ agentDir: "" }));
 
 vi.mock("@mariozechner/pi-agent-core", () => ({
 	agentLoop: agentLoopMock,
 }));
 
+vi.mock("@mariozechner/pi-coding-agent", () => ({
+	getAgentDir: () => codingAgentMock.agentDir,
+}));
+
 import { observationPoolTokens, migrateLegacyReflections, normalizeSupportingObservationIds, renderSummary } from "../src/compaction.js";
+import { DEBUG_LOG_RELATIVE_PATH } from "../src/debug-log.js";
 import { registerCompactionHook } from "../src/hooks/compaction-hook.js";
 import { hashId } from "../src/ids.js";
 import { observationsToPromptLines } from "../src/observer.js";
@@ -151,6 +160,9 @@ describe("compaction hook", () => {
 		const contentOnlyTokens = estimateStringTokens(shortObservation.content);
 		const renderedTokens = observationPoolTokens([shortObservation]);
 		const threshold = contentOnlyTokens + 1;
+		const debugRoot = join(tmpdir(), `om-compaction-debug-test-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+		codingAgentMock.agentDir = join(debugRoot, "agent");
+		mkdirSync(codingAgentMock.agentDir, { recursive: true });
 
 		expect(contentOnlyTokens).toBeLessThan(threshold);
 		expect(renderedTokens).toBeGreaterThan(threshold);
@@ -164,6 +176,7 @@ describe("compaction hook", () => {
 				compactionThresholdTokens: 50_000,
 				reflectionThresholdTokens: threshold,
 				passive: false,
+				debugLog: true,
 			},
 			ensureConfig: vi.fn(),
 			resolveModel: vi.fn(async () => ({ ok: true, model: {}, apiKey: "test-key" })),
@@ -212,6 +225,25 @@ describe("compaction hook", () => {
 			"record_reflections",
 			"drop_observations",
 		]);
+		const logPath = join(codingAgentMock.agentDir, DEBUG_LOG_RELATIVE_PATH);
+		const debugEvents = readFileSync(logPath, "utf-8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		expect(debugEvents.map((event) => event.event)).toEqual(expect.arrayContaining([
+			"compaction.start",
+			"compaction.reflect_prune.gate",
+			"reflector.result",
+			"pruner.agent_loop.before_call",
+			"pruner.result",
+			"compaction.pruner.result",
+			"compaction.result",
+		]));
+		expect(debugEvents.find((event) => event.event === "pruner.result")).toMatchObject({
+			cwd: "/tmp/project",
+			data: { stopReason: "zero_drops", dropped: 0 },
+		});
+		rmSync(debugRoot, { recursive: true, force: true });
 		expect(pi.appendEntry).not.toHaveBeenCalled();
 		expect(observationsToPromptLines([shortObservation]).join("\n")).toContain("[111111111111]");
 	});

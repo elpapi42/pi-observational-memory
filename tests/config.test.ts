@@ -48,19 +48,19 @@ describe("readEnvConfig", () => {
 });
 
 describe("loadConfig", () => {
-	it("defaults passive mode to false", () => {
-		expect(loadConfig(cwd, {})).toMatchObject({ passive: false });
+	it("defaults passive mode and debug logging to false", () => {
+		expect(loadConfig(cwd, {})).toMatchObject({ passive: false, debugLog: false });
 	});
 
-	it("loads passive from global and local settings with local precedence", () => {
+	it("loads passive and debugLog from global and local settings with local precedence", () => {
 		writeJson(join(mock.agentDir, "settings.json"), {
-			"observational-memory": { passive: true },
+			"observational-memory": { passive: true, debugLog: true },
 		});
 		writeJson(join(cwd, ".pi", "settings.json"), {
-			"observational-memory": { passive: false },
+			"observational-memory": { passive: false, debugLog: false },
 		});
 
-		expect(loadConfig(cwd, {})).toMatchObject({ passive: false });
+		expect(loadConfig(cwd, {})).toMatchObject({ passive: false, debugLog: false });
 	});
 
 	it("env passive overrides local settings in both directions", () => {
@@ -75,11 +75,11 @@ describe("loadConfig", () => {
 		expect(loadConfig(cwd, { PI_OBSERVATIONAL_MEMORY_PASSIVE: "false" })).toMatchObject({ passive: false });
 	});
 
-	it("ignores invalid env and non-boolean settings passive values", () => {
+	it("ignores invalid env and non-boolean settings passive/debugLog values", () => {
 		writeJson(join(cwd, ".pi", "settings.json"), {
-			"observational-memory": { passive: "false" },
+			"observational-memory": { passive: "false", debugLog: "true" },
 		});
-		expect(loadConfig(cwd, { PI_OBSERVATIONAL_MEMORY_PASSIVE: "invalid" })).toMatchObject({ passive: false });
+		expect(loadConfig(cwd, { PI_OBSERVATIONAL_MEMORY_PASSIVE: "invalid" })).toMatchObject({ passive: false, debugLog: false });
 	});
 
 	it("loads compactionMaxToolCalls from settings", () => {
