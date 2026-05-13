@@ -177,6 +177,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 
 			let finalReflections = workingReflections;
 			let finalObservations = workingObservations;
+			let diagnosticsSummary: string | null = null;
 
 			if (observationTokens >= runtime.config.reflectionThresholdTokens) {
 				if (hasUI) ui?.notify("Observational memory: running reflector + pruner...", "info");
@@ -197,12 +198,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 						runtime.config.reflectionThresholdTokens,
 					);
 					finalObservations = prunerResult.observations;
-					if (hasUI) {
-						ui?.notify(
-							`Observational memory: diagnostics — ${formatReflectorStats(reflectorResult.stats)}; coverage ${formatCoverageCounts(coverageBefore)} → ${formatCoverageCounts(coverageAfter)}; ${formatPrunerStats(prunerResult)}`,
-							"info",
-						);
-					}
+					diagnosticsSummary = `${formatReflectorStats(reflectorResult.stats)}; coverage ${formatCoverageCounts(coverageBefore)} → ${formatCoverageCounts(coverageAfter)}; ${formatPrunerStats(prunerResult)}`;
 					if (prunerResult.fellBack && hasUI) {
 						ui?.notify(
 							"Observational memory: pruner run failed; kept observation set unchanged",
@@ -228,10 +224,13 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 				reflections: finalReflections,
 			};
 
-			if (hasUI) ui?.notify(
-				`Observational memory: compaction assembled — ${finalObservations.length} observation${finalObservations.length === 1 ? "" : "s"}, ${finalReflections.length} reflection${finalReflections.length === 1 ? "" : "s"}`,
-				"info",
-			);
+			if (hasUI) {
+				const assembledMessage = `Observational memory: compaction assembled — ${finalObservations.length} observation${finalObservations.length === 1 ? "" : "s"}, ${finalReflections.length} reflection${finalReflections.length === 1 ? "" : "s"}`;
+				ui?.notify(
+					diagnosticsSummary ? `${assembledMessage}; diagnostics — ${diagnosticsSummary}` : assembledMessage,
+					"info",
+				);
+			}
 
 			return {
 				compaction: {

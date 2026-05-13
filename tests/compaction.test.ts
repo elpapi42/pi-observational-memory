@@ -204,7 +204,15 @@ describe("compaction hook", () => {
 		});
 		expect(notify).toHaveBeenCalledWith("Observational memory: running reflector + pruner...", "info");
 		const notifyMessages = notify.mock.calls.map(([message]) => String(message));
-		expect(notifyMessages.some((message) => message.includes("Observational memory: diagnostics") && message.includes("reflector") && message.includes("coverage") && message.includes("pruner") && message.includes("zero_drops"))).toBe(true);
+		expect(notifyMessages.some((message) =>
+			message.includes("Observational memory: compaction assembled") &&
+			message.includes("diagnostics") &&
+			message.includes("reflector") &&
+			message.includes("coverage") &&
+			message.includes("pruner") &&
+			message.includes("zero_drops")
+		)).toBe(true);
+		expect(notifyMessages.some((message) => message.startsWith("Observational memory: diagnostics"))).toBe(false);
 		expect(agentLoopMock).toHaveBeenCalledTimes(4);
 		expect(agentLoopMock.mock.calls.map(([, context]) => context.tools[0].name)).toEqual([
 			"record_reflections",
