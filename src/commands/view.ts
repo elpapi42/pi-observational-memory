@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { getMemoryState } from "../branch.js";
+import { observationPoolTokens as estimateObservationPoolTokens } from "../compaction.js";
 import { countByRelevance, formatRelevanceHistogram } from "../relevance.js";
 import type { Runtime } from "../runtime.js";
 import { estimateStringTokens } from "../tokens.js";
@@ -17,14 +18,15 @@ export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime): void {
 			const committedRefTokens = committedRefItems.reduce((s, r) => s + estimateStringTokens(reflectionContent(r)), 0);
 			const committedRefCount = committedRefItems.length;
 
-			const committedObsTokens = committedObs.reduce((s, r) => s + estimateStringTokens(r.content), 0);
+			const committedObsTokens = estimateObservationPoolTokens(committedObs);
 			const committedObsCount = committedObs.length;
 
-			const pendingObsTokens = pendingObs.reduce((s, r) => s + estimateStringTokens(r.content), 0);
+			const pendingObsTokens = estimateObservationPoolTokens(pendingObs);
 			const pendingObsCount = pendingObs.length;
 
 			const totalObsCount = committedObsCount + pendingObsCount;
-			const totalTokens = committedRefTokens + committedObsTokens + pendingObsTokens;
+			const totalObsTokens = estimateObservationPoolTokens([...committedObs, ...pendingObs]);
+			const totalTokens = committedRefTokens + totalObsTokens;
 			const relevanceHistogram = countByRelevance([...committedObs, ...pendingObs]);
 
 			const plural = (n: number, singular: string, plural: string) => (n === 1 ? singular : plural);

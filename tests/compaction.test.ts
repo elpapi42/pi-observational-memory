@@ -1,9 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { migrateLegacyReflections, normalizeSupportingObservationIds, renderSummary } from "../src/compaction.js";
+const agentLoopMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@mariozechner/pi-agent-core", () => ({
+	agentLoop: agentLoopMock,
+}));
+
+import { observationPoolTokens, migrateLegacyReflections, normalizeSupportingObservationIds, renderSummary } from "../src/compaction.js";
+import { registerCompactionHook } from "../src/hooks/compaction-hook.js";
 import { hashId } from "../src/ids.js";
+import { observationsToPromptLines } from "../src/observer.js";
 import { CONTEXT_USAGE_INSTRUCTIONS, REFLECTOR_SYSTEM } from "../src/prompts.js";
+import { estimateStringTokens } from "../src/tokens.js";
 import type { MemoryReflection, ObservationRecord, ReflectionRecord } from "../src/types.js";
+import { messageEntry, observationEntry } from "./fixtures/session.js";
 
 const observation: ObservationRecord = {
 	id: "abc123def456",
@@ -26,6 +36,15 @@ const migratedLegacyRecord: ReflectionRecord = {
 	supportingObservationIds: [],
 	legacy: true,
 };
+
+function emptyAgentStream() {
+	return {
+		async *[Symbol.asyncIterator]() {
+			// no model events needed for this test
+		},
+		result: async () => ({}),
+	};
+}
 
 describe("legacy reflection migration", () => {
 	it("converts eligible legacy string reflections into id-bearing legacy records", () => {
@@ -106,6 +125,93 @@ describe("reflection supporting observation normalization", () => {
 		expect(normalizeSupportingObservationIds([], allowed)).toBeUndefined();
 		expect(normalizeSupportingObservationIds(["111111111111", "not-in-pool"], allowed)).toBeUndefined();
 		expect(normalizeSupportingObservationIds(["111111111111"], [])).toBeUndefined();
+	});
+});
+
+describe("compaction hook", () => {
+	it("uses rendered observation tokens for the reflector/pruner gate", async () => {
+		agentLoopMock.mockReset();
+		agentLoopMock.mockImplementation(() => emptyAgentStream());
+
+		let handler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
+		const pi = {
+			on: vi.fn((eventName: string, cb: typeof handler) => {
+				expect(eventName).toBe("session_before_compact");
+				handler = cb;
+			}),
+			appendEntry: vi.fn(),
+		};
+		const shortObservation: ObservationRecord = {
+			id: "111111111111",
+			timestamp: "2026-05-02 10:30",
+			relevance: "medium",
+			content: "x",
+			sourceEntryIds: ["source-entry"],
+		};
+		const contentOnlyTokens = estimateStringTokens(shortObservation.content);
+		const renderedTokens = observationPoolTokens([shortObservation]);
+		const threshold = contentOnlyTokens + 1;
+
+		expect(contentOnlyTokens).toBeLessThan(threshold);
+		expect(renderedTokens).toBeGreaterThan(threshold);
+
+		const runtime = {
+			compactHookInFlight: false,
+			observerPromise: null,
+			resolveFailureNotified: false,
+			config: {
+				observationThresholdTokens: 1,
+				compactionThresholdTokens: 50_000,
+				reflectionThresholdTokens: threshold,
+				passive: false,
+			},
+			ensureConfig: vi.fn(),
+			resolveModel: vi.fn(async () => ({ ok: true, model: {}, apiKey: "test-key" })),
+		};
+		registerCompactionHook(pi as never, runtime as never);
+		if (!handler) throw new Error("session_before_compact handler was not registered");
+
+		const entries = [
+			messageEntry({ id: "source-entry", message: { role: "user", content: "source" } }),
+			observationEntry({
+				id: "observation-entry",
+				data: {
+					records: [shortObservation],
+					coversFromId: "source-entry",
+					coversUpToId: "source-entry",
+					tokenCount: contentOnlyTokens,
+				},
+			}),
+			messageEntry({ id: "kept-entry", message: { role: "user", content: "kept tail" } }),
+		];
+		const notify = vi.fn();
+		const result = await handler({
+			preparation: { firstKeptEntryId: "kept-entry", tokensBefore: 123 },
+			branchEntries: entries,
+			signal: undefined,
+		}, {
+			cwd: "/tmp/project",
+			hasUI: true,
+			ui: { notify },
+			sessionManager: { getBranch: vi.fn(() => entries) },
+		});
+
+		expect(result).toMatchObject({
+			compaction: {
+				firstKeptEntryId: "kept-entry",
+				details: { observations: [shortObservation] },
+			},
+		});
+		expect(notify).toHaveBeenCalledWith("Observational memory: running reflector + pruner...", "info");
+		expect(agentLoopMock).toHaveBeenCalledTimes(4);
+		expect(agentLoopMock.mock.calls.map(([, context]) => context.tools[0].name)).toEqual([
+			"record_reflections",
+			"record_reflections",
+			"record_reflections",
+			"drop_observations",
+		]);
+		expect(pi.appendEntry).not.toHaveBeenCalled();
+		expect(observationsToPromptLines([shortObservation]).join("\n")).toContain("[111111111111]");
 	});
 });
 

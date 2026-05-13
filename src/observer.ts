@@ -25,11 +25,13 @@ const RelevanceSchema = Type.Union([
 	Type.Literal("critical"),
 ]);
 
+export const OBSERVATION_TIMESTAMP_PATTERN = "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}$";
+
 const RecordObservationsSchema = Type.Object({
 	observations: Type.Array(
 		Type.Object({
 			timestamp: Type.String({
-				pattern: "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$",
+				pattern: OBSERVATION_TIMESTAMP_PATTERN,
 				description: "Observation time in local 'YYYY-MM-DD HH:MM' format.",
 			}),
 			content: Type.String({

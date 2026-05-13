@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { registerViewCommand } from "../src/commands/view.js";
+import { observationPoolTokens } from "../src/compaction.js";
 import type { MemoryDetailsV3, MemoryDetailsV4, ObservationRecord, ReflectionRecord } from "../src/types.js";
 import { compactionEntry, messageEntry } from "./fixtures/session.js";
 
@@ -87,6 +88,14 @@ describe("/om-view", () => {
 		expect(output).not.toContain("recallable");
 		expect(output).not.toContain("legacy: true");
 		expect(output).not.toContain("supportingObservationIds");
+	});
+
+	it("counts observation tokens from rendered observation lines", async () => {
+		const output = await runView(memoryDetailsV4());
+		const renderedObsTokens = observationPoolTokens([committedObservation]);
+
+		expect(output).toContain(`1 observation (1 committed, 0 pending) · ~`);
+		expect(output).toContain(`Observations — committed (1 observation, ~${renderedObsTokens.toLocaleString()} tokens)`);
 	});
 
 	it("keeps v3 legacy reflections plain", async () => {

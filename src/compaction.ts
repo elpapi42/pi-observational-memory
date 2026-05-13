@@ -13,8 +13,8 @@ const REFLECTOR_MAX_PASSES = 3;
 const PRUNER_MAX_PASSES = 5;
 const PRUNER_TARGET_RATIO = 0.8;
 
-function observationPoolTokens(observations: ObservationRecord[]): number {
-	return observations.reduce((sum, o) => sum + estimateStringTokens(o.content), 0);
+export function observationPoolTokens(observations: ObservationRecord[]): number {
+	return estimateStringTokens(observationsToPromptLines(observations).join("\n"));
 }
 
 interface LlmArgs {
@@ -122,13 +122,13 @@ const RecordReflectionsSchema = Type.Object({
 			supportingObservationIds: Type.Array(
 				Type.String({
 					pattern: "^[a-f0-9]{12}$",
-					description: "Exact observation id from the current-observations list that supports this reflection.",
+					description: "Exact observation id from the current-observations list whose durable meaning is captured by this reflection.",
 				}),
 				{
 					minItems: 1,
 					description:
-						"Smallest exact set of current observation ids that directly support this reflection. " +
-						"Use only ids shown in the current observations list; never invent ids.",
+						"Current observation ids whose durable meaning is captured by this reflection and can be treated as covered active-memory detail. " +
+						"Do not include observations whose unique exact detail or current task state is not captured. Use only ids shown in the current observations list; never invent ids.",
 				},
 			),
 		}),
@@ -319,8 +319,8 @@ async function runReflectorPass(
 		name: "record_reflections",
 		label: "Record reflections",
 		description:
-			"Record a batch of reflections crystallized from the observation pool. " +
-			"May be called multiple times. Stop calling when nothing more is stable enough to crystallize for this pass, " +
+			"Record a batch of reflections crystallized from the observation pool, with supporting ids for observations whose durable meaning is captured. " +
+			"May be called multiple times. Stop calling when nothing more is stable enough to crystallize or strengthen for this pass, " +
 			"then emit a short plain-text confirmation.",
 		parameters: RecordReflectionsSchema,
 		execute: async (_id, params: RecordReflectionsArgs) => {
@@ -366,7 +366,7 @@ ${joinObservationsOrEmpty(observations)}
 REFLECTOR PASS GUIDANCE:
 ${passGuidance}
 
-Crystallize long-lived reflections from the full observation pool for this pass. Call record_reflections with batches of reflection proposals, each with the exact supporting observation ids. You may call the tool multiple times as you reason through the pool. To strengthen or promote an existing reflection, repeat the exact existing reflection content with valid supporting observation ids. Do not lightly reword existing reflections. When done, stop calling the tool and emit a short plain-text confirmation.`;
+Crystallize long-lived reflections from the full observation pool for this pass. Call record_reflections with batches of reflection proposals, each with supporting observation ids whose durable meaning is captured by that reflection. You may call the tool multiple times as you reason through the pool. To strengthen or promote an existing reflection, repeat the exact existing reflection content with additional valid supporting observation ids. Do not lightly reword existing reflections. Do not attach observations whose unique exact detail or current task state is not captured with equivalent fidelity. When done, stop calling the tool and emit a short plain-text confirmation.`;
 
 	const prompts: Message[] = [
 		{
