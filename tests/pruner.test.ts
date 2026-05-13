@@ -145,11 +145,20 @@ describe("coverage-aware pruner prompts", () => {
 		expect(PRUNER_SYSTEM).toContain("[coverage: reinforced]");
 		expect(PRUNER_SYSTEM).toContain("presumptive drop candidate");
 		expect(PRUNER_SYSTEM).toContain("Coverage tags are strong signals, not blind commands");
+		expect(PRUNER_SYSTEM).toContain("Dropping an observation removes it from active compacted memory");
+		expect(PRUNER_SYSTEM).toContain("exact evidence can still be recovered later through recall of the reflection id");
+		expect(PRUNER_SYSTEM).toContain("pruning is active-memory management, not source deletion");
+		expect(PRUNER_SYSTEM).not.toContain("erased from the assistant's memory");
 		expect(PRUNER_SYSTEM).toContain("\"critical\": NEVER drop");
+		expect(PRUNER_SYSTEM).toContain("User assertions and concrete completions are never droppable");
 		expect(buildPrunerPassGuidance(1, 5)).toContain("old low/medium [coverage: cited]");
 		expect(buildPrunerPassGuidance(2, 5)).toContain("old [coverage: reinforced] low/medium observations as default drops");
 		expect(buildPrunerPassGuidance(3, 5)).toContain("Drop old [coverage: cited] or [coverage: reinforced] \"high\" observations");
 		expect(buildPrunerPassGuidance(3, 5)).toContain("[coverage: uncited]");
+		expect(buildPrunerPassGuidance(4, 5)).toContain("budget-pressure reflection-backed compression");
+		expect(buildPrunerPassGuidance(4, 5)).toContain("active-memory redundancies by default");
+		expect(buildPrunerPassGuidance(5, 5)).toContain("final budget rescue");
+		expect(buildPrunerPassGuidance(5, 5)).toContain("Do not fabricate drops solely to hit the target");
 	});
 
 	it("passes coverage-tagged observations to the pruner loop", async () => {

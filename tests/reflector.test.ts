@@ -82,17 +82,23 @@ describe("reflector pass guidance", () => {
 	it("describes the three specialized reflector passes", () => {
 		expect(buildReflectorPassGuidance(1, 3)).toContain("multi-observation synthesis");
 		expect(buildReflectorPassGuidance(1, 3)).toContain("at least 2 distinct supportingObservationIds");
-		expect(buildReflectorPassGuidance(2, 3)).toContain("atomic durable facts");
+		expect(buildReflectorPassGuidance(2, 3)).toContain("atomic durable facts + safety review");
 		expect(buildReflectorPassGuidance(2, 3)).toContain("single authoritative observation");
-		expect(buildReflectorPassGuidance(3, 3)).toContain("final safety review");
-		expect(buildReflectorPassGuidance(3, 3)).toContain("durable information still missing");
+		expect(buildReflectorPassGuidance(2, 3)).toContain("Review high and critical observations");
+		expect(buildReflectorPassGuidance(3, 3)).toContain("coverage strengthening");
+		expect(buildReflectorPassGuidance(3, 3)).toContain("additional supportingObservationIds");
+		expect(buildReflectorPassGuidance(3, 3)).toContain("Do not create low-quality reflections just for coverage");
 	});
 
-	it("teaches the reflector merge and promotion contracts", () => {
+	it("teaches the reflector merge, promotion, and coverage contracts", () => {
 		expect(REFLECTOR_SYSTEM).toContain("exact same reflection content with additional supportingObservationIds");
 		expect(REFLECTOR_SYSTEM).toContain("promote a legacy/no-provenance reflection");
 		expect(REFLECTOR_SYSTEM).toContain("omit any bracketed id handle");
 		expect(REFLECTOR_SYSTEM).toContain("Rewording creates a separate reflection");
+		expect(REFLECTOR_SYSTEM).toContain("durable meaning is captured by the reflection");
+		expect(REFLECTOR_SYSTEM).toContain("coverage/provenance set, not merely the smallest proof example set");
+		expect(REFLECTOR_SYSTEM).toContain("Do not include observations whose unique exact detail");
+		expect(REFLECTOR_SYSTEM).not.toContain("smallest exact set of current observation ids");
 		expect(REFLECTOR_SYSTEM).not.toContain("metadata after \" · \"");
 	});
 });
@@ -210,7 +216,12 @@ describe("runReflector multi-pass orchestration", () => {
 		const loop = fakeAgentLoop(async (prompts, context) => {
 			const text = promptText(prompts);
 			const tool = context.tools[0];
+			const toolSchemaText = JSON.stringify(tool.parameters);
 			calls.push(text);
+
+			expect(toolSchemaText).toContain("durable meaning is captured by this reflection");
+			expect(toolSchemaText).toContain("covered active-memory detail");
+			expect(toolSchemaText).not.toContain("Smallest exact set");
 
 			if (calls.length === 1) {
 				expect(text).toContain("Pass 1 of up to 3");
@@ -222,7 +233,7 @@ describe("runReflector multi-pass orchestration", () => {
 			}
 			if (calls.length === 2) {
 				expect(text).toContain("Pass 2 of up to 3");
-				expect(text).toContain("atomic durable facts");
+				expect(text).toContain("atomic durable facts + safety review");
 				expect(text).toContain(`[${hashId("User consistently prefers fork-based investigation.")}] User consistently prefers fork-based investigation.`);
 				expect(text).not.toContain("supports:");
 				await tool.execute("pass-2", {
@@ -231,8 +242,11 @@ describe("runReflector multi-pass orchestration", () => {
 				return;
 			}
 			expect(text).toContain("Pass 3 of up to 3");
-			expect(text).toContain("final safety review");
+			expect(text).toContain("coverage strengthening");
 			expect(text).toContain("User decided multi-pass reflection should precede pruning tags.");
+			await tool.execute("pass-3", {
+				reflections: [{ content: "User consistently prefers fork-based investigation.", supportingObservationIds: [obsC.id, obsA.id] }],
+			});
 		});
 
 		const result = await runReflector({ model: {} as any, apiKey: "test", agentLoop: loop }, [], observations);
@@ -242,7 +256,7 @@ describe("runReflector multi-pass orchestration", () => {
 			{
 				id: hashId("User consistently prefers fork-based investigation."),
 				content: "User consistently prefers fork-based investigation.",
-				supportingObservationIds: [obsA.id, obsB.id],
+				supportingObservationIds: [obsA.id, obsB.id, obsC.id],
 			},
 			{
 				id: hashId("User decided multi-pass reflection should precede pruning tags."),

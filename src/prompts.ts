@@ -150,7 +150,7 @@ You receive:
 
 How you work:
 1. Read current reflections and observations to understand what is already crystallized and what new signal exists in the pool.
-2. Identify new stable patterns worth crystallizing and call record_reflections with a batch of one or more new reflection proposals. Each proposal must include the reflection content and the exact supporting observation ids.
+2. Identify stable patterns or durable facts worth crystallizing and call record_reflections with a batch of one or more reflection proposals. Each proposal must include the reflection content and supporting observation ids for observations whose durable meaning is captured by that reflection.
 3. Read the receipt. If more reflections are warranted, call record_reflections again with another batch. You may call the tool many times.
 4. When nothing more is stable enough to crystallize, STOP calling the tool and reply with a brief plain-text confirmation (one short sentence). That ends the run.
 
@@ -160,9 +160,10 @@ What to emit:
 - To promote a legacy/no-provenance reflection, emit the exact same reflection content with valid supportingObservationIds; the system will replace it with a provenance-backed reflection.
 - When repeating exact existing content, emit only the reflection prose; omit any bracketed id handle.
 - Do not lightly reword existing reflections. Rewording creates a separate reflection, so only use different wording when the durable meaning is materially different, more specific, or corrects/refines the existing reflection.
-- For every reflection proposal, include supportingObservationIds: the smallest exact set of current observation ids that directly support the reflection.
+- For every reflection proposal, include supportingObservationIds for current observations whose durable meaning is captured by the reflection and can be treated as redundant active-memory detail. This is a coverage/provenance set, not merely the smallest proof example set.
+- Include additional current observation ids when the reflection preserves their durable meaning with equivalent fidelity. Do not include observations whose unique exact detail, current task state, user correction, user constraint, or concrete completion is not captured by the reflection.
 - Never invent supporting observation ids. Use only ids printed in the current observations list. Reflection proposals with missing, empty, or invalid supportingObservationIds will be rejected and not recorded.
-- Crystallize preferentially from "high" and "critical" observations; ignore "low" unless a pattern across many "low" observations is itself significant.
+- Crystallize preferentially from "high" and "critical" observations, then old "medium" observations whose durable meaning can be covered; ignore "low" unless a pattern across many "low" observations is itself significant.
 - Focus on:
   - User identity, role, preferences, constraints.
   - Project goals, architectural decisions, key technical decisions and their rationale.
@@ -210,6 +211,8 @@ Coverage tags are pruning signals derived from current provenance-backed reflect
 - [coverage: uncited] means no current provenance-backed reflection cites this observation. Prune cautiously, especially for medium/high/critical observations, because durable meaning may not be captured elsewhere.
 - [coverage: cited] means 1-3 current provenance-backed reflections cite this observation. Once it is old, it is a strong pruning candidate for low/medium observations when the reflection preserves equivalent meaning. Old high observations can also be dropped when the reflection captures the same fact, unless they carry current task state or exact details not captured with equivalent fidelity.
 - [coverage: reinforced] means 4 or more current provenance-backed reflections cite this observation. Once it is old, it is a presumptive drop candidate because durable meaning is likely represented. Still preserve it if it carries current/recent task state, exact errors, file paths, commands, identifiers, user assertions, constraints, corrections, concrete completions, or nuance not captured with equivalent fidelity.
+
+Active-memory framing. Dropping an observation removes it from active compacted memory; it does not necessarily erase all evidence. When an observation is [coverage: cited] or [coverage: reinforced], a current source-backed reflection preserves a provenance path to that observation and its raw sources, so exact evidence can still be recovered later through recall of the reflection id. Use that provenance as permission to prune old redundant active-memory detail. However, uncited observations, unique current task state, and protected details not captured by a reflection with equivalent fidelity may become effectively unavailable in the compacted summary, so preserve them.
 
 How you work:
 1. Read reflections and the observation pool.
@@ -261,16 +264,16 @@ What you CANNOT do:
 - You cannot rewrite or edit observations. The kept set preserves content, timestamp, and relevance exactly as they were.
 - You cannot add new observations.
 
-It is valid to end a pass with zero drops if the pool genuinely has nothing more to cut — a follow-up pass will be skipped when a run returns zero drops. Do not force drops you don't believe in.
+It is valid to end a pass with zero drops if the pool genuinely has nothing more to cut — a follow-up pass will be skipped when a run returns zero drops. On late pressure passes, first re-check old [coverage: reinforced] and [coverage: cited] observations as active-memory redundancies before deciding there are no sound drops. Do not force drops you don't believe in.
 
-Remember: every observation you drop is erased from the assistant's memory. A drop that looks reasonable at "low" becomes a mistake if the content was a user correction with a mis-labeled relevance. Read before you cut.`;
+Remember: pruning is active-memory management, not source deletion. A drop that looks reasonable at "low" still becomes a mistake if the content was a user correction with a mis-labeled relevance and no reflection captures it with equivalent fidelity. Read before you cut.`;
 
 type ReflectorPassTier = 1 | 2 | 3;
 
 const REFLECTOR_PASS_STRATEGIES: Record<ReflectorPassTier, string> = {
-	1: `Pass strategy — multi-observation synthesis. Find broad durable patterns, repeated preferences, recurring constraints, stable work style, and project-level themes supported by multiple observations. Every reflection recorded in this pass must cite at least 2 distinct supportingObservationIds. Do not create one-off event summaries; leave important single-observation facts for the atomic durable facts pass. If an existing reflection already captures the pattern, repeat the exact same content only when adding support ids materially strengthens it.`,
-	2: `Pass strategy — atomic durable facts. Capture important durable facts that may be supported by a single authoritative observation: explicit user preferences, hard constraints, corrections, decisions, completed milestones, project facts, release or rollback caveats, and other load-bearing facts future agents must not forget. Do not duplicate reflections created in earlier passes; repeat exact existing content only to add missing support or promote no-provenance legacy memory.`,
-	3: `Pass strategy — final safety review. Review the full observation pool against the current reflections, including reflections created in earlier passes, and catch durable information still missing. Look especially for high or critical observations, explicit user assertions, corrections, constraints, decisions, completed work, and important technical context. Do not create reflections just to increase coverage; only record a reflection if the durable meaning is not already captured with sufficient fidelity.`,
+	1: `Pass strategy — multi-observation synthesis. Find broad durable patterns, repeated preferences, recurring constraints, stable work style, and project-level themes supported by multiple observations. Every reflection recorded in this pass must cite at least 2 distinct supportingObservationIds whose durable meaning is captured by the reflection. Do not create one-off event summaries; leave important single-observation facts for the atomic durable facts and safety-review pass. If an existing reflection already captures the pattern, repeat the exact same content when adding support ids materially improves active-memory coverage.`,
+	2: `Pass strategy — atomic durable facts + safety review. Capture important durable facts that may be supported by a single authoritative observation: explicit user preferences, hard constraints, corrections, decisions, completed milestones, project facts, release or rollback caveats, important technical context, and other load-bearing facts future agents must not forget. Review high and critical observations against current reflections, including reflections created in pass 1, and catch durable information still missing. Do not duplicate earlier reflections; repeat exact existing content only to add missing support or promote no-provenance legacy memory.`,
+	3: `Pass strategy — coverage strengthening. Prefer strengthening existing or newly-created reflections by repeating exact reflection content with additional supportingObservationIds for high, critical, and old medium observations whose durable meaning is already captured by that reflection. Create new reflections only when this coverage review reveals durable meaning still missing. Do not create low-quality reflections just for coverage, and do not attach observations whose unique exact detail or current task state is not captured with equivalent fidelity.`,
 };
 
 export function buildReflectorPassGuidance(pass: number, maxPasses: number): string {
@@ -278,16 +281,18 @@ export function buildReflectorPassGuidance(pass: number, maxPasses: number): str
 	return `Pass ${pass} of up to ${maxPasses}. ${REFLECTOR_PASS_STRATEGIES[tier]}`;
 }
 
-type PrunerPassTier = 1 | 2 | 3;
+type PrunerPassTier = 1 | 2 | 3 | 4 | 5;
 
 const PRUNER_PASS_STRATEGIES: Record<PrunerPassTier, string> = {
 	1: `Pass strategy — clear-cut drops only. Prefer old low-value [coverage: reinforced] observations, then old low/medium [coverage: cited] observations, when their durable meaning is represented by current reflections. Also remove exact duplicates, near-duplicates (keep the higher-relevance or more recent version), observations directly superseded by a newer one, and routine "low" tool-call acks. Do not touch ambiguous [coverage: uncited] cases on this pass — a follow-up pass will handle them if still needed.`,
 	2: `Pass strategy — topic compression. Drop "low" observations that cover the same territory as recent "medium" or "high" observations, especially when tagged [coverage: cited] or [coverage: reinforced]. Treat old [coverage: reinforced] low/medium observations as default drops unless protected exact details are unique to them. Drop older [coverage: cited] "medium" observations whose substance is now covered by a reflection. Collapse sequences of repeated tool-call observations by keeping the one that captures the learning and dropping the rest.`,
 	3: `Pass strategy — aggressive age compression. In the older half of the pool, drop all but the outcome-bearing "low" and "medium" observations, strongly preferring [coverage: reinforced] and [coverage: cited] over [coverage: uncited]. Keep the most recent ~30% of the pool at higher detail. Drop old [coverage: cited] or [coverage: reinforced] "high" observations when a reflection captures the same durable fact and the observation has no unique protected exact detail. NEVER drop "critical" items, user assertions, or concrete completions regardless of age.`,
+	4: `Pass strategy — budget-pressure reflection-backed compression. Earlier passes did not cut enough, so treat old [coverage: reinforced] observations as active-memory redundancies by default when current source-backed reflections preserve their durable meaning. Drop reinforced low/medium/high observations unless they uniquely carry current task state or protected exact detail not captured with equivalent fidelity. Prefer these source-backed drops over any [coverage: uncited] drop. Keep "critical" items, user assertions, and concrete completions protected.`,
+	5: `Pass strategy — final budget rescue. Make the strongest sound cuts available before stopping: drop old [coverage: reinforced] and [coverage: cited] observations from resolved or historical work when current reflections preserve the durable fact and the remaining detail is not current task state, an explicit user correction or constraint, a user assertion, a concrete completion, or a unique exact error/path/command/id needed for active work. Prefer a source-backed drop over an uncited drop. Do not fabricate drops solely to hit the target.`,
 };
 
 export function buildPrunerPassGuidance(pass: number, maxPasses: number): string {
-	const tier = (Math.min(3, Math.max(1, pass)) as PrunerPassTier);
+	const tier = (Math.min(5, Math.max(1, pass)) as PrunerPassTier);
 	return `Pass ${pass} of up to ${maxPasses}. ${PRUNER_PASS_STRATEGIES[tier]}`;
 }
 
