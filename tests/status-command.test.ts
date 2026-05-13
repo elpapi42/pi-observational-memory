@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { registerStatusCommand } from "../src/commands/status.js";
+import { observationPoolTokens } from "../src/compaction.js";
 import type { MemoryDetailsV4, ObservationRecord, ReflectionRecord } from "../src/types.js";
 import { compactionEntry, messageEntry } from "./fixtures/session.js";
 
@@ -83,5 +84,13 @@ describe("/om-status", () => {
 		expect(output).not.toContain("NaN");
 		expect(output).not.toContain("legacy");
 		expect(output).not.toContain("supportingObservationIds");
+	});
+
+	it("counts observation tokens from rendered observation lines", async () => {
+		const output = await runStatus(memoryDetailsV4());
+		const renderedObsTokens = observationPoolTokens([committedObservation]);
+
+		expect(output).toContain(`committed    ~${renderedObsTokens.toLocaleString()} tokens (1 observation)`);
+		expect(output).toContain(`Next reflection:  ~${renderedObsTokens.toLocaleString()} / 30,000 tokens`);
 	});
 });

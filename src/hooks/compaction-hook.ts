@@ -5,7 +5,7 @@ import {
 	gapRawEntries,
 	getMemoryState,
 } from "../branch.js";
-import { migrateLegacyReflections, renderSummary, runPruner, runReflector } from "../compaction.js";
+import { migrateLegacyReflections, observationPoolTokens, renderSummary, runPruner, runReflector } from "../compaction.js";
 import { observationsToPromptLines, runObserver } from "../observer.js";
 import type { Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
@@ -141,7 +141,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 				...deltaObservationData.flatMap((d) => d.records),
 			];
 
-			const observationTokens = workingObservations.reduce((sum, o) => sum + estimateStringTokens(o.content), 0);
+			const observationTokens = observationPoolTokens(workingObservations);
 
 			let finalReflections = workingReflections;
 			let finalObservations = workingObservations;

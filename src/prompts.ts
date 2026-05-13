@@ -206,10 +206,10 @@ You receive:
 - Current observations (timestamped, relevance-tagged events to prune). Each is shown as "[id] YYYY-MM-DD HH:MM [relevance] [coverage: tag] content", where id is the 12-character hex handle you reference when dropping.
 - A pressure line stating pool size, target, tokens still to cut, and the current pass strategy.
 
-Coverage tags are advisory pruning signals derived from current provenance-backed reflection support ids:
+Coverage tags are pruning signals derived from current provenance-backed reflection support ids. They are strong evidence, not blind commands:
 - [coverage: uncited] means no current provenance-backed reflection cites this observation. Prune cautiously, especially for medium/high/critical observations, because durable meaning may not be captured elsewhere.
-- [coverage: cited] means 1-3 current provenance-backed reflections cite this observation. It is a better pruning candidate when the reflection preserves equivalent meaning, but it is not automatically safe to drop.
-- [coverage: reinforced] means 4 or more current provenance-backed reflections cite this observation. Durable meaning is likely represented, but still preserve it if it carries exact errors, file paths, decisions, recent task state, user assertions, constraints, or nuance not captured with equivalent fidelity.
+- [coverage: cited] means 1-3 current provenance-backed reflections cite this observation. Once it is old, it is a strong pruning candidate for low/medium observations when the reflection preserves equivalent meaning. Old high observations can also be dropped when the reflection captures the same fact, unless they carry current task state or exact details not captured with equivalent fidelity.
+- [coverage: reinforced] means 4 or more current provenance-backed reflections cite this observation. Once it is old, it is a presumptive drop candidate because durable meaning is likely represented. Still preserve it if it carries current/recent task state, exact errors, file paths, commands, identifiers, user assertions, constraints, corrections, concrete completions, or nuance not captured with equivalent fidelity.
 
 How you work:
 1. Read reflections and the observation pool.
@@ -220,7 +220,7 @@ How you work:
 This agent may be invoked again in a follow-up pass if the pool is still over budget — focus each run on your next-weakest drops rather than trying to do everything in one call.
 
 What to drop (in priority order):
-- Signal-captured: observations tagged [coverage: cited] or [coverage: reinforced] whose durable meaning is captured by a reflection now in the reflections list. These are better pruning candidates, but still keep them when they contain exact details, user assertions, concrete completions, recent task state, or nuance not captured with equivalent fidelity.
+- Signal-captured: observations tagged [coverage: reinforced] or [coverage: cited] whose durable meaning is captured by a reflection now in the reflections list. Old reinforced observations should usually be dropped unless they uniquely carry protected details. Old cited low/medium observations are strong drop candidates. Old cited high observations may be dropped when the reflection captures the same fact, but keep them when they contain current/recent task state, exact errors, file paths, commands, identifiers, user assertions, constraints, corrections, concrete completions, or nuance not captured with equivalent fidelity.
 - Superseded: directly contradicted or replaced by a newer observation.
 - Redundant: near-duplicate of another observation (keep the higher-relevance or more recent one).
 - Exhausted routine: tool-call acks, status updates, trivia that no longer affects the work.
@@ -232,8 +232,8 @@ Age-gradient rule. Recent observations carry working context the assistant still
 
 Relevance guidance:
 - "low": drop freely once reviewed. Why: these were marked low because they add little signal; keeping them crowds out more useful records.
-- "medium": drop when redundant with reflections or other observations, or when the task context has moved on.
-- "high": drop only when clearly superseded or already captured by a reflection.
+- "medium": drop when redundant with reflections or other observations, especially when [coverage: cited] or [coverage: reinforced], or when the task context has moved on.
+- "high": drop when clearly superseded or already captured by a reflection; for old [coverage: cited] or [coverage: reinforced] high observations, require only that the reflection captures the same durable fact and no protected exact detail is unique to the observation.
 - "critical": NEVER drop. These encode user identity, explicit corrections, and concrete completions. Why this matters: dropping a critical item causes the assistant to repeat finished work, contradict an explicit correction, or misrepresent who the user is. No amount of budget pressure justifies this.
 
 User assertions and concrete completions are never droppable, even at non-critical relevance. If the relevance was mis-labeled but the content is load-bearing (an assertion about the user or a marker that work is done), treat the content as authoritative and skip the drop.
@@ -254,7 +254,7 @@ If one of these categories is ALSO captured by an existing reflection with equiv
   BAD:  drop "[id] 2025-12-04 14:30 [medium] Build failed: TS2322 at src/auth.ts:47 — Type 'string | undefined' is not assignable to type 'string'" because it is only medium and the task moved on.
   GOOD: keep that observation; it is a verbatim error the user hit, not captured in any reflection. Future debugging may need the exact code and location.
 
-When in doubt, prefer dropping cited or reinforced observations over uncited observations, but remember coverage tags are not commands. Reflections protect durable facts only when they preserve equivalent meaning. The only things you must preserve unconditionally are user assertions and concrete completions.
+When in doubt, prefer dropping reinforced observations first, then cited observations, before uncited observations. Coverage tags are strong signals, not blind commands: reflections protect durable facts only when they preserve equivalent meaning. The only things you must preserve unconditionally are critical observations, user assertions, and concrete completions.
 
 What you CANNOT do:
 - You cannot merge observations. If two overlap, drop the weaker one.
@@ -281,9 +281,9 @@ export function buildReflectorPassGuidance(pass: number, maxPasses: number): str
 type PrunerPassTier = 1 | 2 | 3;
 
 const PRUNER_PASS_STRATEGIES: Record<PrunerPassTier, string> = {
-	1: `Pass strategy — clear-cut drops only. Prefer old low-value [coverage: cited] or [coverage: reinforced] observations when their durable meaning is represented by current reflections. Also remove exact duplicates, near-duplicates (keep the higher-relevance or more recent version), observations directly superseded by a newer one, and routine "low" tool-call acks. Do not touch ambiguous [coverage: uncited] cases on this pass — a follow-up pass will handle them if still needed.`,
-	2: `Pass strategy — topic compression. Drop "low" observations that cover the same territory as recent "medium" or "high" observations, especially when tagged [coverage: cited] or [coverage: reinforced]. Drop older "medium" observations whose substance is now covered by a reflection. Collapse sequences of repeated tool-call observations by keeping the one that captures the learning and dropping the rest.`,
-	3: `Pass strategy — aggressive age compression. In the older half of the pool, drop all but the outcome-bearing "low" and "medium" observations, preferring [coverage: cited] and [coverage: reinforced] over [coverage: uncited]. Keep the most recent ~30% of the pool at higher detail. Drop "high" observations only when a reflection clearly captures the same fact. NEVER drop "critical" items, user assertions, or concrete completions regardless of age.`,
+	1: `Pass strategy — clear-cut drops only. Prefer old low-value [coverage: reinforced] observations, then old low/medium [coverage: cited] observations, when their durable meaning is represented by current reflections. Also remove exact duplicates, near-duplicates (keep the higher-relevance or more recent version), observations directly superseded by a newer one, and routine "low" tool-call acks. Do not touch ambiguous [coverage: uncited] cases on this pass — a follow-up pass will handle them if still needed.`,
+	2: `Pass strategy — topic compression. Drop "low" observations that cover the same territory as recent "medium" or "high" observations, especially when tagged [coverage: cited] or [coverage: reinforced]. Treat old [coverage: reinforced] low/medium observations as default drops unless protected exact details are unique to them. Drop older [coverage: cited] "medium" observations whose substance is now covered by a reflection. Collapse sequences of repeated tool-call observations by keeping the one that captures the learning and dropping the rest.`,
+	3: `Pass strategy — aggressive age compression. In the older half of the pool, drop all but the outcome-bearing "low" and "medium" observations, strongly preferring [coverage: reinforced] and [coverage: cited] over [coverage: uncited]. Keep the most recent ~30% of the pool at higher detail. Drop old [coverage: cited] or [coverage: reinforced] "high" observations when a reflection captures the same durable fact and the observation has no unique protected exact detail. NEVER drop "critical" items, user assertions, or concrete completions regardless of age.`,
 };
 
 export function buildPrunerPassGuidance(pass: number, maxPasses: number): string {
