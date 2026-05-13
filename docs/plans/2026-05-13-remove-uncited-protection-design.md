@@ -35,6 +35,17 @@ The pruner's multi-pass loop has three exit conditions:
 
 - Replace the test `"excludes uncited observations from the pruner pool when maxToolCalls is set"` with a test confirming all observations (including uncited) are always passed to the pruner regardless of `maxToolCalls`
 
+### `README.md`
+
+- Change example `compactionMaxToolCalls` from `8` to `32`
+- Update the settings table: remove "also protects uncited observations from pruning" from the description
+
+### `docs/configuration.md`
+
+- Change example `compactionMaxToolCalls` from `8` to `32`
+- Rewrite the `compactionMaxToolCalls` section to remove the uncited protection description (point 2 of the current docs)
+- Update the intro paragraph that mentions uncited protection
+
 ## What Stays Unchanged
 
 - `consecutiveEmptyCalls` and `compactionMaxToolCalls` logic within each pass
