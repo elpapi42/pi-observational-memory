@@ -11,7 +11,14 @@ import type { MemoryReflection, ObservationRecord, ReflectionRecord } from "./ty
 
 const REFLECTOR_MAX_PASSES = 3;
 const PRUNER_MAX_PASSES = 5;
-const PRUNER_TARGET_RATIO = 0.8;
+export const PRUNER_TARGET_RATIO = 0.8;
+
+const RELEVANCE_DROP_ORDER: Record<ObservationRecord["relevance"], number> = {
+	low: 0,
+	medium: 1,
+	high: 2,
+	critical: 3,
+};
 
 export function observationPoolTokens(observations: ObservationRecord[]): number {
 	// Use the rendered observation lines, not only bare content. The compaction
@@ -19,6 +26,34 @@ export function observationPoolTokens(observations: ObservationRecord[]): number
 	// short observations can otherwise look cheap enough to skip pruning while the
 	// actual summary grows large enough to keep the actor near the context limit.
 	return estimateStringTokens(observationsToPromptLines(observations).join("\n"));
+}
+
+export function pruneObservationsDeterministically(
+	observations: ObservationRecord[],
+	budgetTokens: number,
+): { observations: ObservationRecord[]; droppedIds: string[] } {
+	if (observations.length === 0 || observationPoolTokens(observations) <= budgetTokens) {
+		return { observations, droppedIds: [] };
+	}
+
+	const dropped = new Set<string>();
+	const candidates = observations
+		.filter((o) => o.relevance !== "critical")
+		.map((observation, index) => ({ observation, index }))
+		.sort((a, b) => {
+			const relevanceDelta = RELEVANCE_DROP_ORDER[a.observation.relevance] - RELEVANCE_DROP_ORDER[b.observation.relevance];
+			if (relevanceDelta !== 0) return relevanceDelta;
+			return a.index - b.index;
+		});
+
+	let kept = observations;
+	for (const { observation } of candidates) {
+		dropped.add(observation.id);
+		kept = observations.filter((o) => !dropped.has(o.id));
+		if (observationPoolTokens(kept) <= budgetTokens) break;
+	}
+
+	return { observations: kept, droppedIds: Array.from(dropped) };
 }
 
 interface LlmArgs {

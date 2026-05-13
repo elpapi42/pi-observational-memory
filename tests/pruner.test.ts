@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	deriveObservationCoverageTags,
 	observationPoolTokens,
+	pruneObservationsDeterministically,
 	renderObservationsForPrunerPrompt,
 	renderSummary,
 	runPruner,
@@ -111,6 +112,17 @@ describe("observation coverage tags", () => {
 		const contentOnlyTokens = Math.ceil(observations.reduce((sum, obs) => sum + obs.content.length, 0) / 4);
 
 		expect(observationPoolTokens(observations)).toBeGreaterThan(contentOnlyTokens);
+	});
+
+	it("deterministically drops low and older non-critical observations to meet an emergency budget", () => {
+		const critical: ObservationRecord = { ...obsA, id: "444444444444", relevance: "critical" };
+		const oversized = [critical, obsA, obsB, obsC];
+		const keepCriticalOnlyBudget = observationPoolTokens([critical]);
+
+		const result = pruneObservationsDeterministically(oversized, keepCriticalOnlyBudget);
+
+		expect(result.observations).toEqual([critical]);
+		expect(result.droppedIds).toEqual([obsC.id, obsB.id, obsA.id]);
 	});
 
 	it("renders coverage tags only in pruner observation prompts", () => {
