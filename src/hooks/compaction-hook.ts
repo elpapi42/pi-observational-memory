@@ -231,7 +231,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 
 			if (observationTokens >= runtime.config.reflectionThresholdTokens) {
 				try {
-					if (hasUI) ui?.notify("Observational memory: running reflector (up to 3 passes)...", "info");
+					if (hasUI) ui?.notify("Observational memory: running reflector + pruner...", "info");
 					progress.setPhase("reflector", 1, 3);
 					progress.setStartingCounts(workingReflections.length, workingObservations.length);
 					updateWidget();
@@ -245,8 +245,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 					finalReflections = reflectorResult.reflections;
 					const coverageAfter = coverageTagCounts(finalReflections, workingObservations);
 
-					if (hasUI) ui?.notify("Observational memory: running pruner (up to 5 passes)...", "info");
-					const prunerResult = await runPruner(
+						const prunerResult = await runPruner(
 						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); }, maxToolCalls: runtime.config.compactionMaxToolCalls },
 						finalReflections,
 						workingObservations,

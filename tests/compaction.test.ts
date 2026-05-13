@@ -192,7 +192,7 @@ describe("compaction hook", () => {
 		}, {
 			cwd: "/tmp/project",
 			hasUI: true,
-			ui: { notify },
+			ui: { notify, setWidget: vi.fn() },
 			sessionManager: { getBranch: vi.fn(() => entries) },
 		});
 
@@ -275,14 +275,25 @@ describe("compaction hook", () => {
 		}, {
 			cwd: "/tmp/project",
 			hasUI: true,
-			ui: { notify },
+			ui: { notify, setWidget: vi.fn() },
 			sessionManager: { getBranch: vi.fn(() => entries) },
 		});
 
-		expect(result).toEqual({ cancel: true });
+		expect(result).toMatchObject({
+			compaction: {
+				firstKeptEntryId: "tail-entry",
+				tokensBefore: 123,
+				details: {
+					type: "observational-memory",
+					version: 4,
+					observations: [observation],
+					reflections: [expect.objectContaining({ content: reflectionRecord.content })],
+				},
+			},
+		});
 		expect(agentLoopMock).not.toHaveBeenCalled();
 		const notifyMessages = notify.mock.calls.map(([message]) => String(message));
-		expect(notifyMessages.some((message) => message.includes("nothing to compact yet") && message.includes("1 committed observation") && message.includes("0 pending observations") && message.includes("no eligible delta"))).toBe(true);
+		expect(notifyMessages.some((message) => message.includes("no new observations") && message.includes("carrying forward"))).toBe(true);
 	});
 });
 

@@ -389,7 +389,7 @@ describe("runReflector multi-pass orchestration", () => {
 
 		// With fake loop, all calls run; the real agentLoop would stop at 2.
 		// We just verify the function accepts maxToolCalls without error.
-		expect(result.length).toBeGreaterThan(0);
+		expect(result.reflections.length).toBeGreaterThan(0);
 	});
 
 	it("stops reflector pass early on consecutive empty calls", async () => {
@@ -418,6 +418,6 @@ describe("runReflector multi-pass orchestration", () => {
 		// All 3 calls produce 0 accepted (invalid ids), but fake loop doesn't stop.
 		// The real agentLoop would stop after 2 consecutive empty calls.
 		// Just verify the function completes without error.
-		expect(result.length).toBe(0);
+		expect(result.reflections.length).toBe(0);
 	});
 });

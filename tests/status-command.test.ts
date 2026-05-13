@@ -91,6 +91,6 @@ describe("/om-status", () => {
 		const renderedObsTokens = observationPoolTokens([committedObservation]);
 
 		expect(output).toContain(`committed    ~${renderedObsTokens.toLocaleString()} tokens (1 observation)`);
-		expect(output).toContain(`Next reflection:  ~${renderedObsTokens.toLocaleString()} / 30,000 tokens`);
+		expect(output).toContain(`Next reflection:  ~${renderedObsTokens.toLocaleString()} / ${(30000).toLocaleString()} tokens`);
 	});
 });
