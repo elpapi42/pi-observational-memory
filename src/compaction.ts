@@ -1,6 +1,6 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@mariozechner/pi-agent-core";
 import { Type, type Message, type Model } from "@mariozechner/pi-ai";
-import type { Static } from "@sinclair/typebox";
+import type { Static } from "typebox";
 import { hashId } from "./ids.js";
 import { observationsToPromptLines } from "./observer.js";
 import { buildPrunerPassGuidance, buildReflectorPassGuidance, CONTEXT_USAGE_INSTRUCTIONS, PRUNER_SYSTEM, REFLECTOR_SYSTEM } from "./prompts.js";
@@ -23,6 +23,8 @@ interface LlmArgs {
 	headers?: Record<string, string>;
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
+	onEvent?: (event: import("@mariozechner/pi-agent-core").AgentEvent) => void;
+	maxToolCalls?: number;
 }
 
 function joinReflectionsOrEmpty(items: MemoryReflection[]): string {
@@ -406,6 +408,7 @@ async function runReflectorPass(
 	const allowedObservationIds = observations.map((o) => o.id);
 	let currentReflections = reflections;
 	const stats = emptyReflectorPassStats(passContext.pass);
+	let consecutiveEmptyCalls = 0;
 
 	const recordTool: AgentTool<typeof RecordReflectionsSchema> = {
 		name: "record_reflections",
@@ -424,6 +427,11 @@ async function runReflectorPass(
 			);
 			currentReflections = result.reflections;
 			addReflectionProposalStats(stats, result);
+			if (result.accepted === 0) {
+				consecutiveEmptyCalls++;
+			} else {
+				consecutiveEmptyCalls = 0;
+			}
 			const parts: string[] = [];
 			parts.push(`Accepted ${result.accepted} reflection proposal${result.accepted === 1 ? "" : "s"}.`);
 			if (result.added) parts.push(`${result.added} new.`);
@@ -470,6 +478,9 @@ Crystallize long-lived reflections from the full observation pool for this pass.
 	};
 
 	const reasoning = (args.model as { reasoning?: unknown }).reasoning;
+	const effectiveMaxToolCalls = args.maxToolCalls && args.maxToolCalls > 0 ? args.maxToolCalls : undefined;
+	let turnCount = 0;
+
 	const config: AgentLoopConfig = {
 		model: args.model as any,
 		apiKey: args.apiKey,
@@ -478,13 +489,19 @@ Crystallize long-lived reflections from the full observation pool for this pass.
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
 		...(reasoning ? { reasoning: "high" as const } : {}),
+		shouldStopAfterTurn: () => {
+			turnCount++;
+			if (effectiveMaxToolCalls !== undefined && turnCount >= effectiveMaxToolCalls) return true;
+			if (consecutiveEmptyCalls >= 2) return true;
+			return false;
+		},
 	};
 
 	try {
 		const loop = args.agentLoop ?? agentLoop;
 		const stream = loop(prompts, context, config, args.signal);
-		for await (const _event of stream) {
-			// Drain events; the tool's execute already updates reflections.
+		for await (const event of stream) {
+			args.onEvent?.(event);
 		}
 		await stream.result();
 	} catch {
@@ -499,11 +516,13 @@ export async function runReflector(
 	args: LlmArgs,
 	reflections: MemoryReflection[],
 	observations: ObservationRecord[],
+	onPassStart?: (pass: number, maxPasses: number) => void,
 ): Promise<ReflectorResult> {
 	let currentReflections = reflections;
 	const passes: ReflectorPassStats[] = [];
 
 	for (let pass = 1; pass <= REFLECTOR_MAX_PASSES; pass++) {
+		onPassStart?.(pass, REFLECTOR_MAX_PASSES);
 		const result = await runReflectorPass(args, currentReflections, observations, reflectorPassContext(pass));
 		currentReflections = result.reflections;
 		passes.push(result.stats);
@@ -574,6 +593,7 @@ async function runPrunerPass(
 ): Promise<PrunerPassResult> {
 	const idSet = new Set(observations.map((o) => o.id));
 	const dropped = new Set<string>();
+	let consecutiveEmptyCalls = 0;
 
 	const dropTool: AgentTool<typeof DropObservationsSchema> = {
 		name: "drop_observations",
@@ -597,6 +617,11 @@ async function runPrunerPass(
 				}
 				dropped.add(id);
 				valid.push(id);
+			}
+			if (valid.length === 0) {
+				consecutiveEmptyCalls++;
+			} else {
+				consecutiveEmptyCalls = 0;
 			}
 			const remaining = idSet.size - dropped.size;
 			const parts: string[] = [];
@@ -646,6 +671,9 @@ Decide which observations to remove from the kept set. Call drop_observations wi
 	};
 
 	const reasoning = (args.model as { reasoning?: unknown }).reasoning;
+	const effectiveMaxToolCalls = args.maxToolCalls && args.maxToolCalls > 0 ? args.maxToolCalls : undefined;
+	let turnCount = 0;
+
 	const config: AgentLoopConfig = {
 		model: args.model as any,
 		apiKey: args.apiKey,
@@ -654,13 +682,19 @@ Decide which observations to remove from the kept set. Call drop_observations wi
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
 		...(reasoning ? { reasoning: "high" as const } : {}),
+		shouldStopAfterTurn: () => {
+			turnCount++;
+			if (effectiveMaxToolCalls !== undefined && turnCount >= effectiveMaxToolCalls) return true;
+			if (consecutiveEmptyCalls >= 2) return true;
+			return false;
+		},
 	};
 
 	try {
 		const loop = args.agentLoop ?? agentLoop;
 		const stream = loop(prompts, context, config, args.signal);
-		for await (const _event of stream) {
-			// Drain events; the tool's execute already records drops.
+		for await (const event of stream) {
+			args.onEvent?.(event);
 		}
 		await stream.result();
 	} catch {
@@ -676,14 +710,16 @@ export async function runPruner(
 	reflections: MemoryReflection[],
 	observations: ObservationRecord[],
 	budgetTokens: number,
+	onPassStart?: (pass: number, maxPasses: number) => void,
 ): Promise<PrunerResult> {
 	if (observations.length === 0) {
 		return { observations: [], droppedIds: [], fellBack: false, passes: [], stopReason: "empty" };
 	}
 
 	const target = Math.max(1, Math.floor(budgetTokens * PRUNER_TARGET_RATIO));
-	let pool = observations;
 	const coverageTags = deriveObservationCoverageTags(reflections, observations);
+	let pool = observations;
+
 	const allDropped: string[] = [];
 	const passes: PrunerPassStats[] = [];
 	let fellBack = false;
@@ -696,6 +732,7 @@ export async function runPruner(
 			break;
 		}
 
+		onPassStart?.(pass, PRUNER_MAX_PASSES);
 		const deltaTokens = poolTokens - target;
 		const result = await runPrunerPass(args, reflections, pool, {
 			poolTokens,

@@ -1,7 +1,7 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@mariozechner/pi-agent-core";
 import type { Message, Model } from "@mariozechner/pi-ai";
 import { Type } from "@mariozechner/pi-ai";
-import type { Static } from "@sinclair/typebox";
+import type { Static } from "typebox";
 import { hashId } from "./ids.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
 import { nowTimestamp, truncateRecordContent } from "./serialize.js";

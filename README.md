@@ -126,7 +126,17 @@ To run the background memory work (observer, reflector, pruner) on a cheaper / f
 }
 ```
 
-The six settings most worth knowing:
+To cap tool calls per reflector/pruner pass (useful for controlling cost on large observation pools):
+
+```json
+{
+  "observational-memory": {
+    "compactionMaxToolCalls": 32
+  }
+}
+```
+
+The seven settings most worth knowing:
 
 | Setting | Default | What it controls |
 |---|---|---|
@@ -135,6 +145,7 @@ The six settings most worth knowing:
 | `reflectionThresholdTokens` | `30,000` | The observation pool size at which reflector + pruner engage |
 | `passive` | `false` | Disables proactive observation and extension-triggered compaction while keeping manual/Pi compaction and commands active |
 | `compactionModel` | session model | Which model runs the observer / reflector / pruner — point at a cheaper one to save cost |
+| `compactionMaxToolCalls` | *(not set)* | Caps tool calls per reflector/pruner pass |
 | `compaction.keepRecentTokens` | `20,000` | How much recent conversation Pi keeps verbatim post-compaction (Pi setting; structural to the extension) |
 
 For shell/session-level control, `PI_OBSERVATIONAL_MEMORY_PASSIVE` overrides global and project settings. Use `1`, `true`, `yes`, or `on` to enable passive mode; use `0`, `false`, `no`, or `off` to force it off.
