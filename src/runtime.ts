@@ -26,6 +26,7 @@ export class Runtime {
 	observerPromise: Promise<void> | null = null;
 	compactInFlight = false;
 	compactHookInFlight = false;
+	bypassNextCompactionHook = false;
 	resolveFailureNotified = false;
 
 	ensureConfig(cwd: string): void {

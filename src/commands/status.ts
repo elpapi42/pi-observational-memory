@@ -94,11 +94,12 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				...activityLines,
 			];
 
-			if (runtime.observerInFlight || runtime.compactInFlight) {
+			if (runtime.observerInFlight || runtime.compactInFlight || runtime.bypassNextCompactionHook) {
 				lines.push("");
 				lines.push("── In flight ──");
 				if (runtime.observerInFlight) lines.push("Observer: running");
 				if (runtime.compactInFlight) lines.push("Compaction: running");
+				if (runtime.bypassNextCompactionHook) lines.push("Next compaction: bypass observational memory hook once");
 			}
 
 			ctx.ui.notify(lines.join("\n"), "info");

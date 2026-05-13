@@ -91,7 +91,7 @@ describe("recall tool registration", () => {
 		observationalMemory(pi as never);
 
 		expect(pi.on).toHaveBeenCalledTimes(3);
-		expect(pi.registerCommand).toHaveBeenCalledTimes(2);
+		expect(pi.registerCommand).toHaveBeenCalledTimes(3);
 		expect(pi.registerTool).toHaveBeenCalledTimes(1);
 		expect(pi.registerTool.mock.calls[0][0].name).toBe(RECALL_OBSERVATION_TOOL_NAME);
 	});

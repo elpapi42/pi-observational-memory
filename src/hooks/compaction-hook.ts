@@ -29,6 +29,15 @@ import {
 
 export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.on("session_before_compact", async (event, ctx) => {
+		if (runtime.bypassNextCompactionHook) {
+			runtime.bypassNextCompactionHook = false;
+			if (ctx.hasUI) ctx.ui.notify(
+				"Observational memory: skipped custom compaction hook once; normal Pi compaction will run",
+				"info",
+			);
+			return;
+		}
+
 		if (runtime.compactHookInFlight) {
 			if (ctx.hasUI) ctx.ui.notify(
 				"Observational memory: another compaction is already in progress; cancelling duplicate",
