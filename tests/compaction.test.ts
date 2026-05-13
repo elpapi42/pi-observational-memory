@@ -13,7 +13,7 @@ import { observationsToPromptLines } from "../src/observer.js";
 import { CONTEXT_USAGE_INSTRUCTIONS, REFLECTOR_SYSTEM } from "../src/prompts.js";
 import { estimateStringTokens } from "../src/tokens.js";
 import type { MemoryReflection, ObservationRecord, ReflectionRecord } from "../src/types.js";
-import { messageEntry, observationEntry } from "./fixtures/session.js";
+import { compactionEntry, messageEntry, observationEntry } from "./fixtures/session.js";
 
 const observation: ObservationRecord = {
 	id: "abc123def456",
@@ -203,6 +203,8 @@ describe("compaction hook", () => {
 			},
 		});
 		expect(notify).toHaveBeenCalledWith("Observational memory: running reflector + pruner...", "info");
+		const notifyMessages = notify.mock.calls.map(([message]) => String(message));
+		expect(notifyMessages.some((message) => message.includes("Observational memory: diagnostics") && message.includes("reflector") && message.includes("coverage") && message.includes("pruner") && message.includes("zero_drops"))).toBe(true);
 		expect(agentLoopMock).toHaveBeenCalledTimes(4);
 		expect(agentLoopMock.mock.calls.map(([, context]) => context.tools[0].name)).toEqual([
 			"record_reflections",
@@ -212,6 +214,75 @@ describe("compaction hook", () => {
 		]);
 		expect(pi.appendEntry).not.toHaveBeenCalled();
 		expect(observationsToPromptLines([shortObservation]).join("\n")).toContain("[111111111111]");
+	});
+
+	it("explains zero-delta compaction cancellations with committed and pending counts", async () => {
+		agentLoopMock.mockReset();
+
+		let handler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
+		const pi = {
+			on: vi.fn((eventName: string, cb: typeof handler) => {
+				expect(eventName).toBe("session_before_compact");
+				handler = cb;
+			}),
+			appendEntry: vi.fn(),
+		};
+		const runtime = {
+			compactHookInFlight: false,
+			observerPromise: null,
+			resolveFailureNotified: false,
+			config: {
+				observationThresholdTokens: 1,
+				compactionThresholdTokens: 50_000,
+				reflectionThresholdTokens: 1,
+				passive: false,
+			},
+			ensureConfig: vi.fn(),
+			resolveModel: vi.fn(async () => ({ ok: true, model: {}, apiKey: "test-key" })),
+		};
+		registerCompactionHook(pi as never, runtime as never);
+		if (!handler) throw new Error("session_before_compact handler was not registered");
+
+		const entries = [
+			messageEntry({ id: "source-entry", message: { role: "user", content: "source" } }),
+			messageEntry({ id: "kept-entry", message: { role: "user", content: "kept" } }),
+			observationEntry({
+				id: "observation-entry",
+				data: {
+					records: [observation],
+					coversFromId: "source-entry",
+					coversUpToId: "kept-entry",
+					tokenCount: estimateStringTokens(observation.content),
+				},
+			}),
+			compactionEntry({
+				id: "prior-compaction",
+				firstKeptEntryId: "kept-entry",
+				details: {
+					type: "observational-memory",
+					version: 4,
+					observations: [observation],
+					reflections: [reflectionRecord],
+				},
+			}),
+			messageEntry({ id: "tail-entry", message: { role: "user", content: "tail" } }),
+		];
+		const notify = vi.fn();
+		const result = await handler({
+			preparation: { firstKeptEntryId: "tail-entry", tokensBefore: 123 },
+			branchEntries: entries,
+			signal: undefined,
+		}, {
+			cwd: "/tmp/project",
+			hasUI: true,
+			ui: { notify },
+			sessionManager: { getBranch: vi.fn(() => entries) },
+		});
+
+		expect(result).toEqual({ cancel: true });
+		expect(agentLoopMock).not.toHaveBeenCalled();
+		const notifyMessages = notify.mock.calls.map(([message]) => String(message));
+		expect(notifyMessages.some((message) => message.includes("nothing to compact yet") && message.includes("1 committed observation") && message.includes("0 pending observations") && message.includes("no eligible delta"))).toBe(true);
 	});
 });
 

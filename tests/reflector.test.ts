@@ -252,7 +252,7 @@ describe("runReflector multi-pass orchestration", () => {
 		const result = await runReflector({ model: {} as any, apiKey: "test", agentLoop: loop }, [], observations);
 
 		expect(calls).toHaveLength(3);
-		expect(result).toEqual([
+		expect(result.reflections).toEqual([
 			{
 				id: hashId("User consistently prefers fork-based investigation."),
 				content: "User consistently prefers fork-based investigation.",
@@ -263,6 +263,21 @@ describe("runReflector multi-pass orchestration", () => {
 				content: "User decided multi-pass reflection should precede pruning tags.",
 				supportingObservationIds: [obsC.id],
 			},
+		]);
+		expect(result.stats).toMatchObject({
+			toolCalls: 3,
+			accepted: 3,
+			added: 2,
+			merged: 1,
+			promoted: 0,
+			duplicates: 0,
+			unsupported: 0,
+		});
+		expect(result.stats.failedPass).toBeUndefined();
+		expect(result.stats.passes).toMatchObject([
+			{ pass: 1, toolCalls: 1, accepted: 1, added: 1, failed: false },
+			{ pass: 2, toolCalls: 1, accepted: 1, added: 1, failed: false },
+			{ pass: 3, toolCalls: 1, accepted: 1, merged: 1, failed: false },
 		]);
 	});
 
@@ -289,9 +304,15 @@ describe("runReflector multi-pass orchestration", () => {
 		const result = await runReflector({ model: {} as any, apiKey: "test", agentLoop: loop }, [], observations);
 
 		expect(calls).toBe(2);
-		expect(result.map((reflection) => typeof reflection === "string" ? reflection : reflection.content)).toEqual([
+		expect(result.reflections.map((reflection) => typeof reflection === "string" ? reflection : reflection.content)).toEqual([
 			"User consistently prefers fork-based investigation.",
 			"User decided multi-pass reflection should precede pruning tags.",
+		]);
+		expect(result.stats.failedPass).toBe(2);
+		expect(result.stats).toMatchObject({ toolCalls: 2, accepted: 2, added: 2 });
+		expect(result.stats.passes).toMatchObject([
+			{ pass: 1, toolCalls: 1, accepted: 1, added: 1, failed: false },
+			{ pass: 2, toolCalls: 1, accepted: 1, added: 1, failed: true },
 		]);
 	});
 

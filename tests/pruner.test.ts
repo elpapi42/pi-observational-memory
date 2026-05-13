@@ -161,10 +161,9 @@ describe("coverage-aware pruner prompts", () => {
 		expect(buildPrunerPassGuidance(5, 5)).toContain("Do not fabricate drops solely to hit the target");
 	});
 
-	it("passes all observations including uncited to the pruner pool with coverage tags", async () => {
+	it("passes coverage-tagged observations to the pruner loop", async () => {
 		const loop = fakeAgentLoop((prompts) => {
 			const text = promptText(prompts);
-			// All observations are passed to the pruner with coverage tags — no exclusion based on maxToolCalls
 			expect(text).toContain(`[${obsA.id}] ${obsA.timestamp} [high] [coverage: cited] ${obsA.content}`);
 			expect(text).toContain(`[${obsB.id}] ${obsB.timestamp} [medium] [coverage: reinforced] ${obsB.content}`);
 			expect(text).toContain(`[${obsC.id}] ${obsC.timestamp} [low] [coverage: uncited] ${obsC.content}`);
@@ -177,11 +176,37 @@ describe("coverage-aware pruner prompts", () => {
 			reflection("B cited 4.", [obsB.id]),
 		];
 
-		// maxToolCalls only caps tool calls per pass via shouldStopAfterTurn; it does not affect pool selection
-		const result = await runPruner({ model: {} as any, apiKey: "test", agentLoop: loop, maxToolCalls: 32 }, reflections, observations, 1);
+		const result = await runPruner({ model: {} as any, apiKey: "test", agentLoop: loop }, reflections, observations, 1);
 
-		expect(result.droppedIds).toEqual([]);
-		expect(result.observations.length).toBe(observations.length);
+		expect(result).toMatchObject({
+			observations,
+			droppedIds: [],
+			fellBack: false,
+			stopReason: "zero_drops",
+			passes: [{ pass: 1, dropped: 0, remaining: observations.length, fellBack: false }],
+		});
+	});
+
+	it("reports dropped observations and under-target stop reason", async () => {
+		const loop = fakeAgentLoop(async (_prompts, context) => {
+			await context.tools[0].execute("drop-1", { ids: [obsC.id] });
+		});
+		const reflections: MemoryReflection[] = [
+			reflection("A cited.", [obsA.id]),
+			reflection("B cited.", [obsB.id]),
+			reflection("C cited.", [obsC.id]),
+		];
+		const targetBudget = Math.ceil((observationPoolTokens([obsA, obsB]) + 1) / 0.8);
+
+		const result = await runPruner({ model: {} as any, apiKey: "test", agentLoop: loop }, reflections, observations, targetBudget);
+
+		expect(result.observations).toEqual([obsA, obsB]);
+		expect(result.droppedIds).toEqual([obsC.id]);
+		expect(result.fellBack).toBe(false);
+		expect(result.stopReason).toBe("under_target");
+		expect(result.passes).toMatchObject([
+			{ pass: 1, dropped: 1, remaining: 2, fellBack: false },
+		]);
 	});
 
 	it("does not add coverage tags to reflector prompts", async () => {
