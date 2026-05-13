@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { registerNativeCompactCommand } from "./commands/native-compact.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerViewCommand } from "./commands/view.js";
 import { registerCompactionHook } from "./hooks/compaction-hook.js";
@@ -16,5 +17,6 @@ export default function observationalMemory(pi: ExtensionAPI) {
 
 	registerStatusCommand(pi, runtime);
 	registerViewCommand(pi, runtime);
+	registerNativeCompactCommand(pi, runtime);
 	registerRecallTool(pi);
 }

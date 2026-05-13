@@ -5,7 +5,15 @@ import {
 	gapRawEntries,
 	getMemoryState,
 } from "../branch.js";
-import { migrateLegacyReflections, renderSummary, runPruner, runReflector } from "../compaction.js";
+import {
+	PRUNER_TARGET_RATIO,
+	migrateLegacyReflections,
+	observationPoolTokens,
+	pruneObservationsDeterministically,
+	renderSummary,
+	runPruner,
+	runReflector,
+} from "../compaction.js";
 import { observationsToPromptLines, runObserver } from "../observer.js";
 import type { Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
@@ -21,6 +29,15 @@ import {
 
 export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.on("session_before_compact", async (event, ctx) => {
+		if (runtime.bypassNextCompactionHook) {
+			runtime.bypassNextCompactionHook = false;
+			if (ctx.hasUI) ctx.ui.notify(
+				"Observational memory: skipped custom compaction hook once; normal Pi compaction will run",
+				"info",
+			);
+			return;
+		}
+
 		if (runtime.compactHookInFlight) {
 			if (ctx.hasUI) ctx.ui.notify(
 				"Observational memory: another compaction is already in progress; cancelling duplicate",
@@ -136,17 +153,28 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			}
 
 			const workingReflections: MemoryReflection[] = migrateLegacyReflections(memoryState.reflections);
-			const workingObservations: ObservationRecord[] = [
+			let workingObservations: ObservationRecord[] = [
 				...memoryState.committedObs,
 				...deltaObservationData.flatMap((d) => d.records),
 			];
 
-			const observationTokens = workingObservations.reduce((sum, o) => sum + estimateStringTokens(o.content), 0);
+			const observationTokens = observationPoolTokens(workingObservations);
 
 			let finalReflections = workingReflections;
 			let finalObservations = workingObservations;
 
 			if (observationTokens >= runtime.config.reflectionThresholdTokens) {
+				const deterministicBudget = Math.max(1, Math.floor(runtime.config.reflectionThresholdTokens * PRUNER_TARGET_RATIO));
+				const deterministicResult = pruneObservationsDeterministically(workingObservations, deterministicBudget);
+				if (deterministicResult.droppedIds.length > 0) {
+					workingObservations = deterministicResult.observations;
+					finalObservations = workingObservations;
+					if (hasUI) ui?.notify(
+						`Observational memory: pre-pruned ${deterministicResult.droppedIds.length} low/older observation${deterministicResult.droppedIds.length === 1 ? "" : "s"} before reflection`,
+						"info",
+					);
+				}
+
 				if (hasUI) ui?.notify("Observational memory: running reflector + pruner...", "info");
 				try {
 					finalReflections = await runReflector(
