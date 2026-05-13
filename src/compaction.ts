@@ -1,4 +1,4 @@
-import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@mariozechner/pi-agent-core";
+import { agentLoop, type AgentContext, type AgentEvent, type AgentLoopConfig, type AgentTool } from "@mariozechner/pi-agent-core";
 import { Type, type Message, type Model } from "@mariozechner/pi-ai";
 import type { Static } from "typebox";
 import { debugLog, isDebugLogEnabled } from "./debug-log.js";
@@ -34,6 +34,115 @@ function joinReflectionsOrEmpty(items: MemoryReflection[]): string {
 
 function joinObservationsOrEmpty(items: ObservationRecord[]): string {
 	return items.length ? observationsToPromptLines(items).join("\n") : "(none yet)";
+}
+
+function summarizeContentTypes(content: unknown): string | string[] {
+	if (!Array.isArray(content)) return typeof content;
+	return content.map((block) => {
+		if (block && typeof block === "object" && "type" in block) {
+			const type = (block as { type?: unknown }).type;
+			return typeof type === "string" ? type : typeof type;
+		}
+		return typeof block;
+	});
+}
+
+function summarizeAgentMessage(message: unknown): Record<string, unknown> {
+	if (!message || typeof message !== "object") return { type: typeof message };
+	const record = message as Record<string, unknown>;
+	const summary: Record<string, unknown> = {
+		role: typeof record.role === "string" ? record.role : "unknown",
+	};
+	if ("api" in record && typeof record.api === "string") summary.api = record.api;
+	if ("provider" in record && typeof record.provider === "string") summary.provider = record.provider;
+	if ("model" in record && typeof record.model === "string") summary.model = record.model;
+	if ("stopReason" in record && typeof record.stopReason === "string") summary.stopReason = record.stopReason;
+	if ("errorMessage" in record && typeof record.errorMessage === "string") summary.errorMessage = record.errorMessage;
+	if ("toolName" in record && typeof record.toolName === "string") summary.toolName = record.toolName;
+	if ("isError" in record && typeof record.isError === "boolean") summary.isError = record.isError;
+	if ("content" in record) summary.contentTypes = summarizeContentTypes(record.content);
+	return summary;
+}
+
+function finalAssistantSummary(messages: unknown): Record<string, unknown> | undefined {
+	if (!Array.isArray(messages)) return undefined;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message && typeof message === "object" && (message as { role?: unknown }).role === "assistant") {
+			return summarizeAgentMessage(message);
+		}
+	}
+	return undefined;
+}
+
+function summarizeToolResults(toolResults: unknown): Record<string, unknown>[] {
+	if (!Array.isArray(toolResults)) return [];
+	return toolResults.map(summarizeAgentMessage);
+}
+
+function summarizeObjectKeys(value: unknown): string[] | undefined {
+	return value && typeof value === "object" ? Object.keys(value as Record<string, unknown>).sort() : undefined;
+}
+
+function logAgentLoopEvent(scope: "reflector" | "pruner", pass: number, event: AgentEvent): void {
+	switch (event.type) {
+		case "agent_start":
+		case "turn_start":
+			debugLog(`${scope}.agent_loop.${event.type}`, { pass });
+			return;
+		case "message_start":
+		case "message_end":
+			debugLog(`${scope}.agent_loop.${event.type}`, { pass, message: summarizeAgentMessage(event.message) });
+			return;
+		case "message_update":
+			debugLog(`${scope}.agent_loop.message_update`, {
+				pass,
+				message: summarizeAgentMessage(event.message),
+				assistantEventType: event.assistantMessageEvent.type,
+			});
+			return;
+		case "turn_end":
+			debugLog(`${scope}.agent_loop.turn_end`, {
+				pass,
+				message: summarizeAgentMessage(event.message),
+				toolResultCount: event.toolResults.length,
+				toolResults: summarizeToolResults(event.toolResults),
+			});
+			return;
+		case "agent_end":
+			debugLog(`${scope}.agent_loop.agent_end`, {
+				pass,
+				messageCount: event.messages.length,
+				finalAssistant: finalAssistantSummary(event.messages),
+			});
+			return;
+		case "tool_execution_start":
+			debugLog(`${scope}.agent_loop.tool_execution_start`, {
+				pass,
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				argsKeys: summarizeObjectKeys(event.args),
+			});
+			return;
+		case "tool_execution_update":
+			debugLog(`${scope}.agent_loop.tool_execution_update`, {
+				pass,
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				argsKeys: summarizeObjectKeys(event.args),
+				partialResultKeys: summarizeObjectKeys(event.partialResult),
+			});
+			return;
+		case "tool_execution_end":
+			debugLog(`${scope}.agent_loop.tool_execution_end`, {
+				pass,
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				isError: event.isError,
+				resultKeys: summarizeObjectKeys(event.result),
+			});
+			return;
+	}
 }
 
 export type ObservationCoverageTag = "uncited" | "cited" | "reinforced";
@@ -531,6 +640,7 @@ Crystallize long-lived reflections from the full observation pool for this pass.
 				firstEventSeen = true;
 				debugLog("reflector.agent_loop.first_event", { pass: passContext.pass, type: event.type });
 			}
+			logAgentLoopEvent("reflector", passContext.pass, event);
 			args.onEvent?.(event);
 		}
 		await stream.result();
@@ -781,6 +891,7 @@ Decide which observations to remove from the kept set. Call drop_observations wi
 				firstEventSeen = true;
 				debugLog("pruner.agent_loop.first_event", { pass: passContext.pass, type: event.type });
 			}
+			logAgentLoopEvent("pruner", passContext.pass, event);
 			args.onEvent?.(event);
 		}
 		await stream.result();
