@@ -606,7 +606,7 @@ export async function runPruner(
 
 	const target = Math.max(1, Math.floor(budgetTokens * PRUNER_TARGET_RATIO));
 	const coverageTags = deriveObservationCoverageTags(reflections, observations);
-	const pool = observations;
+	let pool = observations;
 
 	const allDropped: string[] = [];
 	let fellBack = false;
