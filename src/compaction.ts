@@ -3,6 +3,7 @@ import { Type, type Message, type Model } from "@mariozechner/pi-ai";
 import type { Static } from "typebox";
 import { debugLog, isDebugLogEnabled } from "./debug-log.js";
 import { hashId } from "./ids.js";
+import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "./model-budget.js";
 import { observationsToPromptLines } from "./observer.js";
 import { buildPrunerPassGuidance, buildReflectorPassGuidance, CONTEXT_USAGE_INSTRUCTIONS, PRUNER_SYSTEM, REFLECTOR_SYSTEM } from "./prompts.js";
 import { truncateRecordContent } from "./serialize.js";
@@ -617,7 +618,7 @@ Crystallize long-lived reflections from the full observation pool for this pass.
 		model: args.model as any,
 		apiKey: args.apiKey,
 		headers: args.headers,
-		maxTokens: 4096,
+		maxTokens: boundedMaxTokens(args.model, AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
 		...(reasoning ? { reasoning: "high" as const } : {}),
@@ -864,7 +865,7 @@ Decide which observations to remove from the kept set. Call drop_observations wi
 		model: args.model as any,
 		apiKey: args.apiKey,
 		headers: args.headers,
-		maxTokens: 2048,
+		maxTokens: boundedMaxTokens(args.model, AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
 		...(reasoning ? { reasoning: "high" as const } : {}),

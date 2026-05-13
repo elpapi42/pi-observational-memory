@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeSourceEntryIds, OBSERVATION_TIMESTAMP_PATTERN } from "../src/observer.js";
+import { normalizeSourceEntryIds, OBSERVATION_TIMESTAMP_PATTERN, runObserver } from "../src/observer.js";
+
+function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void): any {
+	return ((prompts: any[], context: any, config: any) => ({
+		async *[Symbol.asyncIterator]() {
+			// No streaming events needed for these tests.
+		},
+		result: async () => {
+			await handler(prompts, context, config);
+			return {};
+		},
+	})) as any;
+}
 
 describe("OBSERVATION_TIMESTAMP_PATTERN", () => {
 	it("matches local minute timestamps without regex shorthand escapes", () => {
@@ -11,6 +23,28 @@ describe("OBSERVATION_TIMESTAMP_PATTERN", () => {
 		expect(pattern.test("2026-5-02 10:30")).toBe(false);
 		expect(pattern.test("2026-05-02T10:30")).toBe(false);
 		expect(pattern.test("2026-05-02 10:30:00")).toBe(false);
+	});
+});
+
+describe("runObserver", () => {
+	it("uses a larger model-bounded output budget", async () => {
+		const seenMaxTokens: number[] = [];
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			seenMaxTokens.push(config.maxTokens);
+		});
+		const baseArgs = {
+			apiKey: "test",
+			priorReflections: [],
+			priorObservations: [],
+			chunk: "[Source entry id: entry-a]\nUser asked for a memory update.",
+			allowedSourceEntryIds: ["entry-a"],
+			agentLoop: loop,
+		};
+
+		await runObserver({ ...baseArgs, model: { maxTokens: 384_000 } as any });
+		await runObserver({ ...baseArgs, model: { maxTokens: 8_192 } as any });
+
+		expect(seenMaxTokens).toEqual([32_000, 8_192]);
 	});
 });
 

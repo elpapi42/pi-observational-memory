@@ -3,6 +3,7 @@ import type { Message, Model } from "@mariozechner/pi-ai";
 import { Type } from "@mariozechner/pi-ai";
 import type { Static } from "typebox";
 import { hashId } from "./ids.js";
+import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "./model-budget.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
 import { nowTimestamp, truncateRecordContent } from "./serialize.js";
 import type { ObservationRecord, Relevance } from "./types.js";
@@ -16,6 +17,7 @@ interface RunObserverArgs {
 	chunk: string;
 	allowedSourceEntryIds: string[];
 	signal?: AbortSignal;
+	agentLoop?: typeof agentLoop;
 }
 
 const RelevanceSchema = Type.Union([
@@ -162,13 +164,14 @@ ${conversation}`;
 		model,
 		apiKey,
 		headers,
-		maxTokens: 4096,
+		maxTokens: boundedMaxTokens(model, AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
 		...(reasoning ? { reasoning: "high" as const } : {}),
 	};
 
-	const stream = agentLoop(prompts, context, config, signal);
+	const loop = args.agentLoop ?? agentLoop;
+	const stream = loop(prompts, context, config, signal);
 	for await (const _event of stream) {
 		// Drain events; the tool's execute already collects records.
 	}

@@ -57,13 +57,13 @@ function legacyReflection(content: string, supportingObservationIds: string[] = 
 	};
 }
 
-function fakeAgentLoop(handler: (prompts: any[], context: any) => Promise<void> | void): any {
-	return ((prompts: any[], context: any) => ({
+function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void): any {
+	return ((prompts: any[], context: any, config: any) => ({
 		async *[Symbol.asyncIterator]() {
 			// No streaming events needed for these tests.
 		},
 		result: async () => {
-			await handler(prompts, context);
+			await handler(prompts, context, config);
 			return {};
 		},
 	})) as any;
@@ -185,6 +185,33 @@ describe("coverage-aware pruner prompts", () => {
 			stopReason: "zero_drops",
 			passes: [{ pass: 1, dropped: 0, remaining: observations.length, fellBack: false }],
 		});
+	});
+
+	it("uses a larger model-bounded output budget for reflector and pruner passes", async () => {
+		const seenMaxTokens: number[] = [];
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			seenMaxTokens.push(config.maxTokens);
+		});
+
+		await runReflector(
+			{ model: { maxTokens: 384_000 } as any, apiKey: "test", agentLoop: loop },
+			[],
+			observations,
+		);
+		await runPruner(
+			{ model: { maxTokens: 384_000 } as any, apiKey: "test", agentLoop: loop },
+			[],
+			observations,
+			1,
+		);
+		await runPruner(
+			{ model: { maxTokens: 8_192 } as any, apiKey: "test", agentLoop: loop },
+			[],
+			observations,
+			1,
+		);
+
+		expect(seenMaxTokens).toEqual([32_000, 32_000, 32_000, 32_000, 8_192]);
 	});
 
 	it("reports dropped observations and under-target stop reason", async () => {
