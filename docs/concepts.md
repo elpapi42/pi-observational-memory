@@ -71,8 +71,8 @@ Crucially: the summary itself is **not** written by an LLM. It's a deterministic
 
 If the observation pool is large enough (default: ≥30k tokens), two LLM agents run inside compaction as an inseparable pair:
 
-- The **reflector** runs several focused passes over the full pool and crystallizes new long-lived patterns into reflections with supporting observation ids. It can merge new support into exact-content matches and promote legacy reflections when the same durable fact becomes source-backed.
-- The **pruner** drops observations from the pool by id. It runs up to 5 passes, getting more aggressive each time, until the pool fits under ~80% of the budget. It cannot rewrite or merge observations — only drop them. It also sees advisory coverage tags (`uncited`, `cited`, `reinforced`) that indicate whether current reflections cite an observation.
+- The **reflector** runs two focused passes over the full pool: broad multi-observation synthesis first, then final atomic facts, safety review, and coverage strengthening. It can merge new support into exact-content matches and promote legacy reflections when the same durable fact becomes source-backed.
+- The **pruner** drops observations from the pool by id. It runs up to 2 passes: clear-cut source-backed drops first, then final topic compression, age compression, and budget-pressure rescue until the pool fits under ~80% of the budget or no sound drops remain. It cannot rewrite or merge observations — only drop them. It also sees advisory coverage tags (`uncited`, `cited`, `reinforced`) that indicate whether current reflections cite an observation.
 
 They always run together. Pruning without reflecting first would lose information that hadn't yet been crystallized. Reflecting without pruning would let the observation pool grow forever.
 

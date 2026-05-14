@@ -11,8 +11,8 @@ import { estimateStringTokens } from "./tokens.js";
 import { reflectionContent, reflectionToPromptLine } from "./types.js";
 import type { MemoryReflection, ObservationRecord, ReflectionRecord } from "./types.js";
 
-const REFLECTOR_MAX_PASSES = 3;
-const PRUNER_MAX_PASSES = 5;
+export const REFLECTOR_MAX_PASSES = 2;
+export const PRUNER_MAX_PASSES = 2;
 const PRUNER_TARGET_RATIO = 0.8;
 
 export function observationPoolTokens(observations: ObservationRecord[]): number {

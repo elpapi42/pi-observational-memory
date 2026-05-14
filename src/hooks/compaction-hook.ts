@@ -9,6 +9,7 @@ import {
 	getMemoryState,
 } from "../branch.js";
 import {
+	REFLECTOR_MAX_PASSES,
 	coverageTagCounts,
 	migrateLegacyReflections,
 	observationPoolTokens,
@@ -296,7 +297,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 						observationTokens,
 					});
 					if (hasUI) ui?.notify("Observational memory: running reflector + pruner...", "info");
-					progress.setPhase("reflector", 1, 3);
+					progress.setPhase("reflector", 1, REFLECTOR_MAX_PASSES);
 					progress.setStartingCounts(workingReflections.length, workingObservations.length);
 					updateWidget();
 					const coverageBefore = coverageTagCounts(workingReflections, workingObservations);

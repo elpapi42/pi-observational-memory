@@ -76,7 +76,7 @@ flowchart TD
     Conv([Conversation accumulates])
     Obs[Observer<br/>async, fire-and-forget<br/>compresses each chunk into timestamped,<br/>relevance-tagged observations<br/>stored as silent tree entries]
     Comp[Compaction<br/>extension-owned; merges accumulated<br/>observations with prior compaction state]
-    RP[Reflector + Pruner<br/>Reflector runs focused passes<br/>to crystallize durable patterns<br/>Pruner drops observations by id<br/>across up to 5 passes]
+    RP[Reflector + Pruner<br/>Reflector runs two focused passes<br/>to crystallize durable patterns<br/>Pruner drops observations by id<br/>across up to 2 passes]
     Sum[Summary mechanically assembled<br/>## Reflections<br/>&nbsp;&nbsp;[id] durable insight<br/>## Observations<br/>&nbsp;&nbsp;[id] YYYY-MM-DD HH:MM relevance ...<br/>Becomes the compactionSummary<br/>the agent sees on the next turn]
 
     Conv -->|every ~1k raw tokens since last bound| Obs

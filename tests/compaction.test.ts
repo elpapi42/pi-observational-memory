@@ -218,9 +218,8 @@ describe("compaction hook", () => {
 		expect(notify).toHaveBeenCalledWith("Observational memory: running reflector + pruner...", "info");
 		const notifyMessages = notify.mock.calls.map(([message]) => String(message));
 		expect(notifyMessages.some((message) => message.includes("Observational memory: diagnostics") && message.includes("reflector") && message.includes("coverage") && message.includes("pruner") && message.includes("zero_drops"))).toBe(true);
-		expect(agentLoopMock).toHaveBeenCalledTimes(4);
+		expect(agentLoopMock).toHaveBeenCalledTimes(3);
 		expect(agentLoopMock.mock.calls.map(([, context]) => context.tools[0].name)).toEqual([
-			"record_reflections",
 			"record_reflections",
 			"record_reflections",
 			"drop_observations",

@@ -79,15 +79,14 @@ function promptText(prompts: any[]): string {
 }
 
 describe("reflector pass guidance", () => {
-	it("describes the three specialized reflector passes", () => {
-		expect(buildReflectorPassGuidance(1, 3)).toContain("multi-observation synthesis");
-		expect(buildReflectorPassGuidance(1, 3)).toContain("at least 2 distinct supportingObservationIds");
-		expect(buildReflectorPassGuidance(2, 3)).toContain("atomic durable facts + safety review");
-		expect(buildReflectorPassGuidance(2, 3)).toContain("single authoritative observation");
-		expect(buildReflectorPassGuidance(2, 3)).toContain("Review high and critical observations");
-		expect(buildReflectorPassGuidance(3, 3)).toContain("coverage strengthening");
-		expect(buildReflectorPassGuidance(3, 3)).toContain("additional supportingObservationIds");
-		expect(buildReflectorPassGuidance(3, 3)).toContain("Do not create low-quality reflections just for coverage");
+	it("describes the two specialized reflector passes", () => {
+		expect(buildReflectorPassGuidance(1, 2)).toContain("multi-observation synthesis");
+		expect(buildReflectorPassGuidance(1, 2)).toContain("at least 2 distinct supportingObservationIds");
+		expect(buildReflectorPassGuidance(2, 2)).toContain("final atomic durable facts, safety review, and coverage strengthening");
+		expect(buildReflectorPassGuidance(2, 2)).toContain("single authoritative observation");
+		expect(buildReflectorPassGuidance(2, 2)).toContain("Review high and critical observations");
+		expect(buildReflectorPassGuidance(2, 2)).toContain("additional supportingObservationIds");
+		expect(buildReflectorPassGuidance(2, 2)).toContain("Do not create low-quality reflections just for coverage");
 	});
 
 	it("teaches the reflector merge, promotion, and coverage contracts", () => {
@@ -224,34 +223,29 @@ describe("runReflector multi-pass orchestration", () => {
 			expect(toolSchemaText).not.toContain("Smallest exact set");
 
 			if (calls.length === 1) {
-				expect(text).toContain("Pass 1 of up to 3");
+				expect(text).toContain("Pass 1 of up to 2");
 				expect(text).toContain("multi-observation synthesis");
 				await tool.execute("pass-1", {
 					reflections: [{ content: "User consistently prefers fork-based investigation.", supportingObservationIds: [obsA.id, obsB.id] }],
 				});
 				return;
 			}
-			if (calls.length === 2) {
-				expect(text).toContain("Pass 2 of up to 3");
-				expect(text).toContain("atomic durable facts + safety review");
-				expect(text).toContain(`[${hashId("User consistently prefers fork-based investigation.")}] User consistently prefers fork-based investigation.`);
-				expect(text).not.toContain("supports:");
-				await tool.execute("pass-2", {
-					reflections: [{ content: "User decided multi-pass reflection should precede pruning tags.", supportingObservationIds: [obsC.id] }],
-				});
-				return;
-			}
-			expect(text).toContain("Pass 3 of up to 3");
-			expect(text).toContain("coverage strengthening");
-			expect(text).toContain("User decided multi-pass reflection should precede pruning tags.");
-			await tool.execute("pass-3", {
-				reflections: [{ content: "User consistently prefers fork-based investigation.", supportingObservationIds: [obsC.id, obsA.id] }],
+			expect(calls.length).toBe(2);
+			expect(text).toContain("Pass 2 of up to 2");
+			expect(text).toContain("final atomic durable facts, safety review, and coverage strengthening");
+			expect(text).toContain(`[${hashId("User consistently prefers fork-based investigation.")}] User consistently prefers fork-based investigation.`);
+			expect(text).not.toContain("supports:");
+			await tool.execute("pass-2", {
+				reflections: [
+					{ content: "User decided multi-pass reflection should precede pruning tags.", supportingObservationIds: [obsC.id] },
+					{ content: "User consistently prefers fork-based investigation.", supportingObservationIds: [obsC.id, obsA.id] },
+				],
 			});
 		});
 
 		const result = await runReflector({ model: {} as any, apiKey: "test", agentLoop: loop }, [], observations);
 
-		expect(calls).toHaveLength(3);
+		expect(calls).toHaveLength(2);
 		expect(result.reflections).toEqual([
 			{
 				id: hashId("User consistently prefers fork-based investigation."),
@@ -265,7 +259,7 @@ describe("runReflector multi-pass orchestration", () => {
 			},
 		]);
 		expect(result.stats).toMatchObject({
-			toolCalls: 3,
+			toolCalls: 2,
 			accepted: 3,
 			added: 2,
 			merged: 1,
@@ -276,8 +270,7 @@ describe("runReflector multi-pass orchestration", () => {
 		expect(result.stats.failedPass).toBeUndefined();
 		expect(result.stats.passes).toMatchObject([
 			{ pass: 1, toolCalls: 1, accepted: 1, added: 1, failed: false },
-			{ pass: 2, toolCalls: 1, accepted: 1, added: 1, failed: false },
-			{ pass: 3, toolCalls: 1, accepted: 1, merged: 1, failed: false },
+			{ pass: 2, toolCalls: 1, accepted: 2, added: 1, merged: 1, failed: false },
 		]);
 	});
 
@@ -362,7 +355,7 @@ describe("runReflector multi-pass orchestration", () => {
 			(pass, max) => { passStarts.push(`${pass}/${max}`); },
 		);
 
-		expect(passStarts).toEqual(["1/3", "2/3", "3/3"]);
+		expect(passStarts).toEqual(["1/2", "2/2"]);
 	});
 
 	it("passes maxTurns as a per-pass reflector turn cap", async () => {
@@ -377,7 +370,7 @@ describe("runReflector multi-pass orchestration", () => {
 			observations,
 		);
 
-		expect(shouldStopByPass).toHaveLength(3);
+		expect(shouldStopByPass).toHaveLength(2);
 		for (const shouldStopAfterTurn of shouldStopByPass) {
 			expect(shouldStopAfterTurn({})).toBe(false);
 			expect(shouldStopAfterTurn({})).toBe(true);

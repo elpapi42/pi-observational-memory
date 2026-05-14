@@ -151,14 +151,14 @@ describe("coverage-aware pruner prompts", () => {
 		expect(PRUNER_SYSTEM).not.toContain("erased from the assistant's memory");
 		expect(PRUNER_SYSTEM).toContain("\"critical\": NEVER drop");
 		expect(PRUNER_SYSTEM).toContain("User assertions and concrete completions are never droppable");
-		expect(buildPrunerPassGuidance(1, 5)).toContain("old low/medium [coverage: cited]");
-		expect(buildPrunerPassGuidance(2, 5)).toContain("old [coverage: reinforced] low/medium observations as default drops");
-		expect(buildPrunerPassGuidance(3, 5)).toContain("Drop old [coverage: cited] or [coverage: reinforced] \"high\" observations");
-		expect(buildPrunerPassGuidance(3, 5)).toContain("[coverage: uncited]");
-		expect(buildPrunerPassGuidance(4, 5)).toContain("budget-pressure reflection-backed compression");
-		expect(buildPrunerPassGuidance(4, 5)).toContain("active-memory redundancies by default");
-		expect(buildPrunerPassGuidance(5, 5)).toContain("final budget rescue");
-		expect(buildPrunerPassGuidance(5, 5)).toContain("Do not fabricate drops solely to hit the target");
+		expect(buildPrunerPassGuidance(1, 2)).toContain("clear-cut source-backed drops only");
+		expect(buildPrunerPassGuidance(1, 2)).toContain("old low/medium [coverage: cited]");
+		expect(buildPrunerPassGuidance(1, 2)).toContain("Do not touch ambiguous [coverage: uncited]");
+		expect(buildPrunerPassGuidance(2, 2)).toContain("final topic compression, aggressive age compression, and budget-pressure rescue");
+		expect(buildPrunerPassGuidance(2, 2)).toContain("old [coverage: reinforced] observations as active-memory redundancies by default");
+		expect(buildPrunerPassGuidance(2, 2)).toContain("Drop old [coverage: cited] high observations only");
+		expect(buildPrunerPassGuidance(2, 2)).toContain("Prefer source-backed reinforced/cited drops over any uncited drop");
+		expect(buildPrunerPassGuidance(2, 2)).toContain("Do not fabricate drops solely to hit the target");
 	});
 
 	it("passes coverage-tagged observations to the pruner loop", async () => {
@@ -211,7 +211,7 @@ describe("coverage-aware pruner prompts", () => {
 			1,
 		);
 
-		expect(seenMaxTokens).toEqual([32_000, 32_000, 32_000, 32_000, 8_192]);
+		expect(seenMaxTokens).toEqual([32_000, 32_000, 32_000, 8_192]);
 	});
 
 	it("reports dropped observations and under-target stop reason", async () => {
@@ -296,7 +296,7 @@ describe("coverage-aware pruner prompts", () => {
 		);
 
 		// Only pass 1 runs because no drops cause early exit
-		expect(passStarts).toEqual(["1/5"]);
+		expect(passStarts).toEqual(["1/2"]);
 	});
 
 	it("passes maxTurns as a pruner turn cap", async () => {

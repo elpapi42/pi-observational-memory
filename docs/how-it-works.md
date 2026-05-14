@@ -50,8 +50,8 @@ flowchart TD
         Delta[Collect delta by coversFromId range<br/>add gap observation if any]
         Merge[Merge with prior compaction.details<br/>→ working observation pool]
         Gate{working pool ≥<br/>reflectionThresholdTokens?}
-        Reflect[Reflector LLM three passes<br/>add, merge, promote]
-        Prune[Pruner LLM up to 5 passes<br/>drop ids until pool ≤ 80% of budget]
+        Reflect[Reflector LLM two passes<br/>add, merge, promote]
+        Prune[Pruner LLM up to 2 passes<br/>drop ids until pool ≤ 80% of budget]
         Render[Mechanically render summary<br/>return compaction payload]
 
         TE --> ObsTrigger
@@ -154,7 +154,7 @@ The **sync catch-up observer** fills this gap. It runs the same observer LLM syn
 This means compaction is:
 - **0 LLM calls** in early sessions or when the pool is small.
 - **1 LLM call** when only the sync catch-up observer fires.
-- **≥2 LLM calls** (reflector + one or more pruner passes) in steady state.
+- **≥3 LLM calls** in steady state: two reflector passes plus one or more pruner passes.
 
 **6. Renders the summary.** Mechanical concatenation:
 
@@ -181,7 +181,7 @@ When the working observation pool exceeds the gate, two LLM agents run in sequen
 ### Reflector
 
 - Reads the current reflections + the full working observation pool.
-- Runs three focused passes in sequence: multi-observation synthesis first, atomic durable facts second, and a final safety review third.
+- Runs two focused passes in sequence: multi-observation synthesis first, then a final atomic durable facts, safety review, and coverage strengthening pass.
 - Calls `record_reflections` with reflection content plus supporting observation ids. New native reflections require at least one valid supporting observation id; multi-observation synthesis requires multiple supports.
 - Uses exact-content matching to merge new valid support ids into existing native reflections, and to promote same-content legacy reflections into source-backed records when evidence becomes available. Similar-but-different text stays as a separate reflection.
 - If a later pass fails, accepted reflections from earlier passes are salvaged and the reflector stops rather than discarding all progress.
@@ -193,10 +193,9 @@ A reflection is supposed to name a **durable pattern** (identity, hard constrain
 - Reads the (now augmented) reflections + the full working observation pool.
 - Receives prompt-only coverage tags for each observation: `uncited` (0 current native reflection citations), `cited` (1–3), or `reinforced` (4+). Tags are derived from current non-legacy reflection `supportingObservationIds`; they are advisory and are not persisted, shown in summaries, or exposed through recall.
 - Calls `drop_observations` with ids to remove. **Cannot** merge, rewrite, or add observations — only drop by id. This is what keeps kept content byte-identical to what the observer originally wrote.
-- Runs up to **5 passes** with a per-pass strategy tier:
-  - **Pass 1** — clear-cut drops only. Exact duplicates, near-duplicates (keep the higher-relevance or more recent one), entries directly superseded by a newer one, routine `low` tool-call acks.
-  - **Pass 2** — topic compression. Drop `low` observations covered by recent `medium`/`high`, drop `medium` observations whose substance is now in a reflection, collapse repeated tool-call sequences.
-  - **Pass 3+** — aggressive age compression. In the older half of the pool, drop all but outcome-bearing entries. Keep the most recent ~30% at higher detail.
+- Runs up to **2 passes** with a per-pass strategy tier:
+  - **Pass 1** — clear-cut source-backed drops only. Exact duplicates, near-duplicates (keep the higher-relevance or more recent one), entries directly superseded by a newer one, routine `low` tool-call acks, and old cited/reinforced observations whose durable meaning is represented by current reflections.
+  - **Pass 2** — final topic compression, aggressive age compression, and budget-pressure rescue. Drop redundant low/medium observations, repeated tool-call sequences, and old cited/reinforced observations when current reflections preserve the same durable meaning and no protected exact detail is unique to the observation.
 - Each pass targets `0.8 * reflectionThresholdTokens`. Passes stop early when:
   - The pool fits under the target, OR
   - A pass returns zero drops (the pruner refuses to force drops it doesn't believe in), OR

@@ -121,7 +121,7 @@ The working observation pool size at which the reflector + pruner pair engages i
 
 **Below this gate**, the reflector and pruner are both skipped and the working pool is written to the new `compaction.details` unchanged. Compaction in this case is **0 LLM calls** (or 1 if the sync catch-up observer ran).
 
-**At or above the gate**, the reflector crystallizes durable reflections and supporting observation links, then the pruner runs up to 5 id-based drop passes until the pool fits under `0.8 × reflectionThresholdTokens`. Compaction in this case is **≥2 LLM calls**.
+**At or above the gate**, the reflector crystallizes durable reflections and supporting observation links in two passes, then the pruner runs up to 2 id-based drop passes until the pool fits under `0.8 × reflectionThresholdTokens` or no sound drops remain. Compaction in this case is usually **≥3 LLM calls**: two reflector passes plus at least one pruner pass.
 
 **Lower values** crystallize reflections earlier and keep the observation pool tight, at the cost of more frequent reflector+pruner runs.
 
@@ -191,7 +191,7 @@ A **turn** is one assistant/model response cycle inside Pi's nested agent loop. 
 
 ### `reflectorMaxTurnsPerPass` — default: `16`
 
-Positive integer that caps assistant/model turns for each reflector pass. The reflector has three passes, so this limit applies separately to each pass, not to the whole compaction.
+Positive integer that caps assistant/model turns for each reflector pass. The reflector has two passes, so this limit applies separately to each pass, not to the whole compaction.
 
 **Not set**: uses the default cap of `16` turns. Reflector passes still stop earlier when two consecutive `record_reflections` tool calls produce no new accepted, merged, or promoted reflections (`consecutiveEmptyCalls >= 2`).
 
@@ -209,7 +209,7 @@ Positive integer that caps assistant/model turns for each reflector pass. The re
 
 ### `prunerMaxTurnsPerPass` — default: `16`
 
-Positive integer that caps assistant/model turns for each pruner pass. The pruner can run up to five passes, so this limit applies separately to each pass, not to the whole compaction.
+Positive integer that caps assistant/model turns for each pruner pass. The pruner can run up to two passes, so this limit applies separately to each pass, not to the whole compaction.
 
 **Not set**: uses the default cap of `16` turns. Pruner passes still stop earlier when two consecutive `drop_observations` calls produce no new valid drops (`consecutiveEmptyCalls >= 2`), and the overall pruner stops when a pass drops zero observations, falls back, reaches target, or exhausts passes.
 
