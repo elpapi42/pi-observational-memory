@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
+import { resolveTurnLimits } from "../config.js";
 import {
 	collectObservationsByCoverage,
 	findLastCompactionIndex,
@@ -73,12 +74,14 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			// the extension ctx may become stale (e.g. after session replacement/reload).
 			const hasUI = ctx.hasUI;
 			const ui = ctx.ui;
+			const turnLimits = resolveTurnLimits(runtime.config);
 			debugLog("compaction.start", {
 				firstKeptEntryId,
 				tokensBefore,
 				branchEntryCount: branchEntries.length,
 				reflectionThresholdTokens: runtime.config.reflectionThresholdTokens,
-				compactionMaxToolCalls: runtime.config.compactionMaxToolCalls,
+				turnLimits,
+				legacyCompactionMaxToolCalls: runtime.config.compactionMaxToolCalls,
 			});
 
 			const resolved = await runtime.resolveModel(ctx as any);
@@ -161,6 +164,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 						chunk: gapChunk,
 						allowedSourceEntryIds: sourceEntryIds,
 						signal,
+						maxTurns: turnLimits.observerMaxTurnsPerRun,
 					});
 					const gapPromise: Promise<void> = gapCall.then(() => undefined, () => undefined);
 					runtime.observerPromise = gapPromise;
@@ -297,7 +301,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 					updateWidget();
 					const coverageBefore = coverageTagCounts(workingReflections, workingObservations);
 					const reflectorResult = await runReflector(
-						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); }, maxToolCalls: runtime.config.compactionMaxToolCalls },
+						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); }, maxTurns: turnLimits.reflectorMaxTurnsPerPass },
 						workingReflections,
 						workingObservations,
 						(pass, max) => { progress.setPhase("reflector", pass, max); updateWidget(); },
@@ -313,7 +317,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 					});
 
 					const prunerResult = await runPruner(
-						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); }, maxToolCalls: runtime.config.compactionMaxToolCalls },
+						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); }, maxTurns: turnLimits.prunerMaxTurnsPerPass },
 						finalReflections,
 						workingObservations,
 						runtime.config.reflectionThresholdTokens,

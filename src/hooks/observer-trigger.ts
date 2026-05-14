@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
+import { resolveTurnLimits } from "../config.js";
 import {
 	firstRawIdAfter,
 	getMemoryState,
@@ -33,6 +34,7 @@ export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): voi
 
 		const { reflections, committedObs, pendingObs } = getMemoryState(entries);
 		const priorObservationLines = observationsToPromptLines([...committedObs, ...pendingObs]);
+		const turnLimits = resolveTurnLimits(runtime.config);
 
 		const chunkEntries = rawTailEntriesBetween(entries, coversFromId, coversUpToId);
 		if (chunkEntries.length === 0) return;
@@ -86,6 +88,7 @@ export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): voi
 					priorObservations: priorObservationLines,
 					chunk,
 					allowedSourceEntryIds: sourceEntryIds,
+					maxTurns: turnLimits.observerMaxTurnsPerRun,
 				});
 				if (!records || records.length === 0) {
 					debugLog("observer.empty", { coversFromId, coversUpToId });

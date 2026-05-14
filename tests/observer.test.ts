@@ -46,6 +46,28 @@ describe("runObserver", () => {
 
 		expect(seenMaxTokens).toEqual([32_000, 8_192]);
 	});
+
+	it("uses maxTurns as an observer turn cap", async () => {
+		let shouldStopAfterTurn: any;
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			shouldStopAfterTurn = config.shouldStopAfterTurn;
+		});
+
+		await runObserver({
+			model: {} as any,
+			apiKey: "test",
+			priorReflections: [],
+			priorObservations: [],
+			chunk: "[Source entry id: entry-a]\nUser asked for a memory update.",
+			allowedSourceEntryIds: ["entry-a"],
+			agentLoop: loop,
+			maxTurns: 2,
+		});
+
+		expect(shouldStopAfterTurn).toBeTypeOf("function");
+		expect(shouldStopAfterTurn({})).toBe(false);
+		expect(shouldStopAfterTurn({})).toBe(true);
+	});
 });
 
 describe("normalizeSourceEntryIds", () => {

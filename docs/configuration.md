@@ -15,7 +15,10 @@ If you haven't read **[concepts.md](concepts.md)** yet, do that first — this d
   - [`passive`](#passive--default-false)
   - [`debugLog`](#debuglog--default-false)
   - [`compactionModel`](#compactionmodel--default-session-model)
-  - [`compactionMaxToolCalls`](#compactionmaxtoolcalls--default-not-set)
+  - [`observerMaxTurnsPerRun`](#observermaxturnsperrun--default-16)
+  - [`reflectorMaxTurnsPerPass`](#reflectormaxturnsperpass--default-16)
+  - [`prunerMaxTurnsPerPass`](#prunermaxturnsperpass--default-16)
+  - [Deprecated: `compactionMaxToolCalls`](#deprecated-compactionmaxtoolcalls--default-not-set)
 - [Pi compaction settings the extension depends on](#pi-compaction-settings-the-extension-depends-on)
   - [`keepRecentTokens`](#keeprecenttokens--pi-setting-default-20000)
   - [`reserveTokens`](#reservetokens--pi-setting-default-16384)
@@ -63,7 +66,7 @@ Every setting at its default value:
 
 You don't need any of these to start — defaults work well for most sessions.
 
-Two settings don't have defaults and are easy to miss: **`compactionModel`** and **`compactionMaxToolCalls`**. Left unset, the observer / reflector / pruner all use the session model with no tool call cap. A realistic settings file that overrides both looks like this:
+Several settings are easy to miss: **`compactionModel`** and the turn caps **`observerMaxTurnsPerRun`**, **`reflectorMaxTurnsPerPass`**, and **`prunerMaxTurnsPerPass`**. Left unset, the observer / reflector / pruner all use the session model and default to 16 turns each. A realistic settings file that overrides both model and turn caps looks like this:
 
 ```json
 {
@@ -74,7 +77,9 @@ Two settings don't have defaults and are easy to miss: **`compactionModel`** and
     "passive": false,
     "debugLog": false,
     "compactionModel": { "provider": "openrouter", "id": "google/gemma-4-31b-it" },
-    "compactionMaxToolCalls": 32
+    "observerMaxTurnsPerRun": 8,
+    "reflectorMaxTurnsPerPass": 12,
+    "prunerMaxTurnsPerPass": 12
   },
   "compaction": {
     "keepRecentTokens": 20000
@@ -82,7 +87,7 @@ Two settings don't have defaults and are easy to miss: **`compactionModel`** and
 }
 ```
 
-The settings below are listed roughly in the order they affect a session's life: the observer fires first and most often, the extension-trigger cadence comes next, passive mode can disable that proactive work, the reflector + pruner gate engages inside compaction, the model choice applies to all three roles, and the Pi-owned settings determine the structural details of each compaction.
+The settings below are listed roughly in the order they affect a session's life: the observer fires first and most often, the extension-trigger cadence comes next, passive mode can disable that proactive work, the reflector + pruner gate engages inside compaction, the model choice and turn caps apply to the memory model loops, and the Pi-owned settings determine the structural details of each compaction.
 
 ---
 
@@ -164,25 +169,75 @@ An optional `{ provider, id }` override for the observer, the reflector, and the
 
 **Failure modes.** If the configured model is not found in the registry, the extension falls back to the session model with a warning. If no API key is available for the chosen model, the observer is skipped (warning once) and the compaction hook cancels the compaction (surfacing a clear error) rather than silently falling back.
 
-### `compactionMaxToolCalls` — default: not set
+### `observerMaxTurnsPerRun` — default: `16`
 
-An optional integer that caps the number of tool calls per reflector or pruner pass. When set to a positive number, each reflector and pruner pass stops after this many tool calls (across all `record_reflections` or `drop_observations` invocations). The agents also stop early when two consecutive tool calls produce no new results (`consecutiveEmptyCalls >= 2`), regardless of this cap.
+Positive integer that caps assistant/model turns for each observer run. The proactive observer and the synchronous catch-up observer both use this cap.
 
-**Not set** (default): no tool call cap. Both reflector and pruner run until `consecutiveEmptyCalls >= 2` stops them. All observations go to the pruner with advisory `[coverage: uncited]`, `[coverage: cited]`, or `[coverage: reinforced]` tags, and the LLM decides based on the prompt guidance.
+A **turn** is one assistant/model response cycle inside Pi's nested agent loop. The cap is checked after a turn completes through `shouldStopAfterTurn`; it is not a hard interrupt in the middle of streaming, it is not a token budget, and it is not a literal count of tool invocations.
 
-**Set to 0**: treated as "not set" — unlimited tool calls.
+**Not set**: uses the default cap of `16` turns.
+
+**Set to 0** or any invalid value: ignored, so the effective cap falls back to the default `16` turns.
 
 ```json
 {
   "observational-memory": {
-    "compactionMaxToolCalls": 32
+    "observerMaxTurnsPerRun": 8
   }
 }
 ```
 
-**Why you'd set this.** To control LLM cost per compaction pass. Without a cap, a complex observation pool could drive many tool calls. With a cap, you trade completeness for predictable cost.
+**Why you'd set this.** To control observer latency/cost on large raw chunks or with reasoning models. Too low a value can reduce observation coverage, especially for sync catch-up before compaction.
 
-**Why the default is unset.** Unlimited tool calls gives the reflector full coverage. In that mode, uncited truly means "the reflector reviewed this and chose not to cite it" — which is a quality signal the pruner can safely act on.
+### `reflectorMaxTurnsPerPass` — default: `16`
+
+Positive integer that caps assistant/model turns for each reflector pass. The reflector has three passes, so this limit applies separately to each pass, not to the whole compaction.
+
+**Not set**: uses the default cap of `16` turns. Reflector passes still stop earlier when two consecutive `record_reflections` tool calls produce no new accepted, merged, or promoted reflections (`consecutiveEmptyCalls >= 2`).
+
+**Set to 0** or any invalid value: ignored, so the effective cap falls back to the default `16` turns.
+
+```json
+{
+  "observational-memory": {
+    "reflectorMaxTurnsPerPass": 8
+  }
+}
+```
+
+**Why you'd set this.** To bound reflector cost/latency per pass. Lower values trade reflection coverage and support-id strengthening for more predictable runtime.
+
+### `prunerMaxTurnsPerPass` — default: `16`
+
+Positive integer that caps assistant/model turns for each pruner pass. The pruner can run up to five passes, so this limit applies separately to each pass, not to the whole compaction.
+
+**Not set**: uses the default cap of `16` turns. Pruner passes still stop earlier when two consecutive `drop_observations` calls produce no new valid drops (`consecutiveEmptyCalls >= 2`), and the overall pruner stops when a pass drops zero observations, falls back, reaches target, or exhausts passes.
+
+**Set to 0** or any invalid value: ignored, so the effective cap falls back to the default `16` turns.
+
+```json
+{
+  "observational-memory": {
+    "prunerMaxTurnsPerPass": 8
+  }
+}
+```
+
+**Why you'd set this.** To bound pruning cost/latency per pass. Lower values can leave the observation pool larger if the model needs more turns to identify safe drops.
+
+### Deprecated: `compactionMaxToolCalls` — default: not set
+
+Deprecated compatibility alias for `reflectorMaxTurnsPerPass` and `prunerMaxTurnsPerPass`. It does **not** affect `observerMaxTurnsPerRun`. If a role-specific key is set, it overrides this alias for that role.
+
+Despite the old name, this setting has always behaved as a post-turn cap, not a hard tool-call counter. Prefer the role-specific `*MaxTurns*` settings for new configuration.
+
+```json
+{
+  "observational-memory": {
+    "compactionMaxToolCalls": 8
+  }
+}
+```
 
 ---
 

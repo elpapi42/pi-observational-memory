@@ -18,6 +18,7 @@ interface RunObserverArgs {
 	allowedSourceEntryIds: string[];
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
+	maxTurns?: number;
 }
 
 const RelevanceSchema = Type.Union([
@@ -160,6 +161,8 @@ ${conversation}`;
 	};
 
 	const reasoning = (model as { reasoning?: unknown }).reasoning;
+	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
+	let turnCount = 0;
 	const config: AgentLoopConfig = {
 		model,
 		apiKey,
@@ -168,6 +171,14 @@ ${conversation}`;
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
 		...(reasoning ? { reasoning: "high" as const } : {}),
+		...(effectiveMaxTurns !== undefined
+			? {
+				shouldStopAfterTurn: () => {
+					turnCount++;
+					return turnCount >= effectiveMaxTurns;
+				},
+			}
+			: {}),
 	};
 
 	const loop = args.agentLoop ?? agentLoop;

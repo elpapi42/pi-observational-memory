@@ -62,13 +62,13 @@ function apply(
 	return applyReflectionProposals(reflections, proposals, allowedObservationIds, { minSupportingObservationIds });
 }
 
-function fakeAgentLoop(handler: (prompts: any[], context: any) => Promise<void> | void): any {
-	return ((prompts: any[], context: any) => ({
+function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void): any {
+	return ((prompts: any[], context: any, config: any) => ({
 		async *[Symbol.asyncIterator]() {
 			// No streaming events needed for these tests.
 		},
 		result: async () => {
-			await handler(prompts, context);
+			await handler(prompts, context, config);
 			return {};
 		},
 	})) as any;
@@ -365,31 +365,23 @@ describe("runReflector multi-pass orchestration", () => {
 		expect(passStarts).toEqual(["1/3", "2/3", "3/3"]);
 	});
 
-	it("stops reflector pass early when maxToolCalls is reached", async () => {
-		let totalCalls = 0;
-		const loop = fakeAgentLoop(async (_prompts, context) => {
-			const tool = context.tools[0];
-			// Simulate many tool calls
-			for (let i = 0; i < 20; i++) {
-				totalCalls++;
-				await tool.execute(`tc-${i}`, {
-					reflections: [{ content: `Reflection ${i}.`, supportingObservationIds: [obsA.id, obsB.id] }],
-				});
-			}
+	it("passes maxTurns as a per-pass reflector turn cap", async () => {
+		const shouldStopByPass: any[] = [];
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			shouldStopByPass.push(config.shouldStopAfterTurn);
 		});
 
-		// fakeAgentLoop doesn't respect shouldStopAfterTurn, so all 20 calls run per pass.
-		// But the config is still set — we verify the mechanism is wired by checking
-		// that maxToolCalls is read from args.
-		const result = await runReflector(
-			{ model: {} as any, apiKey: "test", agentLoop: loop, maxToolCalls: 2 },
+		await runReflector(
+			{ model: {} as any, apiKey: "test", agentLoop: loop, maxTurns: 2 },
 			[],
 			observations,
 		);
 
-		// With fake loop, all calls run; the real agentLoop would stop at 2.
-		// We just verify the function accepts maxToolCalls without error.
-		expect(result.reflections.length).toBeGreaterThan(0);
+		expect(shouldStopByPass).toHaveLength(3);
+		for (const shouldStopAfterTurn of shouldStopByPass) {
+			expect(shouldStopAfterTurn({})).toBe(false);
+			expect(shouldStopAfterTurn({})).toBe(true);
+		}
 	});
 
 	it("stops reflector pass early on consecutive empty calls", async () => {
@@ -410,7 +402,7 @@ describe("runReflector multi-pass orchestration", () => {
 		});
 
 		const result = await runReflector(
-			{ model: {} as any, apiKey: "test", agentLoop: loop, maxToolCalls: 20 },
+			{ model: {} as any, apiKey: "test", agentLoop: loop, maxTurns: 20 },
 			[],
 			observations,
 		);

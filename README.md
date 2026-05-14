@@ -126,17 +126,21 @@ To run the background memory work (observer, reflector, pruner) on a cheaper / f
 }
 ```
 
-To cap tool calls per reflector/pruner pass (useful for controlling cost on large observation pools):
+Nested agent-loop turns default to `16` for each memory role. To tune them (useful for controlling cost on large observation pools):
 
 ```json
 {
   "observational-memory": {
-    "compactionMaxToolCalls": 32
+    "observerMaxTurnsPerRun": 8,
+    "reflectorMaxTurnsPerPass": 12,
+    "prunerMaxTurnsPerPass": 12
   }
 }
 ```
 
-The seven settings most worth knowing:
+A turn is one assistant/model response cycle inside Pi's nested agent loop. These caps are checked after a turn finishes; they are not hard mid-stream interrupts and are not literal tool-call counters.
+
+The nine settings most worth knowing:
 
 | Setting | Default | What it controls |
 |---|---|---|
@@ -145,7 +149,9 @@ The seven settings most worth knowing:
 | `reflectionThresholdTokens` | `30,000` | The observation pool size at which reflector + pruner engage |
 | `passive` | `false` | Disables proactive observation and extension-triggered compaction while keeping manual/Pi compaction and commands active |
 | `compactionModel` | session model | Which model runs the observer / reflector / pruner — point at a cheaper one to save cost |
-| `compactionMaxToolCalls` | *(not set)* | Caps tool calls per reflector/pruner pass |
+| `observerMaxTurnsPerRun` | `16` | Assistant-turn cap for each observer run |
+| `reflectorMaxTurnsPerPass` | `16` | Assistant-turn cap for each reflector pass |
+| `prunerMaxTurnsPerPass` | `16` | Assistant-turn cap for each pruner pass |
 | `compaction.keepRecentTokens` | `20,000` | How much recent conversation Pi keeps verbatim post-compaction (Pi setting; structural to the extension) |
 
 For shell/session-level control, `PI_OBSERVATIONAL_MEMORY_PASSIVE` overrides global and project settings. Use `1`, `true`, `yes`, or `on` to enable passive mode; use `0`, `false`, `no`, or `off` to force it off.

@@ -299,18 +299,22 @@ describe("coverage-aware pruner prompts", () => {
 		expect(passStarts).toEqual(["1/5"]);
 	});
 
-	it("accepts maxToolCalls without error", async () => {
-		const loop = fakeAgentLoop((_prompts) => {
-			// No drops
+	it("passes maxTurns as a pruner turn cap", async () => {
+		let shouldStopAfterTurn: any;
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			shouldStopAfterTurn = config.shouldStopAfterTurn;
 		});
 
-		const result = await runPruner(
-			{ model: {} as any, apiKey: "test", agentLoop: loop, maxToolCalls: 3 },
+		await runPruner(
+			{ model: {} as any, apiKey: "test", agentLoop: loop, maxTurns: 3 },
 			[],
 			observations,
 			1,
 		);
 
-		expect(result.droppedIds).toEqual([]);
+		expect(shouldStopAfterTurn).toBeTypeOf("function");
+		expect(shouldStopAfterTurn({})).toBe(false);
+		expect(shouldStopAfterTurn({})).toBe(false);
+		expect(shouldStopAfterTurn({})).toBe(true);
 	});
 });

@@ -26,7 +26,7 @@ interface LlmArgs {
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
 	onEvent?: (event: import("@mariozechner/pi-agent-core").AgentEvent) => void;
-	maxToolCalls?: number;
+	maxTurns?: number;
 }
 
 function joinReflectionsOrEmpty(items: MemoryReflection[]): string {
@@ -611,7 +611,7 @@ Crystallize long-lived reflections from the full observation pool for this pass.
 	};
 
 	const reasoning = (args.model as { reasoning?: unknown }).reasoning;
-	const effectiveMaxToolCalls = args.maxToolCalls && args.maxToolCalls > 0 ? args.maxToolCalls : undefined;
+	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
 	let turnCount = 0;
 
 	const config: AgentLoopConfig = {
@@ -624,7 +624,7 @@ Crystallize long-lived reflections from the full observation pool for this pass.
 		...(reasoning ? { reasoning: "high" as const } : {}),
 		shouldStopAfterTurn: () => {
 			turnCount++;
-			if (effectiveMaxToolCalls !== undefined && turnCount >= effectiveMaxToolCalls) return true;
+			if (effectiveMaxTurns !== undefined && turnCount >= effectiveMaxTurns) return true;
 			if (consecutiveEmptyCalls >= 2) return true;
 			return false;
 		},
@@ -858,7 +858,7 @@ Decide which observations to remove from the kept set. Call drop_observations wi
 	};
 
 	const reasoning = (args.model as { reasoning?: unknown }).reasoning;
-	const effectiveMaxToolCalls = args.maxToolCalls && args.maxToolCalls > 0 ? args.maxToolCalls : undefined;
+	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
 	let turnCount = 0;
 
 	const config: AgentLoopConfig = {
@@ -871,7 +871,7 @@ Decide which observations to remove from the kept set. Call drop_observations wi
 		...(reasoning ? { reasoning: "high" as const } : {}),
 		shouldStopAfterTurn: () => {
 			turnCount++;
-			if (effectiveMaxToolCalls !== undefined && turnCount >= effectiveMaxToolCalls) return true;
+			if (effectiveMaxTurns !== undefined && turnCount >= effectiveMaxTurns) return true;
 			if (consecutiveEmptyCalls >= 2) return true;
 			return false;
 		},

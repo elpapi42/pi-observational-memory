@@ -9,7 +9,7 @@ vi.mock("@mariozechner/pi-coding-agent", () => ({
 	getAgentDir: () => mock.agentDir,
 }));
 
-import { loadConfig, readEnvConfig } from "../src/config.js";
+import { loadConfig, readEnvConfig, resolveTurnLimits } from "../src/config.js";
 
 let rootDir = "";
 let cwd = "";
@@ -82,15 +82,82 @@ describe("loadConfig", () => {
 		expect(loadConfig(cwd, { PI_OBSERVATIONAL_MEMORY_PASSIVE: "invalid" })).toMatchObject({ passive: false, debugLog: false });
 	});
 
-	it("loads compactionMaxToolCalls from settings", () => {
+	it("loads turn-limit settings and deprecated compactionMaxToolCalls from settings", () => {
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": {
+				observerMaxTurnsPerRun: 2,
+				reflectorMaxTurnsPerPass: 3,
+				prunerMaxTurnsPerPass: 4,
+				compactionMaxToolCalls: 5,
+			},
+		});
+		expect(loadConfig(cwd, {})).toMatchObject({
+			observerMaxTurnsPerRun: 2,
+			reflectorMaxTurnsPerPass: 3,
+			prunerMaxTurnsPerPass: 4,
+			compactionMaxToolCalls: 5,
+		});
+	});
+
+	it("defaults effective turn-limit settings to 16", () => {
+		const config = loadConfig(cwd, {});
+		expect(config.observerMaxTurnsPerRun).toBeUndefined();
+		expect(config.reflectorMaxTurnsPerPass).toBeUndefined();
+		expect(config.prunerMaxTurnsPerPass).toBeUndefined();
+		expect(config.compactionMaxToolCalls).toBeUndefined();
+		expect(resolveTurnLimits(config)).toEqual({
+			observerMaxTurnsPerRun: 16,
+			reflectorMaxTurnsPerPass: 16,
+			prunerMaxTurnsPerPass: 16,
+		});
+	});
+
+	it("ignores invalid turn-limit settings and falls back to defaults", () => {
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": {
+				observerMaxTurnsPerRun: 0,
+				reflectorMaxTurnsPerPass: -1,
+				prunerMaxTurnsPerPass: 1.5,
+				compactionMaxToolCalls: "3",
+			},
+		});
+		const config = loadConfig(cwd, {});
+		expect(config.observerMaxTurnsPerRun).toBeUndefined();
+		expect(config.reflectorMaxTurnsPerPass).toBeUndefined();
+		expect(config.prunerMaxTurnsPerPass).toBeUndefined();
+		expect(config.compactionMaxToolCalls).toBeUndefined();
+		expect(resolveTurnLimits(config)).toEqual({
+			observerMaxTurnsPerRun: 16,
+			reflectorMaxTurnsPerPass: 16,
+			prunerMaxTurnsPerPass: 16,
+		});
+	});
+
+	it("resolves deprecated compactionMaxToolCalls as reflector/pruner turn-limit fallback only", () => {
 		writeJson(join(cwd, ".pi", "settings.json"), {
 			"observational-memory": { compactionMaxToolCalls: 5 },
 		});
-		expect(loadConfig(cwd, {})).toMatchObject({ compactionMaxToolCalls: 5 });
+		const limits = resolveTurnLimits(loadConfig(cwd, {}));
+		expect(limits).toEqual({
+			observerMaxTurnsPerRun: 16,
+			reflectorMaxTurnsPerPass: 5,
+			prunerMaxTurnsPerPass: 5,
+		});
 	});
 
-	it("defaults compactionMaxToolCalls to undefined", () => {
-		const config = loadConfig(cwd, {});
-		expect(config.compactionMaxToolCalls).toBeUndefined();
+	it("lets role-specific turn-limit settings override deprecated compactionMaxToolCalls", () => {
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": {
+				observerMaxTurnsPerRun: 2,
+				reflectorMaxTurnsPerPass: 3,
+				prunerMaxTurnsPerPass: 4,
+				compactionMaxToolCalls: 5,
+			},
+		});
+		expect(resolveTurnLimits(loadConfig(cwd, {}))).toEqual({
+			observerMaxTurnsPerRun: 2,
+			reflectorMaxTurnsPerPass: 3,
+			prunerMaxTurnsPerPass: 4,
+		});
 	});
 });
