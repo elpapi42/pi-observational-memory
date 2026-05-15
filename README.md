@@ -176,7 +176,7 @@ For the full list and tuning recipes, see **[docs/configuration.md](docs/configu
 | Surface | What it does |
 |---|---|
 | `/om-status` | Memory totals, percent-to-threshold for each gate, passive-mode status, and in-flight flags for observer and compaction |
-| `/om-view` | Full dump of memory state: every reflection, every committed observation, every pending observation. Reflection and observation ids shown here can be used with `recall` |
+| `/om-view` | Full dump of memory state copied to the clipboard and printed: every reflection, every committed observation, every pending observation. Reflection and observation ids shown here can be used with `recall` |
 | `recall` agent tool | Recovers exact source evidence for a specific reflection or observation id on the current branch. It is for agent self-recovery and provenance, not a user command, semantic search, or transcript browser |
 
 ## Credits

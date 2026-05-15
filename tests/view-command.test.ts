@@ -45,7 +45,7 @@ function memoryDetailsV4(reflections: MemoryDetailsV4["reflections"] = [legacyRe
 	};
 }
 
-async function runView(details: MemoryDetailsV3 | MemoryDetailsV4): Promise<string> {
+async function runView(details: MemoryDetailsV3 | MemoryDetailsV4, clipboardResult = true): Promise<{ output: string; clipboardText: string }> {
 	let handler: ((args: string[], ctx: unknown) => Promise<void>) | undefined;
 	const pi = {
 		registerCommand: vi.fn((name: string, command: { handler: typeof handler }) => {
@@ -54,7 +54,8 @@ async function runView(details: MemoryDetailsV3 | MemoryDetailsV4): Promise<stri
 		}),
 	};
 	const runtime = { ensureConfig: vi.fn() };
-	registerViewCommand(pi as never, runtime as never);
+	const copyToClipboard = vi.fn(async () => clipboardResult);
+	registerViewCommand(pi as never, runtime as never, { copyToClipboard });
 	if (!handler) throw new Error("om-view handler was not registered");
 
 	const notify = vi.fn();
@@ -71,12 +72,13 @@ async function runView(details: MemoryDetailsV3 | MemoryDetailsV4): Promise<stri
 
 	const [[message, level]] = notify.mock.calls;
 	expect(level).toBe("info");
-	return message;
+	expect(copyToClipboard).toHaveBeenCalledTimes(1);
+	return { output: message, clipboardText: copyToClipboard.mock.calls[0][0] };
 }
 
 describe("/om-view", () => {
 	it("renders v4 reflection ids and legacy strings without extra labels", async () => {
-		const output = await runView(memoryDetailsV4());
+		const { output } = await runView(memoryDetailsV4());
 
 		expect(output).toContain(`[${reflectionRecord.id}] ${reflectionRecord.content}`);
 		expect(output).toContain(`[${migratedLegacyReflectionRecord.id}] ${migratedLegacyReflectionRecord.content}`);
@@ -91,7 +93,7 @@ describe("/om-view", () => {
 	});
 
 	it("counts observation tokens from rendered observation lines", async () => {
-		const output = await runView(memoryDetailsV4());
+		const { output } = await runView(memoryDetailsV4());
 		const renderedObsTokens = observationPoolTokens([committedObservation]);
 
 		expect(output).toContain(`1 observation (1 committed, 0 pending) · ~`);
@@ -99,10 +101,25 @@ describe("/om-view", () => {
 	});
 
 	it("keeps v3 legacy reflections plain", async () => {
-		const output = await runView(memoryDetailsV3());
+		const { output } = await runView(memoryDetailsV3());
 
 		expect(output).toContain(legacyReflection);
 		expect(output).not.toContain(`[${reflectionRecord.id}]`);
 		expect(output).not.toContain("[object Object]");
+	});
+
+	it("copies the rendered memory view to the clipboard", async () => {
+		const { output, clipboardText } = await runView(memoryDetailsV4());
+
+		expect(clipboardText).toContain(`[${committedObservation.id}] ${committedObservation.timestamp} [${committedObservation.relevance}] ${committedObservation.content}`);
+		expect(clipboardText).not.toContain("Copied /om-view output to clipboard.");
+		expect(output).toBe(`${clipboardText}\n\nCopied /om-view output to clipboard.`);
+	});
+
+	it("keeps showing the memory view when clipboard copy fails", async () => {
+		const { output, clipboardText } = await runView(memoryDetailsV4(), false);
+
+		expect(output).toBe(`${clipboardText}\n\nWarning: failed to copy /om-view output to clipboard.`);
+		expect(clipboardText).not.toContain("failed to copy");
 	});
 });

@@ -1,14 +1,20 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { getMemoryState } from "../branch.js";
+import { copyTextToClipboard } from "../clipboard.js";
 import { observationPoolTokens as estimateObservationPoolTokens } from "../compaction.js";
 import { countByRelevance, formatRelevanceHistogram } from "../relevance.js";
 import type { Runtime } from "../runtime.js";
 import { estimateStringTokens } from "../tokens.js";
 import { reflectionContent, reflectionToPromptLine, type MemoryReflection, type ObservationRecord } from "../types.js";
 
-export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime): void {
+interface ViewCommandOptions {
+	copyToClipboard?: (text: string) => Promise<boolean>;
+}
+
+export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime, options: ViewCommandOptions = {}): void {
+	const copyToClipboard = options.copyToClipboard ?? copyTextToClipboard;
 	pi.registerCommand("om-view", {
-		description: "Print observational memory details (reflections + observations)",
+		description: "Print and copy observational memory details (reflections + observations)",
 		handler: async (_args, ctx) => {
 			runtime.ensureConfig(ctx.cwd);
 			const entries = ctx.sessionManager.getBranch() as Parameters<typeof getMemoryState>[0];
@@ -76,7 +82,14 @@ export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime): void {
 			sections.push("");
 			sections.push("Tip: use /tree to browse the raw messages still live in the session.");
 
-			ctx.ui.notify(sections.join("\n"), "info");
+			const output = sections.join("\n");
+			const copied = await copyToClipboard(output);
+			ctx.ui.notify(
+				copied
+					? `${output}\n\nCopied /om-view output to clipboard.`
+					: `${output}\n\nWarning: failed to copy /om-view output to clipboard.`,
+				"info",
+			);
 		},
 	});
 }
