@@ -621,7 +621,7 @@ Crystallize long-lived reflections from the full observation pool for this pass.
 		maxTokens: boundedMaxTokens(args.model, AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
-		...(reasoning ? { reasoning: "high" as const } : {}),
+		...(reasoning ? { reasoning: "low" as const } : {}),
 		shouldStopAfterTurn: () => {
 			turnCount++;
 			if (effectiveMaxTurns !== undefined && turnCount >= effectiveMaxTurns) return true;
@@ -868,7 +868,7 @@ Decide which observations to remove from the kept set. Call drop_observations wi
 		maxTokens: boundedMaxTokens(args.model, AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
-		...(reasoning ? { reasoning: "high" as const } : {}),
+		...(reasoning ? { reasoning: "low" as const } : {}),
 		shouldStopAfterTurn: () => {
 			turnCount++;
 			if (effectiveMaxTurns !== undefined && turnCount >= effectiveMaxTurns) return true;
