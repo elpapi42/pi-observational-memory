@@ -166,6 +166,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 						allowedSourceEntryIds: sourceEntryIds,
 						signal,
 						maxTurns: turnLimits.observerMaxTurnsPerRun,
+						thinkingLevel: runtime.config.thinkingLevel,
 					});
 					const gapPromise: Promise<void> = gapCall.then(() => undefined, () => undefined);
 					runtime.observerPromise = gapPromise;
@@ -302,7 +303,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 					updateWidget();
 					const coverageBefore = coverageTagCounts(workingReflections, workingObservations);
 					const reflectorResult = await runReflector(
-						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); }, maxTurns: turnLimits.reflectorMaxTurnsPerPass },
+						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); }, maxTurns: turnLimits.reflectorMaxTurnsPerPass, thinkingLevel: runtime.config.thinkingLevel },
 						workingReflections,
 						workingObservations,
 						(pass, max) => { progress.setPhase("reflector", pass, max); updateWidget(); },
@@ -318,7 +319,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 					});
 
 					const prunerResult = await runPruner(
-						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); }, maxTurns: turnLimits.prunerMaxTurnsPerPass },
+						{ model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, signal, onEvent: (event) => { progress.onEvent(event); updateWidget(); }, maxTurns: turnLimits.prunerMaxTurnsPerPass, thinkingLevel: runtime.config.thinkingLevel },
 						finalReflections,
 						workingObservations,
 						runtime.config.reflectionThresholdTokens,

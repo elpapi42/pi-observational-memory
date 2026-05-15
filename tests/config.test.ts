@@ -99,6 +99,30 @@ describe("loadConfig", () => {
 		});
 	});
 
+	it("loads unified thinkingLevel from settings", () => {
+		for (const thinkingLevel of ["off", "minimal", "low", "medium", "high", "xhigh"]) {
+			writeJson(join(cwd, ".pi", "settings.json"), {
+				"observational-memory": { thinkingLevel },
+			});
+			expect(loadConfig(cwd, {})).toMatchObject({ thinkingLevel });
+		}
+	});
+
+	it("defaults unified thinkingLevel to low", () => {
+		expect(loadConfig(cwd, {})).toMatchObject({ thinkingLevel: "low" });
+	});
+
+	it("lets local thinkingLevel override global thinkingLevel", () => {
+		writeJson(join(mock.agentDir, "settings.json"), {
+			"observational-memory": { thinkingLevel: "high" },
+		});
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": { thinkingLevel: "off" },
+		});
+
+		expect(loadConfig(cwd, {})).toMatchObject({ thinkingLevel: "off" });
+	});
+
 	it("defaults effective turn-limit settings to 16", () => {
 		const config = loadConfig(cwd, {});
 		expect(config.observerMaxTurnsPerRun).toBeUndefined();
@@ -131,6 +155,14 @@ describe("loadConfig", () => {
 			reflectorMaxTurnsPerPass: 16,
 			prunerMaxTurnsPerPass: 16,
 		});
+	});
+
+	it("ignores invalid thinkingLevel settings and falls back to defaults", () => {
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": { thinkingLevel: "disabled" },
+		});
+
+		expect(loadConfig(cwd, {})).toMatchObject({ thinkingLevel: "low" });
 	});
 
 	it("resolves deprecated compactionMaxToolCalls as reflector/pruner turn-limit fallback only", () => {

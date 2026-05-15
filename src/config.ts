@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { ModelThinkingLevel } from "@mariozechner/pi-ai";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 
 export interface Config {
@@ -12,6 +13,7 @@ export interface Config {
 	observerMaxTurnsPerRun?: number;
 	reflectorMaxTurnsPerPass?: number;
 	prunerMaxTurnsPerPass?: number;
+	thinkingLevel: ModelThinkingLevel;
 	/** @deprecated Use reflectorMaxTurnsPerPass and prunerMaxTurnsPerPass. */
 	compactionMaxToolCalls?: number;
 }
@@ -28,7 +30,10 @@ export const DEFAULTS: Config = {
 	reflectionThresholdTokens: 30_000,
 	passive: false,
 	debugLog: false,
+	thinkingLevel: "low",
 };
+
+export const THINKING_LEVEL_VALUES: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
 const SETTINGS_KEY = "observational-memory";
 const PASSIVE_ENV = "PI_OBSERVATIONAL_MEMORY_PASSIVE";
@@ -48,6 +53,15 @@ function normalizeTurnLimit<K extends keyof Config>(normalized: Partial<Config>,
 	}
 }
 
+function isThinkingLevel(value: unknown): value is ModelThinkingLevel {
+	return typeof value === "string" && (THINKING_LEVEL_VALUES as readonly string[]).includes(value);
+}
+
+function normalizeThinkingLevel(normalized: Partial<Config>): void {
+	if (!("thinkingLevel" in normalized)) return;
+	if (!isThinkingLevel(normalized.thinkingLevel)) delete normalized.thinkingLevel;
+}
+
 function normalizeSettingsConfig(value: Partial<Config>): Partial<Config> {
 	const normalized = { ...value };
 	if ("passive" in normalized && typeof normalized.passive !== "boolean") delete normalized.passive;
@@ -56,6 +70,7 @@ function normalizeSettingsConfig(value: Partial<Config>): Partial<Config> {
 	normalizeTurnLimit(normalized, "reflectorMaxTurnsPerPass");
 	normalizeTurnLimit(normalized, "prunerMaxTurnsPerPass");
 	normalizeTurnLimit(normalized, "compactionMaxToolCalls");
+	normalizeThinkingLevel(normalized);
 	return normalized;
 }
 

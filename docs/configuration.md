@@ -18,6 +18,7 @@ If you haven't read **[concepts.md](concepts.md)** yet, do that first — this d
   - [`observerMaxTurnsPerRun`](#observermaxturnsperrun--default-16)
   - [`reflectorMaxTurnsPerPass`](#reflectormaxturnsperpass--default-16)
   - [`prunerMaxTurnsPerPass`](#prunermaxturnsperpass--default-16)
+  - [`thinkingLevel`](#thinkinglevel--default-low)
   - [Deprecated: `compactionMaxToolCalls`](#deprecated-compactionmaxtoolcalls--default-not-set)
 - [Pi compaction settings the extension depends on](#pi-compaction-settings-the-extension-depends-on)
   - [`keepRecentTokens`](#keeprecenttokens--pi-setting-default-20000)
@@ -54,7 +55,8 @@ Every setting at its default value:
     "compactionThresholdTokens": 50000,
     "reflectionThresholdTokens": 30000,
     "passive": false,
-    "debugLog": false
+    "debugLog": false,
+    "thinkingLevel": "low"
   },
   "compaction": {
     "enabled": true,
@@ -66,7 +68,7 @@ Every setting at its default value:
 
 You don't need any of these to start — defaults work well for most sessions.
 
-Several settings are easy to miss: **`compactionModel`** and the turn caps **`observerMaxTurnsPerRun`**, **`reflectorMaxTurnsPerPass`**, and **`prunerMaxTurnsPerPass`**. Left unset, the observer / reflector / pruner all use the session model and default to 16 turns each. A realistic settings file that overrides both model and turn caps looks like this:
+Several settings are easy to miss: **`compactionModel`**, the turn caps **`observerMaxTurnsPerRun`**, **`reflectorMaxTurnsPerPass`**, and **`prunerMaxTurnsPerPass`**, and the unified thinking knob **`thinkingLevel`**. Left unset, the observer / reflector / pruner all use the session model, default to 16 turns each, and use thinking level `low`. A realistic settings file that overrides model, turn caps, and thinking looks like this:
 
 ```json
 {
@@ -79,7 +81,8 @@ Several settings are easy to miss: **`compactionModel`** and the turn caps **`ob
     "compactionModel": { "provider": "openrouter", "id": "google/gemma-4-31b-it" },
     "observerMaxTurnsPerRun": 8,
     "reflectorMaxTurnsPerPass": 12,
-    "prunerMaxTurnsPerPass": 12
+    "prunerMaxTurnsPerPass": 12,
+    "thinkingLevel": "low"
   },
   "compaction": {
     "keepRecentTokens": 20000
@@ -87,7 +90,7 @@ Several settings are easy to miss: **`compactionModel`** and the turn caps **`ob
 }
 ```
 
-The settings below are listed roughly in the order they affect a session's life: the observer fires first and most often, the extension-trigger cadence comes next, passive mode can disable that proactive work, the reflector + pruner gate engages inside compaction, the model choice and turn caps apply to the memory model loops, and the Pi-owned settings determine the structural details of each compaction.
+The settings below are listed roughly in the order they affect a session's life: the observer fires first and most often, the extension-trigger cadence comes next, passive mode can disable that proactive work, the reflector + pruner gate engages inside compaction, the model choice plus turn/reasoning caps apply to the memory model loops, and the Pi-owned settings determine the structural details of each compaction.
 
 ---
 
@@ -224,6 +227,26 @@ Positive integer that caps assistant/model turns for each pruner pass. The prune
 ```
 
 **Why you'd set this.** To bound pruning cost/latency per pass. Lower values can leave the observation pool larger if the model needs more turns to identify safe drops.
+
+### `thinkingLevel` — default: `low`
+
+Unified thinking/reasoning level for observer, sync catch-up observer, reflector, and pruner model calls.
+
+Valid values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
+
+```json
+{
+  "observational-memory": {
+    "thinkingLevel": "low"
+  }
+}
+```
+
+**Why you'd set this.** Lower values reduce thinking-token latency and cost, especially during reflector/pruner compaction over large observation pools. Higher values may improve observation coverage, durable reflection synthesis, or conservative pruning judgment, but can substantially increase compaction time.
+
+When set to `off`, the extension omits Pi's `reasoning` option from agent-loop calls. For Anthropic-compatible models this maps to `thinkingEnabled: false`; other providers use Pi's provider-wrapper behavior for omitted reasoning. Models that do not support reasoning ignore this setting because the extension only sends reasoning options when the model advertises reasoning support.
+
+This setting does not change the extension's `maxTokens` output cap or turn caps. Invalid values, such as `disabled`, are ignored; if no valid global or project value remains, the default `low` applies.
 
 ### Deprecated: `compactionMaxToolCalls` — default: not set
 

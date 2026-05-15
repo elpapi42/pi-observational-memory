@@ -140,7 +140,17 @@ Nested agent-loop turns default to `16` for each memory role. To tune them (usef
 
 A turn is one assistant/model response cycle inside Pi's nested agent loop. These caps are checked after a turn finishes; they are not hard mid-stream interrupts and are not literal tool-call counters.
 
-The nine settings most worth knowing:
+For memory model calls, you can also tune thinking effort with one unified setting. Valid values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`; the default is `low`.
+
+```json
+{
+  "observational-memory": {
+    "thinkingLevel": "low"
+  }
+}
+```
+
+The settings most worth knowing:
 
 | Setting | Default | What it controls |
 |---|---|---|
@@ -152,6 +162,7 @@ The nine settings most worth knowing:
 | `observerMaxTurnsPerRun` | `16` | Assistant-turn cap for each observer run |
 | `reflectorMaxTurnsPerPass` | `16` | Assistant-turn cap for each reflector pass |
 | `prunerMaxTurnsPerPass` | `16` | Assistant-turn cap for each pruner pass |
+| `thinkingLevel` | `low` | Thinking effort for observer, reflector, and pruner calls; `off` omits Pi's reasoning option |
 | `compaction.keepRecentTokens` | `20,000` | How much recent conversation Pi keeps verbatim post-compaction (Pi setting; structural to the extension) |
 
 For shell/session-level control, `PI_OBSERVATIONAL_MEMORY_PASSIVE` overrides global and project settings. Use `1`, `true`, `yes`, or `on` to enable passive mode; use `0`, `false`, `no`, or `off` to force it off.

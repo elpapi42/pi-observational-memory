@@ -1,5 +1,5 @@
 import { agentLoop, type AgentContext, type AgentEvent, type AgentLoopConfig, type AgentTool } from "@mariozechner/pi-agent-core";
-import { Type, type Message, type Model } from "@mariozechner/pi-ai";
+import { Type, type Message, type Model, type ModelThinkingLevel } from "@mariozechner/pi-ai";
 import type { Static } from "typebox";
 import { debugLog, isDebugLogEnabled } from "./debug-log.js";
 import { hashId } from "./ids.js";
@@ -27,6 +27,7 @@ interface LlmArgs {
 	agentLoop?: typeof agentLoop;
 	onEvent?: (event: import("@mariozechner/pi-agent-core").AgentEvent) => void;
 	maxTurns?: number;
+	thinkingLevel?: ModelThinkingLevel;
 }
 
 function joinReflectionsOrEmpty(items: MemoryReflection[]): string {
@@ -611,6 +612,7 @@ Crystallize long-lived reflections from the full observation pool for this pass.
 	};
 
 	const reasoning = (args.model as { reasoning?: unknown }).reasoning;
+	const thinkingLevel = args.thinkingLevel ?? "low";
 	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
 	let turnCount = 0;
 
@@ -621,7 +623,7 @@ Crystallize long-lived reflections from the full observation pool for this pass.
 		maxTokens: boundedMaxTokens(args.model, AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
-		...(reasoning ? { reasoning: "low" as const } : {}),
+		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
 		shouldStopAfterTurn: () => {
 			turnCount++;
 			if (effectiveMaxTurns !== undefined && turnCount >= effectiveMaxTurns) return true;
@@ -858,6 +860,7 @@ Decide which observations to remove from the kept set. Call drop_observations wi
 	};
 
 	const reasoning = (args.model as { reasoning?: unknown }).reasoning;
+	const thinkingLevel = args.thinkingLevel ?? "low";
 	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
 	let turnCount = 0;
 
@@ -868,7 +871,7 @@ Decide which observations to remove from the kept set. Call drop_observations wi
 		maxTokens: boundedMaxTokens(args.model, AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
-		...(reasoning ? { reasoning: "low" as const } : {}),
+		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
 		shouldStopAfterTurn: () => {
 			turnCount++;
 			if (effectiveMaxTurns !== undefined && turnCount >= effectiveMaxTurns) return true;

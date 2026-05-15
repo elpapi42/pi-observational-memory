@@ -377,6 +377,36 @@ describe("runReflector multi-pass orchestration", () => {
 		}
 	});
 
+	it("uses configured reflector thinking level for reasoning models", async () => {
+		const seenReasoning: unknown[] = [];
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			seenReasoning.push(config.reasoning);
+		});
+
+		await runReflector(
+			{ model: { reasoning: true } as any, apiKey: "test", agentLoop: loop, thinkingLevel: "minimal" },
+			[],
+			observations,
+		);
+
+		expect(seenReasoning).toEqual(["minimal", "minimal"]);
+	});
+
+	it("omits reflector reasoning when thinkingLevel is off", async () => {
+		const seenReasoning: unknown[] = [];
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			seenReasoning.push(config.reasoning);
+		});
+
+		await runReflector(
+			{ model: { reasoning: true } as any, apiKey: "test", agentLoop: loop, thinkingLevel: "off" },
+			[],
+			observations,
+		);
+
+		expect(seenReasoning).toEqual([undefined, undefined]);
+	});
+
 	it("stops reflector pass early on consecutive empty calls", async () => {
 		const loop = fakeAgentLoop(async (_prompts, context) => {
 			const tool = context.tools[0];

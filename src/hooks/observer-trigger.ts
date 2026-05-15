@@ -89,6 +89,7 @@ export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): voi
 					chunk,
 					allowedSourceEntryIds: sourceEntryIds,
 					maxTurns: turnLimits.observerMaxTurnsPerRun,
+					thinkingLevel: runtime.config.thinkingLevel,
 				});
 				if (!records || records.length === 0) {
 					debugLog("observer.empty", { coversFromId, coversUpToId });

@@ -1,5 +1,5 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@mariozechner/pi-agent-core";
-import type { Message, Model } from "@mariozechner/pi-ai";
+import type { Message, Model, ModelThinkingLevel } from "@mariozechner/pi-ai";
 import { Type } from "@mariozechner/pi-ai";
 import type { Static } from "typebox";
 import { hashId } from "./ids.js";
@@ -19,6 +19,7 @@ interface RunObserverArgs {
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
+	thinkingLevel?: ModelThinkingLevel;
 }
 
 const RelevanceSchema = Type.Union([
@@ -161,6 +162,7 @@ ${conversation}`;
 	};
 
 	const reasoning = (model as { reasoning?: unknown }).reasoning;
+	const thinkingLevel = args.thinkingLevel ?? "low";
 	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
 	let turnCount = 0;
 	const config: AgentLoopConfig = {
@@ -170,7 +172,7 @@ ${conversation}`;
 		maxTokens: boundedMaxTokens(model, AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
-		...(reasoning ? { reasoning: "high" as const } : {}),
+		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
 		...(effectiveMaxTurns !== undefined
 			? {
 				shouldStopAfterTurn: () => {

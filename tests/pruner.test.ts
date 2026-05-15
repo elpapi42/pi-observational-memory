@@ -317,4 +317,36 @@ describe("coverage-aware pruner prompts", () => {
 		expect(shouldStopAfterTurn({})).toBe(false);
 		expect(shouldStopAfterTurn({})).toBe(true);
 	});
+
+	it("uses configured pruner thinking level for reasoning models", async () => {
+		let seenReasoning: unknown;
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			seenReasoning = config.reasoning;
+		});
+
+		await runPruner(
+			{ model: { reasoning: true } as any, apiKey: "test", agentLoop: loop, thinkingLevel: "minimal" },
+			[],
+			observations,
+			1,
+		);
+
+		expect(seenReasoning).toBe("minimal");
+	});
+
+	it("omits pruner reasoning when thinkingLevel is off", async () => {
+		let seenReasoning: unknown = "unset";
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			seenReasoning = config.reasoning;
+		});
+
+		await runPruner(
+			{ model: { reasoning: true } as any, apiKey: "test", agentLoop: loop, thinkingLevel: "off" },
+			[],
+			observations,
+			1,
+		);
+
+		expect(seenReasoning).toBeUndefined();
+	});
 });

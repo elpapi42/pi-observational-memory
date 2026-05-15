@@ -68,6 +68,46 @@ describe("runObserver", () => {
 		expect(shouldStopAfterTurn({})).toBe(false);
 		expect(shouldStopAfterTurn({})).toBe(true);
 	});
+
+	it("uses configured observer thinking level for reasoning models", async () => {
+		let seenReasoning: unknown;
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			seenReasoning = config.reasoning;
+		});
+
+		await runObserver({
+			model: { reasoning: true } as any,
+			apiKey: "test",
+			priorReflections: [],
+			priorObservations: [],
+			chunk: "[Source entry id: entry-a]\nUser asked for a memory update.",
+			allowedSourceEntryIds: ["entry-a"],
+			agentLoop: loop,
+			thinkingLevel: "minimal",
+		});
+
+		expect(seenReasoning).toBe("minimal");
+	});
+
+	it("omits observer reasoning when thinkingLevel is off", async () => {
+		let seenReasoning: unknown = "unset";
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			seenReasoning = config.reasoning;
+		});
+
+		await runObserver({
+			model: { reasoning: true } as any,
+			apiKey: "test",
+			priorReflections: [],
+			priorObservations: [],
+			chunk: "[Source entry id: entry-a]\nUser asked for a memory update.",
+			allowedSourceEntryIds: ["entry-a"],
+			agentLoop: loop,
+			thinkingLevel: "off",
+		});
+
+		expect(seenReasoning).toBeUndefined();
+	});
 });
 
 describe("normalizeSourceEntryIds", () => {
