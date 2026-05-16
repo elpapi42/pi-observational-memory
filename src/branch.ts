@@ -181,7 +181,15 @@ function rawTokensFromIndex(entries: Entry[], startIndex: number): number {
 }
 
 export function rawTokensSinceLastBound(entries: Entry[]): number {
-	return rawTokensFromIndex(entries, lastObservationCoverEndIdx(entries) + 1);
+	let startIdx = lastObservationCoverEndIdx(entries);
+	// Clamp to at least the last compaction entry — observation entries from before
+	// the last compaction may have coversUpToId pointing to deleted entries, causing
+	// lastObservationCoverEndIdx to return -1 and including the entire branch.
+	const lastCompactionIdx = findLastCompactionIndex(entries);
+	if (startIdx < lastCompactionIdx) {
+		startIdx = lastCompactionIdx;
+	}
+	return rawTokensFromIndex(entries, startIdx + 1);
 }
 
 export function rawTokensSinceLastCompaction(entries: Entry[]): number {

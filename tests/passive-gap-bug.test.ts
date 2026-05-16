@@ -26,7 +26,7 @@ vi.mock("@mariozechner/pi-coding-agent", () => ({
 	},
 }));
 
-import { gapRawEntries, lastObservationCoverEndIdx } from "../src/branch.js";
+import { gapRawEntries, lastObservationCoverEndIdx, rawTokensSinceLastBound } from "../src/branch.js";
 import { registerCompactionHook } from "../src/hooks/compaction-hook.js";
 import { estimateStringTokens } from "../src/tokens.js";
 import type { ObservationRecord } from "../src/types.js";
@@ -268,5 +268,40 @@ describe("gap detection after compaction", () => {
 
 		// Verify compaction succeeded
 		expect(result).toHaveProperty("compaction");
+	});
+
+	it("rawTokensSinceLastBound clamps to compaction entry when observation coversUpToId is dangling", () => {
+		const entries = [
+			compactionEntry({
+				id: "prior-compaction",
+				firstKeptEntryId: "kept-1",
+				details: {
+					type: "observational-memory",
+					version: 4,
+					observations: [observation],
+					reflections: [],
+				},
+			}),
+			messageEntry({ id: "kept-1", message: { role: "user", content: "a".repeat(1000) } }),
+			messageEntry({ id: "kept-2", message: { role: "user", content: "b".repeat(1000) } }),
+			// Observation entry with dangling coversUpToId — the referenced entry was compacted away
+			observationEntry({
+				id: "surviving-obs",
+				data: {
+					records: [observation],
+					coversFromId: "source-gone",
+					coversUpToId: "source-gone",
+					tokenCount: 100,
+				},
+			}),
+			messageEntry({ id: "kept-3", message: { role: "user", content: "c".repeat(1000) } }),
+		];
+
+		// Without clamping: lastObservationCoverEndIdx returns -1, rawTokensSinceLastBound
+		// counts ALL raw tokens in the branch (~3000 chars = ~750 tokens)
+		// With clamping: starts from compaction entry, counts only post-compaction raw tokens
+		const tokens = rawTokensSinceLastBound(entries);
+		const perMsg = Math.ceil(1000 / 4); // estimateTokens for each 1000-char message
+		expect(tokens).toBe(perMsg * 3); // kept-1, kept-2, kept-3 — not the entire branch
 	});
 });
