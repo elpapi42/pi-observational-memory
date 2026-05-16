@@ -44,11 +44,12 @@ export class CompactionProgressTracker {
 	}
 
 	setPhase(phase: CompactionPhase, pass: number, maxPasses: number): void {
-		if (this.phase && this.phase !== phase && !this.completedPhases.includes(this.phase)) {
-			this.completedPhases.push(this.phase);
+		const prevPhase = this.phase;
+		if (prevPhase && prevPhase !== phase && !this.completedPhases.includes(prevPhase)) {
+			this.completedPhases.push(prevPhase);
 		}
 		// Reset deltas when transitioning to a different phase
-		if (this.phase !== phase) {
+		if (prevPhase !== phase) {
 			this.reflectionsAdded = 0;
 			this.reflectionsMerged = 0;
 			this.observationsDropped = 0;
@@ -56,8 +57,12 @@ export class CompactionProgressTracker {
 		this.phase = phase;
 		this.pass = pass;
 		this.maxPasses = maxPasses;
-		this.toolCallCount = 0;
-		this.turnCount = 0;
+		// Reset per-phase counters only when transitioning to a different phase,
+		// not when advancing pass/batch within the same phase
+		if (prevPhase !== phase) {
+			this.toolCallCount = 0;
+			this.turnCount = 0;
+		}
 	}
 
 	setStartingCounts(reflections: number, observations: number): void {
@@ -124,14 +129,17 @@ export class CompactionProgressTracker {
 		});
 		parts.push(phaseLabels.join(theme.fg("dim", " → ")));
 
-		// Pass info (only for multi-pass phases)
+		// Pass/batch info (only for multi-pass phases)
 		if (this.maxPasses > 1) {
-			parts.push(theme.fg("muted", `pass ${this.pass}/${this.maxPasses}`));
+			const label = this.phase === "observer" ? "batch" : "pass";
+			parts.push(theme.fg("muted", `${label} ${this.pass}/${this.maxPasses}`));
 		}
 
-		// Tool calls
-		const tcLabel = this.toolCallCount === 1 ? "tool call" : "tool calls";
-		parts.push(theme.fg("muted", `${this.toolCallCount} ${tcLabel}`));
+		// Tool calls (only shown when non-zero — observer batches don't feed events)
+		if (this.toolCallCount > 0) {
+			const tcLabel = this.toolCallCount === 1 ? "tool call" : "tool calls";
+			parts.push(theme.fg("muted", `${this.toolCallCount} ${tcLabel}`));
+		}
 
 		// Delta counters: R total(+accumulated), M total(+accumulated), O remaining(-accumulated)
 		const deltas: string[] = [];

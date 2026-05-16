@@ -181,7 +181,15 @@ function rawTokensFromIndex(entries: Entry[], startIndex: number): number {
 }
 
 export function rawTokensSinceLastBound(entries: Entry[]): number {
-	return rawTokensFromIndex(entries, lastObservationCoverEndIdx(entries) + 1);
+	let startIdx = lastObservationCoverEndIdx(entries);
+	// Clamp to at least the last compaction entry — observation entries from before
+	// the last compaction may have coversUpToId pointing to deleted entries, causing
+	// lastObservationCoverEndIdx to return -1 and including the entire branch.
+	const lastCompactionIdx = findLastCompactionIndex(entries);
+	if (startIdx < lastCompactionIdx) {
+		startIdx = lastCompactionIdx;
+	}
+	return rawTokensFromIndex(entries, startIdx + 1);
 }
 
 export function rawTokensSinceLastCompaction(entries: Entry[]): number {
@@ -208,7 +216,17 @@ export function firstRawIdAfter(entries: Entry[], afterIndex: number): string | 
 }
 
 export function gapRawEntries(entries: Entry[], newFirstKeptEntryId: string): Entry[] {
-	const lastBoundIdx = lastObservationCoverEndIdx(entries);
+	let lastBoundIdx = lastObservationCoverEndIdx(entries);
+	// Clamp the start boundary to at least the last compaction entry.
+	// Observation entries from before the last compaction may have coversUpToId values
+	// pointing to entries that were compacted away, or to entries before the compaction
+	// boundary whose content is already represented in the compaction details.
+	// Including them in the gap would cause the sync catch-up observer to re-process
+	// already-compact content and potentially produce a gap too large for a single LLM call.
+	const lastCompactionIdx = findLastCompactionIndex(entries);
+	if (lastBoundIdx < lastCompactionIdx) {
+		lastBoundIdx = lastCompactionIdx;
+	}
 	const newKeptIdx = entries.findIndex((e) => e.id === newFirstKeptEntryId);
 	if (newKeptIdx === -1) return [];
 	const result: Entry[] = [];
