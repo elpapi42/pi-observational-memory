@@ -5,8 +5,11 @@ import { resolveTurnLimits } from "../config.js";
 import {
 	collectObservationsByCoverage,
 	findLastCompactionIndex,
+	firstRawIdAfter,
 	gapRawEntries,
 	getMemoryState,
+	lastObservationCoverEndIdx,
+	rawTailEntriesBetween,
 } from "../branch.js";
 import {
 	REFLECTOR_MAX_PASSES,
@@ -24,7 +27,7 @@ import { observationsToPromptLines, runObserver } from "../observer.js";
 import { CompactionProgressTracker } from "../progress.js";
 import type { Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
-import { estimateStringTokens } from "../tokens.js";
+import { estimateEntryTokens, estimateStringTokens } from "../tokens.js";
 import {
 	OBSERVATION_CUSTOM_TYPE,
 	reflectionToPromptLine,
@@ -49,6 +52,83 @@ function formatReflectorStats(stats: ReflectorStats): string {
 
 function formatPrunerStats(result: PrunerResult): string {
 	return `pruner dropped ${plural(result.droppedIds.length, "observation")} in ${plural(result.passes.length, "pass", "passes")}, stop: ${result.stopReason}`;
+}
+
+type EntryLike = Parameters<typeof estimateEntryTokens>[0] & { id: string };
+
+/**
+ * A message entry whose role can be inspected.
+ */
+type MessageEntry = EntryLike & { type: "message"; message?: { role?: string } };
+
+/**
+ * Returns true if the entry is a message with role "user" — the start of a new turn.
+ * In Pi's branch, a turn = user message + assistant response (with tool calls).
+ */
+function isTurnStart(entry: EntryLike): boolean {
+	if (entry.type !== "message") return false;
+	const e = entry as MessageEntry;
+	return (e.message as { role?: string })?.role === "user";
+}
+
+/**
+ * Split gap entries into batches that mimic active mode's turn_end observer trigger.
+ *
+ * Active mode fires at `turn_end` when rawTokensSinceLastBound >= threshold.
+ * Each trigger observes everything accumulated since the last boundary.
+ * The chunk is naturally bounded because the observer runs frequently.
+ *
+ * This function replicates that pattern for the passive-mode catch-up:
+ * 1. Split entries into turns (at user-role message boundaries)
+ * 2. Accumulate turns until total tokens >= threshold (same gate as active mode)
+ * 3. Emit that accumulated batch as one chunk
+ * 4. Repeat for remaining turns
+ *
+ * If the very first turn already exceeds the threshold, it is emitted alone
+ * (we never skip entries). If remaining turns total less than the threshold,
+ * they form a final chunk that will be observed (rather than deferred —
+ * unlike the loop-level threshold check which defers sub-threshold remainders).
+ */
+function batchByTurnsAndThreshold(gap: EntryLike[], thresholdTokens: number): EntryLike[][] {
+	if (gap.length === 0) return [];
+
+	// Step 1: split into individual turns
+	const turns: EntryLike[][] = [];
+	let currentTurn: EntryLike[] = [];
+
+	for (const entry of gap) {
+		if (isTurnStart(entry) && currentTurn.length > 0) {
+			turns.push(currentTurn);
+			currentTurn = [];
+		}
+		currentTurn.push(entry);
+	}
+	if (currentTurn.length > 0) turns.push(currentTurn);
+
+	// Step 2: accumulate turns into threshold-gated batches
+	// This mirrors active mode: accumulate turns until threshold is met, then observe.
+	const batches: EntryLike[][] = [];
+	let batch: EntryLike[] = [];
+	let batchTokens = 0;
+
+	for (const turn of turns) {
+		const turnTokens = turn.reduce((sum, e) => sum + estimateEntryTokens(e), 0);
+
+		batch.push(...turn);
+		batchTokens += turnTokens;
+
+		// Emit batch when threshold is reached (same gate as active mode's turn_end check)
+		if (batchTokens >= thresholdTokens) {
+			batches.push(batch);
+			batch = [];
+			batchTokens = 0;
+		}
+	}
+
+	// Remaining turns below threshold — still emit as final batch so they get observed
+	if (batch.length > 0) batches.push(batch);
+
+	return batches;
 }
 
 export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void {
@@ -130,73 +210,118 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 				reflections: memoryState.reflections.length,
 			});
 
-			let gapObservationData: ObservationEntryData | null = null;
+			// --- Sync catch-up observer: replay the active-mode observer loop ---
+			//
+			// Active mode flow:
+			//   turn_end fires → check rawTokensSinceLastBound >= threshold → observe
+			//   everything from last boundary to leaf → append entry → boundary advances
+			//
+			// Passive mode replay:
+			//   1. Get the gap (raw entries about to be compacted away)
+			//   2. Split gap into turns (at user-role message boundaries)
+			//   3. Accumulate turns until threshold is met (same gate as active mode)
+			//   4. Observe that batch — same as what active mode would have done at turn_end
+			//   5. Append entry with coversFromId/coversUpToId → boundary advances
+			//   6. Repeat for remaining batches
 			const gap = gapRawEntries(entries, firstKeptEntryId);
+
 			if (gap.length > 0) {
-				const { text: gapChunk, sourceEntryIds } = serializeSourceAddressedBranchEntries(gap);
-				if (gapChunk.trim() && sourceEntryIds.length > 0) {
-					const gapFromId = gap[0].id;
-					const gapUpToId = gap[gap.length - 1].id;
-					const priorObservationLines = observationsToPromptLines([
-						...memoryState.committedObs,
-						...memoryState.pendingObs,
-					]);
-					const gapTokenEstimate = estimateStringTokens(gapChunk);
-					debugLog("compaction.sync_catchup.start", {
-						gapEntryCount: gap.length,
-						sourceEntryIds,
-						gapFromId,
-						gapUpToId,
-						tokenEstimate: gapTokenEstimate,
-					});
-					if (hasUI) ui?.notify(
-						`Observational memory: sync catch-up observer running on ~${gapTokenEstimate.toLocaleString()}-token gap`,
-						"info",
-					);
-					progress.setPhase("observer", 1, 1);
-					updateWidget();
+				const gapEndId = gap[gap.length - 1].id;
+				const gapTokenEstimate = gap.reduce((sum, e) => sum + estimateEntryTokens(e), 0);
+
+				// Pre-compute batches upfront so we can show accurate progress (pass N/total)
+				const batches = batchByTurnsAndThreshold(gap as EntryLike[], runtime.config.observationThresholdTokens);
+
+				debugLog("compaction.sync_catchup.start", {
+					gapEntryCount: gap.length,
+					gapFromId: gap[0].id,
+					gapUpToId: gapEndId,
+					tokenEstimate: gapTokenEstimate,
+					batchCount: batches.length,
+				});
+				if (hasUI) ui?.notify(
+					`Observational memory: sync catch-up observer running on ~${gapTokenEstimate.toLocaleString()}-token gap in ${batches.length} batch${batches.length === 1 ? "" : "es"}`,
+					"info",
+				);
+
+				if (batches.length > 0) {
 					runtime.observerInFlight = true;
-					const gapCall = runObserver({
-						model: resolved.model as any,
-						apiKey: resolved.apiKey,
-						headers: resolved.headers,
-						priorReflections: memoryState.reflections.map(reflectionToPromptLine),
-						priorObservations: priorObservationLines,
-						chunk: gapChunk,
-						allowedSourceEntryIds: sourceEntryIds,
-						signal,
-						maxTurns: turnLimits.observerMaxTurnsPerRun,
-						thinkingLevel: runtime.config.thinkingLevel,
-					});
-					const gapPromise: Promise<void> = gapCall.then(() => undefined, () => undefined);
-					runtime.observerPromise = gapPromise;
 					try {
-						const records = await gapCall;
-						if (records && records.length > 0) {
-							const observationTokens = records.reduce((sum, r) => sum + estimateStringTokens(r.content), 0);
-							gapObservationData = {
-								records,
-								coversFromId: gapFromId,
-								coversUpToId: gapUpToId,
-								tokenCount: observationTokens,
-							};
-							debugLog("compaction.sync_catchup.records", {
-								count: records.length,
-								observationTokens,
-								coversFromId: gapFromId,
-								coversUpToId: gapUpToId,
-								records,
-							});
-							pi.appendEntry(OBSERVATION_CUSTOM_TYPE, gapObservationData);
-							if (hasUI && ui) ui.notify(
-								`Observational memory: sync catch-up recorded ${records.length} observation${records.length === 1 ? "" : "s"} (~${observationTokens.toLocaleString()} tokens)`,
-								"info",
+						for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+							// Refresh entries — previous iteration may have appended an observation entry
+							entries = ctx.sessionManager.getBranch() as typeof entries;
+
+							const batch = batches[batchIdx];
+							const chunkCoversFromId = batch[0].id;
+							const chunkCoversUpToId = batch[batch.length - 1].id;
+
+							const { text: chunkText, sourceEntryIds } = serializeSourceAddressedBranchEntries(
+								batch as Parameters<typeof serializeSourceAddressedBranchEntries>[0],
 							);
-						} else if (hasUI && ui) {
-							debugLog("compaction.sync_catchup.empty", { gapEntryCount: gap.length });
+							if (!chunkText.trim() || sourceEntryIds.length === 0) continue;
+
+							const passNum = batchIdx + 1;
+							progress.setPhase("observer", passNum, batches.length);
+							updateWidget();
+
+							const batchTokens = batch.reduce((sum, e) => sum + estimateEntryTokens(e), 0);
+							debugLog("compaction.sync_catchup.pass.start", {
+								pass: passNum,
+								totalPasses: batches.length,
+								coversFromId: chunkCoversFromId,
+								coversUpToId: chunkCoversUpToId,
+								batchEntryCount: batch.length,
+								batchTokens,
+							});
+
+							// Same prior context as observer-trigger.ts
+							const currentMemoryState = getMemoryState(entries);
+							const priorObservationLines = observationsToPromptLines([
+								...currentMemoryState.committedObs,
+								...currentMemoryState.pendingObs,
+							]);
+
+							const records = await runObserver({
+								model: resolved.model as any,
+								apiKey: resolved.apiKey,
+								headers: resolved.headers,
+								priorReflections: currentMemoryState.reflections.map(reflectionToPromptLine),
+								priorObservations: priorObservationLines,
+								chunk: chunkText,
+								allowedSourceEntryIds: sourceEntryIds,
+								signal,
+								maxTurns: turnLimits.observerMaxTurnsPerRun,
+								thinkingLevel: runtime.config.thinkingLevel,
+							});
+
+							if (records && records.length > 0) {
+								const observationTokens = records.reduce((sum, r) => sum + estimateStringTokens(r.content), 0);
+								const data: ObservationEntryData = {
+									records,
+									coversFromId: chunkCoversFromId,
+									coversUpToId: chunkCoversUpToId,
+									tokenCount: observationTokens,
+								};
+								pi.appendEntry(OBSERVATION_CUSTOM_TYPE, data);
+								debugLog("compaction.sync_catchup.pass.records", {
+									pass: passNum,
+									count: records.length,
+									observationTokens,
+									coversFromId: chunkCoversFromId,
+									coversUpToId: chunkCoversUpToId,
+								});
+							} else {
+								debugLog("compaction.sync_catchup.pass.empty", {
+									pass: passNum,
+									batchEntryCount: batch.length,
+								});
+							}
+						}
+
+						if (hasUI && ui) {
 							ui.notify(
-								"Observational memory: sync catch-up observer returned empty — proceeding with compaction",
-								"warning",
+								`Observational memory: sync catch-up completed ${batches.length} observer batch${batches.length === 1 ? "" : "es"}`,
+								"info",
 							);
 						}
 					} catch (error) {
@@ -209,7 +334,6 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 						return { cancel: true };
 					} finally {
 						runtime.observerInFlight = false;
-						if (runtime.observerPromise === gapPromise) runtime.observerPromise = null;
 					}
 				}
 			}
@@ -217,13 +341,11 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			const priorCompactionIdx = findLastCompactionIndex(entries);
 			const priorFirstKeptEntryId = priorCompactionIdx >= 0 ? entries[priorCompactionIdx].firstKeptEntryId : undefined;
 			const deltaObservationData = collectObservationsByCoverage(entries, priorFirstKeptEntryId, firstKeptEntryId);
-			if (gapObservationData) deltaObservationData.push(gapObservationData);
 			debugLog("compaction.delta", {
 				priorFirstKeptEntryId,
 				firstKeptEntryId,
 				deltaObservationEntries: deltaObservationData.length,
 				deltaObservationRecords: deltaObservationData.reduce((sum, data) => sum + data.records.length, 0),
-				gapObservationRecords: gapObservationData?.records.length ?? 0,
 			});
 
 			if (deltaObservationData.length === 0) {

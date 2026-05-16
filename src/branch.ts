@@ -208,7 +208,17 @@ export function firstRawIdAfter(entries: Entry[], afterIndex: number): string | 
 }
 
 export function gapRawEntries(entries: Entry[], newFirstKeptEntryId: string): Entry[] {
-	const lastBoundIdx = lastObservationCoverEndIdx(entries);
+	let lastBoundIdx = lastObservationCoverEndIdx(entries);
+	// Clamp the start boundary to at least the last compaction entry.
+	// Observation entries from before the last compaction may have coversUpToId values
+	// pointing to entries that were compacted away, or to entries before the compaction
+	// boundary whose content is already represented in the compaction details.
+	// Including them in the gap would cause the sync catch-up observer to re-process
+	// already-compact content and potentially produce a gap too large for a single LLM call.
+	const lastCompactionIdx = findLastCompactionIndex(entries);
+	if (lastBoundIdx < lastCompactionIdx) {
+		lastBoundIdx = lastCompactionIdx;
+	}
 	const newKeptIdx = entries.findIndex((e) => e.id === newFirstKeptEntryId);
 	if (newKeptIdx === -1) return [];
 	const result: Entry[] = [];

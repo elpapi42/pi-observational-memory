@@ -95,6 +95,26 @@ describe("CompactionProgressTracker", () => {
 		expect(text).toContain("Observer");
 	});
 
+	it("shows 'batch N/M' for observer phase with multiple batches", () => {
+		const tracker = new CompactionProgressTracker();
+		tracker.setPhase("observer", 3, 15);
+		const text = tracker.formatWidget({
+			fg: (_c: string, t: string) => t,
+		});
+		expect(text).toContain("batch 3/15");
+		expect(text).not.toContain("pass");
+	});
+
+	it("shows 'pass N/M' for reflector phase with multiple passes", () => {
+		const tracker = new CompactionProgressTracker();
+		tracker.setPhase("reflector", 2, 3);
+		const text = tracker.formatWidget({
+			fg: (_c: string, t: string) => t,
+		});
+		expect(text).toContain("pass 2/3");
+		expect(text).not.toContain("batch");
+	});
+
 	it("resets counts when phase changes", () => {
 		const tracker = new CompactionProgressTracker();
 		tracker.setPhase("reflector", 1, 3);
@@ -143,11 +163,12 @@ describe("CompactionProgressTracker", () => {
 		expect(text).toContain("Reflector"); // active
 	});
 
-	it("uses singular 'tool call' for 1 and plural for 0 or 2+", () => {
+	it("uses singular 'tool call' for 1 and plural for 2+", () => {
 		const tracker = new CompactionProgressTracker();
 		tracker.setPhase("reflector", 1, 3);
 		let text = tracker.formatWidget({ fg: (_c: string, t: string) => t });
-		expect(text).toContain("0 tool calls");
+		// Tool calls hidden when 0 (observer batches don't feed events)
+		expect(text).not.toContain("tool call");
 		tracker.onEvent({ type: "tool_execution_start", toolCallId: "tc1", toolName: "r", args: {} });
 		text = tracker.formatWidget({ fg: (_c: string, t: string) => t });
 		expect(text).toContain("1 tool call");
