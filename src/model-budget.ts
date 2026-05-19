@@ -1,4 +1,4 @@
-import type { Model } from "@mariozechner/pi-ai";
+import type { Model } from "@earendil-works/pi-ai";
 
 export const AGENT_LOOP_MAX_TOKENS = 32_000;
 

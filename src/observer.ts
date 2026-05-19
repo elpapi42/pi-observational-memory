@@ -1,6 +1,6 @@
-import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@mariozechner/pi-agent-core";
-import type { Message, Model, ModelThinkingLevel } from "@mariozechner/pi-ai";
-import { Type } from "@mariozechner/pi-ai";
+import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
+import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { hashId } from "./ids.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "./model-budget.js";

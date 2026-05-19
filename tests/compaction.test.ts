@@ -6,11 +6,11 @@ import { describe, expect, it, vi } from "vitest";
 const agentLoopMock = vi.hoisted(() => vi.fn());
 const codingAgentMock = vi.hoisted(() => ({ agentDir: "" }));
 
-vi.mock("@mariozechner/pi-agent-core", () => ({
+vi.mock("@earendil-works/pi-agent-core", () => ({
 	agentLoop: agentLoopMock,
 }));
 
-vi.mock("@mariozechner/pi-coding-agent", () => ({
+vi.mock("@earendil-works/pi-coding-agent", () => ({
 	getAgentDir: () => codingAgentMock.agentDir,
 }));
 

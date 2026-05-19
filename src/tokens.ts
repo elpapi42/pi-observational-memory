@@ -1,4 +1,4 @@
-import { estimateTokens as estimateMessageTokens } from "@mariozechner/pi-coding-agent";
+import { estimateTokens as estimateMessageTokens } from "@earendil-works/pi-coding-agent";
 
 export function estimateStringTokens(text: string): number {
 	return Math.ceil(text.length / 4);

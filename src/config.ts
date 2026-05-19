@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ModelThinkingLevel } from "@mariozechner/pi-ai";
-import { getAgentDir } from "@mariozechner/pi-coding-agent";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export interface Config {
 	observationThresholdTokens: number;

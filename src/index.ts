@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerViewCommand } from "./commands/view.js";
 import { registerCompactionHook } from "./hooks/compaction-hook.js";

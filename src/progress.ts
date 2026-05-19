@@ -1,4 +1,4 @@
-import type { AgentEvent } from "@mariozechner/pi-agent-core";
+import type { AgentEvent } from "@earendil-works/pi-agent-core";
 
 export type CompactionPhase = "observer" | "reflector" | "pruner";
 

@@ -1,8 +1,8 @@
-import { Type } from "@mariozechner/pi-ai";
-import type { Message, ToolResultMessage } from "@mariozechner/pi-ai";
-import { defineTool, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
-import { Text } from "@mariozechner/pi-tui";
+import { Type } from "@earendil-works/pi-ai";
+import type { Message, ToolResultMessage } from "@earendil-works/pi-ai";
+import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import { Text } from "@earendil-works/pi-tui";
 import {
 	recallMemorySources,
 	type Entry,

@@ -1,5 +1,5 @@
-import { agentLoop, type AgentContext, type AgentEvent, type AgentLoopConfig, type AgentTool } from "@mariozechner/pi-agent-core";
-import { Type, type Message, type Model, type ModelThinkingLevel } from "@mariozechner/pi-ai";
+import { agentLoop, type AgentContext, type AgentEvent, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
+import { Type, type Message, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { debugLog, isDebugLogEnabled } from "./debug-log.js";
 import { hashId } from "./ids.js";
@@ -25,7 +25,7 @@ interface LlmArgs {
 	headers?: Record<string, string>;
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
-	onEvent?: (event: import("@mariozechner/pi-agent-core").AgentEvent) => void;
+	onEvent?: (event: import("@earendil-works/pi-agent-core").AgentEvent) => void;
 	maxTurns?: number;
 	thinkingLevel?: ModelThinkingLevel;
 }

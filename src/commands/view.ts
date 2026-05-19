@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getMemoryState } from "../branch.js";
 import { observationPoolTokens as estimateObservationPoolTokens } from "../compaction.js";
 import { countByRelevance, formatRelevanceHistogram } from "../relevance.js";

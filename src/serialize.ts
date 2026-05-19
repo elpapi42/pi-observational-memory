@@ -1,4 +1,4 @@
-import type { Message, TextContent, ToolResultMessage } from "@mariozechner/pi-ai";
+import type { Message, TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
 
 function pad(n: number): string {
 	return n.toString().padStart(2, "0");
