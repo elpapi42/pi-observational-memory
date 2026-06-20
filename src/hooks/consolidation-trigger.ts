@@ -8,9 +8,12 @@ import { type ResolveResult, type Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import {
 	OM_OBSERVATIONS_DROPPED,
+	OM_OBSERVATIONS_NONE,
 	OM_OBSERVATIONS_RECORDED,
 	OM_REFLECTIONS_RECORDED,
+	OBSERVATION_COVERAGE_TYPES,
 	buildObservationsDroppedData,
+	buildObservationsNoneData,
 	buildObservationsRecordedData,
 	buildReflectionsRecordedData,
 	earlierCoverageMarkerId,
@@ -188,7 +191,7 @@ async function runObserverStage(
 	const tokens = rawTokensSinceObservationCoverage(entries);
 	if (tokens < runtime.config.observeAfterTokens) return "continue";
 
-	const lastCoverageIdx = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
+	const lastCoverageIdx = latestCoverageIndex(entries, OBSERVATION_COVERAGE_TYPES);
 	const chunkEntries = sourceEntriesAfter(entries, lastCoverageIdx);
 	const coversUpToId = chunkEntries.at(-1)?.id;
 	if (!coversUpToId) return "continue";
@@ -228,10 +231,18 @@ async function runObserverStage(
 		thinkingLevel: runtime.config.model?.thinking ?? "low",
 	});
 	if (!observations || observations.length === 0) {
-		debugLog("observer.empty", { coversUpToId });
+		// The observer ran over this chunk and judged there was nothing worth
+		// recording. Persist a coverage-only marker so the watermark advances and
+		// the same span is not re-observed on every subsequent turn (which would
+		// otherwise spam the user and burn observer calls until something
+		// incidental finally sticks). Raw entries remain available to the
+		// reflector and until compaction, so no memory is lost.
+		const noneData = buildObservationsNoneData(coversUpToId);
+		if (noneData) appendEntry(pi, OM_OBSERVATIONS_NONE, noneData);
+		debugLog("observer.empty", { coversUpToId, coverageAdvanced: noneData !== undefined });
 		if (ctx.hasUI) ctx.ui?.notify(
-			"Observational memory: observer returned no observations",
-			"warning",
+			"Observational memory: observer found nothing new to record",
+			"info",
 		);
 		return "continue";
 	}

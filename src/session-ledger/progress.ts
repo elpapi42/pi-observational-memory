@@ -1,11 +1,20 @@
 import { estimateEntryTokens } from "../tokens.js";
 import {
 	OM_OBSERVATIONS_DROPPED,
+	OM_OBSERVATIONS_NONE,
 	OM_OBSERVATIONS_RECORDED,
 	OM_REFLECTIONS_RECORDED,
 	type Entry,
 	type V3MemoryCustomType,
 } from "./types.js";
+
+// The observation coverage watermark advances on EITHER a recorded-observations
+// marker OR a coverage-only "none" marker (observer ran, recorded nothing). Both
+// mean "this span has been observed", so neither should be re-observed.
+export const OBSERVATION_COVERAGE_TYPES: V3MemoryCustomType[] = [
+	OM_OBSERVATIONS_RECORDED,
+	OM_OBSERVATIONS_NONE,
+];
 
 const SOURCE_ENTRY_TYPES = new Set(["message", "custom_message", "branch_summary"]);
 
@@ -38,17 +47,27 @@ function isValidCoverageEntry(entry: Entry, customType: V3MemoryCustomType): ent
 	if (!isObject(entry.data) || typeof entry.data.coversUpToId !== "string") return false;
 
 	if (customType === OM_OBSERVATIONS_RECORDED) return isNonEmptyArray(entry.data.observations);
+	if (customType === OM_OBSERVATIONS_NONE) return true; // coverage-only marker, no payload
 	if (customType === OM_REFLECTIONS_RECORDED) return isNonEmptyArray(entry.data.reflections);
 	return isNonEmptyArray(entry.data.observationIds);
 }
 
-export function latestCoverageIndex(entries: Entry[], customType: V3MemoryCustomType): number {
+function coverageCustomTypes(customType: V3MemoryCustomType | V3MemoryCustomType[]): V3MemoryCustomType[] {
+	return Array.isArray(customType) ? customType : [customType];
+}
+
+function matchesAnyCoverage(entry: Entry, types: V3MemoryCustomType[]): boolean {
+	return types.some((type) => isValidCoverageEntry(entry, type));
+}
+
+export function latestCoverageIndex(entries: Entry[], customType: V3MemoryCustomType | V3MemoryCustomType[]): number {
+	const types = coverageCustomTypes(customType);
 	const idToIndex = entryIndexById(entries);
 	let latest = -1;
 
 	for (const entry of entries) {
-		if (!isValidCoverageEntry(entry, customType)) continue;
-		const coveredIndex = idToIndex.get(entry.data.coversUpToId);
+		if (!matchesAnyCoverage(entry, types)) continue;
+		const coveredIndex = idToIndex.get((entry.data as { coversUpToId: string }).coversUpToId);
 		if (coveredIndex === undefined) continue;
 		if (coveredIndex > latest) latest = coveredIndex;
 	}
@@ -56,18 +75,20 @@ export function latestCoverageIndex(entries: Entry[], customType: V3MemoryCustom
 	return latest;
 }
 
-export function latestCoverageMarkerId(entries: Entry[], customType: V3MemoryCustomType): string | undefined {
+export function latestCoverageMarkerId(entries: Entry[], customType: V3MemoryCustomType | V3MemoryCustomType[]): string | undefined {
+	const types = coverageCustomTypes(customType);
 	const idToIndex = entryIndexById(entries);
 	let latestIndex = -1;
 	let latestMarkerId: string | undefined;
 
 	for (const entry of entries) {
-		if (!isValidCoverageEntry(entry, customType)) continue;
-		const coveredIndex = idToIndex.get(entry.data.coversUpToId);
+		if (!matchesAnyCoverage(entry, types)) continue;
+		const coversUpToId = (entry.data as { coversUpToId: string }).coversUpToId;
+		const coveredIndex = idToIndex.get(coversUpToId);
 		if (coveredIndex === undefined) continue;
 		if (coveredIndex > latestIndex) {
 			latestIndex = coveredIndex;
-			latestMarkerId = entry.data.coversUpToId;
+			latestMarkerId = coversUpToId;
 		}
 	}
 
@@ -94,12 +115,12 @@ export function rawTokensAfterIndex(entries: Entry[], index: number): number {
 	return total;
 }
 
-export function rawTokensSinceCoverage(entries: Entry[], customType: V3MemoryCustomType): number {
+export function rawTokensSinceCoverage(entries: Entry[], customType: V3MemoryCustomType | V3MemoryCustomType[]): number {
 	return rawTokensAfterIndex(entries, latestCoverageIndex(entries, customType));
 }
 
 export function rawTokensSinceObservationCoverage(entries: Entry[]): number {
-	return rawTokensSinceCoverage(entries, OM_OBSERVATIONS_RECORDED);
+	return rawTokensSinceCoverage(entries, OBSERVATION_COVERAGE_TYPES);
 }
 
 export function rawTokensSinceReflectionCoverage(entries: Entry[]): number {

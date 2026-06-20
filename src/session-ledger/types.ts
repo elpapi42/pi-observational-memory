@@ -1,4 +1,9 @@
 export const OM_OBSERVATIONS_RECORDED = "om.observations.recorded";
+// Coverage-only marker: the observer ran over a chunk and recorded nothing.
+// It advances the observation coverage watermark (so the same span is not
+// re-observed every turn) without contributing any observations to the
+// projection. See buildObservationsNoneData / isObservationsNoneEntry.
+export const OM_OBSERVATIONS_NONE = "om.observations.none";
 export const OM_REFLECTIONS_RECORDED = "om.reflections.recorded";
 export const OM_OBSERVATIONS_DROPPED = "om.observations.dropped";
 export const OM_FOLDED = "om.folded";
@@ -53,6 +58,10 @@ export type ObservationsDroppedEntryData = {
 	coversUpToId: string;
 };
 
+export type ObservationsNoneEntryData = {
+	coversUpToId: string;
+};
+
 export type MemoryDetails = {
 	type: typeof OM_FOLDED;
 	version: 1;
@@ -63,6 +72,7 @@ export type MemoryDetails = {
 
 export type V3MemoryCustomType =
 	| typeof OM_OBSERVATIONS_RECORDED
+	| typeof OM_OBSERVATIONS_NONE
 	| typeof OM_REFLECTIONS_RECORDED
 	| typeof OM_OBSERVATIONS_DROPPED;
 
@@ -138,6 +148,11 @@ export function isObservationsDroppedData(value: unknown): value is Observations
 	return isNonEmptyStringArray(value.observationIds) && isNonEmptyString(value.coversUpToId);
 }
 
+export function isObservationsNoneData(value: unknown): value is ObservationsNoneEntryData {
+	if (!isPlainRecord(value)) return false;
+	return isNonEmptyString(value.coversUpToId);
+}
+
 export function isMemoryDetails(value: unknown): value is MemoryDetails {
 	if (!isPlainRecord(value)) return false;
 	return (
@@ -175,6 +190,14 @@ export function isObservationsDroppedEntry(entry: Entry): entry is Entry & {
 	return entry.type === "custom" && entry.customType === OM_OBSERVATIONS_DROPPED && isObservationsDroppedData(entry.data);
 }
 
+export function isObservationsNoneEntry(entry: Entry): entry is Entry & {
+	type: "custom";
+	customType: typeof OM_OBSERVATIONS_NONE;
+	data: ObservationsNoneEntryData;
+} {
+	return entry.type === "custom" && entry.customType === OM_OBSERVATIONS_NONE && isObservationsNoneData(entry.data);
+}
+
 export function buildObservationsRecordedData(
 	observations: Observation[],
 	coversUpToId: string,
@@ -197,4 +220,11 @@ export function buildObservationsDroppedData(
 ): ObservationsDroppedEntryData | undefined {
 	if (observationIds.length === 0 || !isNonEmptyString(coversUpToId)) return undefined;
 	return { observationIds, coversUpToId };
+}
+
+export function buildObservationsNoneData(
+	coversUpToId: string,
+): ObservationsNoneEntryData | undefined {
+	if (!isNonEmptyString(coversUpToId)) return undefined;
+	return { coversUpToId };
 }

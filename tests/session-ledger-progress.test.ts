@@ -14,12 +14,14 @@ import {
 } from "../src/session-ledger/index.js";
 import {
 	V3_OBSERVATIONS_DROPPED,
+	V3_OBSERVATIONS_NONE,
 	V3_OBSERVATIONS_RECORDED,
 	V3_REFLECTIONS_RECORDED,
 	branchSummary,
 	compactionEntry,
 	observation,
 	observationsDroppedEntry,
+	observationsNoneEntry,
 	observationsRecordedEntry,
 	oldV2ObservationEntry,
 	reflection,
@@ -139,5 +141,34 @@ describe("session-ledger V3 progress helpers", () => {
 		];
 
 		expect(rawTokensSinceLastCompaction(entries)).toBe(3); // raw-1 + raw-2 from live tail starting at firstKeptEntryId
+	});
+
+	it("advances observation coverage on a coverage-only 'none' marker (no recorded observations)", () => {
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			textCustomMessage("raw-2", "bbbb"),
+			observationsNoneEntry("om-none", { coversUpToId: "raw-2" }),
+		];
+
+		// The 'none' marker alone moves the observation watermark, so an empty
+		// observer verdict does not leave the same span re-triggering every turn.
+		expect(rawTokensSinceObservationCoverage(entries)).toBe(0);
+		// ...even though there is no recorded-observations marker at all.
+		expect(latestCoverageMarkerId(entries, V3_OBSERVATIONS_RECORDED)).toBeUndefined();
+		// New source after the marker is still uncovered and will re-trigger normally.
+		entries.push(textCustomMessage("raw-3", "cccc"));
+		expect(rawTokensSinceObservationCoverage(entries)).toBeGreaterThan(0); // raw-3 only
+	});
+
+	it("keeps the 'none' marker out of reflection and drop coverage", () => {
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsNoneEntry("om-none", { coversUpToId: "raw-1" }),
+		];
+
+		// Reflection / drop watermarks track their own marker types only, so a
+		// 'none' observation marker must NOT advance them.
+		expect(rawTokensSinceReflectionCoverage(entries)).toBeGreaterThan(0);
+		expect(rawTokensSinceDropCoverage(entries)).toBeGreaterThan(0);
 	});
 });
