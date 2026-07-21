@@ -3,13 +3,13 @@ import { describe, expect, it } from "vitest";
 import { normalizeSourceEntryIds, OBSERVATION_TIMESTAMP_PATTERN, runObserver } from "../src/agents/observer/agent.js";
 import { estimateStringTokens } from "../src/tokens.js";
 
-function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void): any {
-	return ((prompts: any[], context: any, config: any) => ({
+function fakeAgentLoop(handler: (prompts: any[], context: any, config: any, signal: AbortSignal | undefined, streamFunction: unknown) => Promise<void> | void): any {
+	return ((prompts: any[], context: any, config: any, signal: AbortSignal | undefined, streamFunction: unknown) => ({
 		async *[Symbol.asyncIterator]() {
 			// No streaming events needed for these tests.
 		},
 		result: async () => {
-			await handler(prompts, context, config);
+			await handler(prompts, context, config, signal, streamFunction);
 			return {};
 		},
 	})) as any;
@@ -53,6 +53,17 @@ describe("runObserver", () => {
 		expect(systemPrompt).toContain("highest-resistance, load-bearing observations");
 		expect(systemPrompt).not.toContain("will NEVER be dropped");
 		expect(systemPrompt).not.toContain("pruner");
+	});
+
+	it("passes the required Pi 0.81 stream function to the agent loop", async () => {
+		let seenStreamFunction: unknown;
+		const loop = fakeAgentLoop((_prompts, _context, _config, _signal, streamFunction) => {
+			seenStreamFunction = streamFunction;
+		});
+
+		await runObserver({ ...baseArgs, agentLoop: loop });
+
+		expect(seenStreamFunction).toBeTypeOf("function");
 	});
 
 	it("records V3 observations with source ids and code-computed tokenCount", async () => {

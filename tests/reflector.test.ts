@@ -10,11 +10,11 @@ import { hashId } from "../src/ids.js";
 import { estimateStringTokens } from "../src/tokens.js";
 import { observation, reflection } from "./fixtures/session.js";
 
-function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void): any {
-	return ((prompts: any[], context: any, config: any) => ({
+function fakeAgentLoop(handler: (prompts: any[], context: any, config: any, signal: AbortSignal | undefined, streamFunction: unknown) => Promise<void> | void): any {
+	return ((prompts: any[], context: any, config: any, signal: AbortSignal | undefined, streamFunction: unknown) => ({
 		async *[Symbol.asyncIterator]() {},
 		result: async () => {
-			await handler(prompts, context, config);
+			await handler(prompts, context, config, signal, streamFunction);
 			return {};
 		},
 	})) as any;
@@ -89,6 +89,17 @@ describe("V3 reflector agent", () => {
 		expect(systemPrompt).not.toContain("legacy/no-provenance");
 		expect(systemPrompt).not.toContain("pruner");
 		expect(systemPrompt).not.toContain("Pass strategy");
+	});
+
+	it("passes the required Pi 0.81 stream function to the agent loop", async () => {
+		let seenStreamFunction: unknown;
+		const loop = fakeAgentLoop((_prompts, _context, _config, _signal, streamFunction) => {
+			seenStreamFunction = streamFunction;
+		});
+
+		await runReflector({ ...baseArgs, agentLoop: loop });
+
+		expect(seenStreamFunction).toBeTypeOf("function");
 	});
 
 	it("renders coverage tiers in every active observation line for the reflector", async () => {

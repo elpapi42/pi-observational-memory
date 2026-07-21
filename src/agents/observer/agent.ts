@@ -1,6 +1,7 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
 import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
+import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { hashId } from "../../ids.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
@@ -186,7 +187,7 @@ ${conversation}`;
 	};
 
 	const loop = args.agentLoop ?? agentLoop;
-	const stream = loop(prompts, context, config, signal);
+	const stream = loop(prompts, context, config, signal, streamSimple);
 	for await (const _event of stream) {
 		// Drain events; the tool's execute already collects records.
 	}
