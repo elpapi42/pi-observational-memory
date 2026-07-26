@@ -4,6 +4,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
+import { logAgentStreamError } from "../stream-errors.js";
 import { reflectionToSummaryLine, type Observation, type Reflection } from "../../session-ledger/index.js";
 import { DROPPER_SYSTEM } from "./prompts.js";
 import {
@@ -250,8 +251,9 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 
 	const loop = args.agentLoop ?? agentLoop;
 	const stream = loop(prompts, context, config, signal);
-	for await (const _event of stream) {
+	for await (const event of stream) {
 		// Tool execution collects candidate ids.
+		logAgentStreamError("dropper", event);
 	}
 	await stream.result();
 	const droppedIds = selectDropCandidates(proposedDropIds, observations, maxDropsAllowed, reflections);

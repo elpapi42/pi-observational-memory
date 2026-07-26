@@ -3,6 +3,7 @@ import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { hashId } from "../../ids.js";
+import { logAgentStreamError } from "../stream-errors.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
 import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
@@ -187,8 +188,9 @@ ${conversation}`;
 
 	const loop = args.agentLoop ?? agentLoop;
 	const stream = loop(prompts, context, config, signal);
-	for await (const _event of stream) {
+	for await (const event of stream) {
 		// Drain events; the tool's execute already collects records.
+		logAgentStreamError("observer", event);
 	}
 	await stream.result();
 
