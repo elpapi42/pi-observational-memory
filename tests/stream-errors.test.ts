@@ -124,4 +124,81 @@ describe("agent stream error logging", () => {
 		expect(events[0].event).toBe("observer.stream_error");
 		expect(events[0].data).toMatchObject({ stopReason: "error", errorMessage: "upstream 400" });
 	});
+
+	it("runObserver retries transient errors and succeeds on a later attempt", async () => {
+		let calls = 0;
+		const flakyLoop = ((_prompts: any[], context: any) => ({
+			async *[Symbol.asyncIterator]() {
+				calls++;
+				if (calls < 3) {
+					yield {
+						type: "message_end",
+						message: { role: "assistant", content: [], stopReason: "error", errorMessage: '503 {"error":{"message":"No available accounts"}}' },
+					};
+					return;
+				}
+				await context.tools[0].execute("tool-1", {
+					observations: [{ timestamp: "2026-05-02 10:30", content: "Recovered after retry.", relevance: "high", sourceEntryIds: ["entry-a"] }],
+				});
+			},
+			result: async () => ({}),
+		})) as any;
+
+		const slept: number[] = [];
+		await withDebugLogContext({ enabled: true, sessionId: "session-stream-5" }, async () => {
+			const observations = await runObserver({
+				model: {} as any,
+				apiKey: "test",
+				priorReflections: [],
+				priorObservations: [],
+				chunk: "[Source entry id: entry-a]\nSome content.",
+				allowedSourceEntryIds: ["entry-a"],
+				agentLoop: flakyLoop,
+				retryDelaysMs: [10, 20],
+				sleep: async (ms) => { slept.push(ms); },
+			});
+			expect(observations).toHaveLength(1);
+			expect(observations?.[0].content).toBe("Recovered after retry.");
+		});
+
+		expect(calls).toBe(3);
+		expect(slept).toEqual([10, 20]);
+		const events = readLoggedEvents("session-stream-5");
+		const retries = events.filter((e) => e.event === "observer.transient_retry");
+		expect(retries).toHaveLength(2);
+		expect(retries[0].data).toMatchObject({ attempt: 1, delayMs: 10 });
+	});
+
+	it("runObserver does not retry non-transient errors", async () => {
+		let calls = 0;
+		const failingLoop = (() => ({
+			async *[Symbol.asyncIterator]() {
+				calls++;
+				yield {
+					type: "message_end",
+					message: { role: "assistant", content: [], stopReason: "error", errorMessage: "400 prompt is too long: 5198507 tokens > 1000000 maximum" },
+				};
+			},
+			result: async () => ({}),
+		})) as any;
+
+		await withDebugLogContext({ enabled: true, sessionId: "session-stream-6" }, async () => {
+			const observations = await runObserver({
+				model: {} as any,
+				apiKey: "test",
+				priorReflections: [],
+				priorObservations: [],
+				chunk: "[Source entry id: entry-a]\nSome content.",
+				allowedSourceEntryIds: ["entry-a"],
+				agentLoop: failingLoop,
+				retryDelaysMs: [10, 20],
+				sleep: async () => {},
+			});
+			expect(observations).toBeUndefined();
+		});
+
+		expect(calls).toBe(1);
+		const events = readLoggedEvents("session-stream-6");
+		expect(events.filter((e) => e.event === "observer.transient_retry")).toHaveLength(0);
+	});
 });

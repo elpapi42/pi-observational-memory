@@ -2,8 +2,9 @@ import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } fr
 import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
+import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
-import { logAgentStreamError } from "../stream-errors.js";
+import { isTransientLlmError, logAgentStreamError, type LlmStreamError } from "../stream-errors.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
 import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
@@ -22,7 +23,13 @@ interface RunObserverArgs {
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
 	thinkingLevel?: ModelThinkingLevel;
+	/** Delays between transient-error retries. Test injection point. */
+	retryDelaysMs?: number[];
+	/** Sleep implementation. Test injection point. */
+	sleep?: (ms: number) => Promise<void>;
 }
+
+const DEFAULT_RETRY_DELAYS_MS = [2_000, 5_000];
 
 const RelevanceSchema = Type.Union([
 	Type.Literal("low"),
@@ -187,12 +194,35 @@ ${conversation}`;
 	};
 
 	const loop = args.agentLoop ?? agentLoop;
-	const stream = loop(prompts, context, config, signal);
-	for await (const event of stream) {
-		// Drain events; the tool's execute already collects records.
-		logAgentStreamError("observer", event);
+	const retryDelays = args.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
+	const sleep = args.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+	// Transient provider failures (overloaded, 5xx, connection drops) are worth
+	// a short retry instead of surfacing a spurious "no observations" warning
+	// and waiting for the next turn. Request defects and non-transient errors
+	// still fail immediately. agentLoop copies the context's message array, so
+	// re-running with the same context is safe.
+	for (let attempt = 0; ; attempt++) {
+		let streamError: LlmStreamError | undefined;
+		const stream = loop(prompts, context, config, signal);
+		for await (const event of stream) {
+			// Drain events; the tool's execute already collects records.
+			streamError = logAgentStreamError("observer", event) ?? streamError;
+		}
+		await stream.result();
+
+		if (accumulated.size > 0) break;
+		if (!streamError || !isTransientLlmError(streamError)) break;
+		if (attempt >= retryDelays.length || signal?.aborted) break;
+		const delayMs = retryDelays[attempt];
+		debugLog("observer.transient_retry", {
+			attempt: attempt + 1,
+			maxAttempts: retryDelays.length + 1,
+			delayMs,
+			errorMessage: streamError.errorMessage,
+		});
+		await sleep(delayMs);
 	}
-	await stream.result();
 
 	if (accumulated.size === 0) return undefined;
 	return Array.from(accumulated.values());
