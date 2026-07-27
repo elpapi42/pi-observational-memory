@@ -13,6 +13,7 @@ vi.mock("../src/agents/dropper/agent.js", () => ({ runDropper: mockAgents.runDro
 import { registerConsolidationTrigger } from "../src/hooks/consolidation-trigger.js";
 import {
 	OM_OBSERVATIONS_DROPPED,
+	OM_OBSERVATIONS_NONE,
 	OM_OBSERVATIONS_RECORDED,
 	OM_REFLECTIONS_RECORDED,
 } from "../src/session-ledger/index.js";
@@ -230,16 +231,24 @@ describe("V3 consolidation trigger", () => {
 		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [newObs], coversUpToId: "raw-3" });
 	});
 
-	it("observer no-output appends nothing and does not fake observation coverage", async () => {
+	it("observer no-output records a coverage-only marker so the span is not re-observed", async () => {
 		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const { fire, runLaunchedWork, pi } = setup({ entries });
+		const { fire, runLaunchedWork, pi, ctx } = setup({ entries });
 
 		fire();
 		await runLaunchedWork();
 
-		expect(pi.appendEntry).not.toHaveBeenCalled();
+		// Advances the observation coverage watermark without fabricating any
+		// observations, so the observer does not re-run on the same span every turn.
+		expect(pi.appendEntry).toHaveBeenCalledTimes(1);
+		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_NONE, { coversUpToId: "raw-1" });
+		expect(pi.appendEntry).not.toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, expect.anything());
 		expect(mockAgents.runReflector).not.toHaveBeenCalled();
 		expect(mockAgents.runDropper).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Observational memory: observer found nothing new to record",
+			"info",
+		);
 	});
 
 	it("shows routine worker notifications by default", async () => {

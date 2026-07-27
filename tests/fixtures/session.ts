@@ -30,6 +30,7 @@ export type TestReflection = {
 };
 
 export const V3_OBSERVATIONS_RECORDED = "om.observations.recorded";
+export const V3_OBSERVATIONS_NONE = "om.observations.none";
 export const V3_REFLECTIONS_RECORDED = "om.reflections.recorded";
 export const V3_OBSERVATIONS_DROPPED = "om.observations.dropped";
 export const V3_FOLDED = "om.folded";
@@ -196,6 +197,22 @@ export function observationsDroppedEntry(
 		parentId: null,
 		timestamp: DEFAULT_TIMESTAMP,
 		customType: V3_OBSERVATIONS_DROPPED,
+		data: args,
+		...overrides,
+	};
+}
+
+export function observationsNoneEntry(
+	id: string,
+	args: { coversUpToId: string },
+	overrides: Partial<TestEntry> = {},
+): TestEntry {
+	return {
+		type: "custom",
+		id,
+		parentId: null,
+		timestamp: DEFAULT_TIMESTAMP,
+		customType: V3_OBSERVATIONS_NONE,
 		data: args,
 		...overrides,
 	};
