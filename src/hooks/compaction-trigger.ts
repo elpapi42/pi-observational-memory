@@ -12,6 +12,18 @@ const RETRYABLE_ERROR_RE =
 	/overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i;
 
 export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): void {
+	let deferredTimer: ReturnType<typeof setTimeout> | undefined;
+	let lifecycleGeneration = 0;
+
+	pi.on("session_shutdown", () => {
+		lifecycleGeneration += 1;
+		if (deferredTimer !== undefined) {
+			clearTimeout(deferredTimer);
+			deferredTimer = undefined;
+		}
+		runtime.compactInFlight = false;
+	});
+
 	pi.on("agent_end", (event: any, ctx: any) => {
 		runtime.ensureConfig(ctx.cwd);
 		if (runtime.config.passive === true) return;
@@ -71,7 +83,13 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 		);
 
 		runtime.compactInFlight = true;
-		setTimeout(() => {
+		const generation = lifecycleGeneration;
+		deferredTimer = setTimeout(() => {
+			deferredTimer = undefined;
+			if (generation !== lifecycleGeneration) {
+				runtime.compactInFlight = false;
+				return;
+			}
 			try {
 				if (!ctx.isIdle()) {
 					runtime.compactInFlight = false;
@@ -101,10 +119,12 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 				}
 				ctx.compact({
 					onComplete: () => {
+						if (generation !== lifecycleGeneration) return;
 						runtime.compactInFlight = false;
 						if (hasUI) ui?.notify("Observational memory: compaction complete", "info");
 					},
 					onError: (error: { message: string }) => {
+						if (generation !== lifecycleGeneration) return;
 						runtime.compactInFlight = false;
 						if (error.message === "Compaction cancelled") {
 							// We already notified the user with the real reason before returning { cancel: true }.
@@ -114,6 +134,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					},
 				});
 			} catch (error) {
+				if (generation !== lifecycleGeneration) return;
 				runtime.compactInFlight = false;
 				const msg = error instanceof Error ? error.message : String(error);
 				if (hasUI) ui?.notify(`Observational memory: compact threw: ${msg}`, "error");

@@ -5,10 +5,11 @@ import { compactionEntry, textCustomMessage, type TestEntry } from "./fixtures/s
 
 function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensMode?: "calibrated" | "ratio"; compactAfterTokensRatio?: number; passive?: boolean; compactInFlight?: boolean } = {}) {
 	let handler: ((event: unknown, ctx: unknown) => void) | undefined;
+	let shutdown: ((event: unknown, ctx: unknown) => void) | undefined;
 	const pi = {
 		on: vi.fn((name: string, cb: typeof handler) => {
-			expect(name).toBe("agent_end");
-			handler = cb;
+			if (name === "agent_end") handler = cb;
+			if (name === "session_shutdown") shutdown = cb;
 		}),
 	};
 	const runtime = {
@@ -25,7 +26,8 @@ function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensM
 	};
 	registerCompactionTrigger(pi as any, runtime as any);
 	if (!handler) throw new Error("agent_end handler was not registered");
-	return { handler, runtime };
+	if (!shutdown) throw new Error("session_shutdown handler was not registered");
+	return { handler, shutdown, runtime };
 }
 
 function agentEnd(errorMessage?: string) {
@@ -151,6 +153,21 @@ describe("V3 compaction trigger", () => {
 			"Observational memory: compaction deferred — agent became busy before compaction",
 			"info",
 		);
+	});
+
+	it("cancels deferred compaction when the session shuts down", async () => {
+		const { handler, shutdown, runtime } = captureHandler({ compactAfterTokens: 3 });
+		const ctx = fakeCtx([dueBranch]);
+
+		handler(agentEnd(), ctx);
+		expect(runtime.compactInFlight).toBe(true);
+		shutdown({ type: "session_shutdown", reason: "new" }, ctx);
+		await vi.runAllTimersAsync();
+
+		expect(runtime.compactInFlight).toBe(false);
+		expect(ctx.isIdle).not.toHaveBeenCalled();
+		expect(ctx.sessionManager.getBranch).toHaveBeenCalledTimes(1);
+		expect(ctx.compact).not.toHaveBeenCalled();
 	});
 
 	it("re-checks threshold after deferral and skips if another compaction already reduced pressure", async () => {
