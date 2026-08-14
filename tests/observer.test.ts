@@ -168,6 +168,28 @@ describe("runObserver", () => {
 
 		expect(seenReasoning).toBeUndefined();
 	});
+
+	it("injects the working directory into the observer user text when provided", async () => {
+		let userText = "";
+		const loop = fakeAgentLoop((prompts) => {
+			userText = prompts[0].content[0].text;
+		});
+
+		await runObserver({ ...baseArgs, cwd: "/tmp/test-project", agentLoop: loop });
+
+		expect(userText).toContain("Working directory: /tmp/test-project");
+	});
+
+	it("omits the working directory line when cwd is not provided", async () => {
+		let userText = "";
+		const loop = fakeAgentLoop((prompts) => {
+			userText = prompts[0].content[0].text;
+		});
+
+		await runObserver({ ...baseArgs, agentLoop: loop });
+
+		expect(userText).not.toContain("Working directory:");
+	});
 });
 
 describe("normalizeSourceEntryIds", () => {

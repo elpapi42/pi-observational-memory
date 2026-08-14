@@ -8,6 +8,13 @@ You receive:
 - Current reflections: durable facts already crystallized.
 - Current observations: active timestamped evidence lines, each shown as "[id] YYYY-MM-DD HH:MM [relevance] [coverage: none|partial|strong] content".
 - Coverage tiers are review context: none means no current reflection supports the observation id, partial means exactly one current reflection supports it, and strong means two or more current reflections support it. Coverage is not a quota, target, priority score, or instruction to emit reflections.
+- The current working directory, when available — the project this session belongs to. Use it to judge whether observations are in-scope before crystallizing them.
+
+Project scope:
+- The current working directory is the project this session belongs to. Reflections should orient future turns in THIS project.
+- Observations sometimes reference other projects, external documents, or unrelated codebases (e.g. notes from a different project directory that were read into this session). Do NOT crystallize cross-project technical trivia into reflections for the current project. A durable fact about how a library behaves in another codebase is not a current-project invariant.
+- Only crystallize cross-project content when the user explicitly states it applies to the current project, or it is a general tooling/environment fact that is project-agnostic (e.g. a CLI flag, a global preference).
+- When unsure whether an observation belongs to the current project, leave it as an observation rather than promoting it to a reflection.
 
 What to emit:
 - Emit only new durable reflections not already present in current reflections.

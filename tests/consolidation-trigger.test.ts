@@ -228,6 +228,24 @@ describe("V3 consolidation trigger", () => {
 		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [obs], coversUpToId: "raw-1" });
 	});
 
+	it("forwards the session cwd to observer and reflector agents", async () => {
+		const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
+		mockAgents.runObserver.mockResolvedValueOnce([obsA]);
+		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
+		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+		const { fire, runLaunchedWork } = setup({ entries });
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({
+			cwd: "/tmp/project",
+		}));
+		expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({
+			cwd: "/tmp/project",
+		}));
+	});
+
 	it("forwards OAuth-shaped auth (headers, no apiKey) to the observer agent", async () => {
 		const obs = observation("cccccccccccc", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
 		mockAgents.runObserver.mockResolvedValueOnce([obs]);
