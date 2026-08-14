@@ -29,6 +29,7 @@ interface RunReflectorArgs {
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
 	thinkingLevel?: ModelThinkingLevel;
+	cwd?: string;
 }
 
 const RecordReflectionsSchema = Type.Object({
@@ -105,7 +106,7 @@ function normalizeReflectionContent(content: string): string | undefined {
 }
 
 export async function runReflector(args: RunReflectorArgs): Promise<Reflection[] | undefined> {
-	const { model, apiKey, headers, reflections, observations, signal } = args;
+	const { model, apiKey, headers, reflections, observations, signal, cwd } = args;
 	if (observations.length === 0) return undefined;
 
 	const coverageById = reflectionCoverageMap(observations, reflections);
@@ -165,7 +166,8 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 		},
 	};
 
-	const userText = `CURRENT REFLECTIONS:\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\nCURRENT OBSERVATIONS:\n${joinOrEmpty(observations.map((observation) => observationToReflectorLine(observation, coverageTierForObservation(observation, coverageById))))}\n\nCrystallize any missing durable facts or patterns into new reflections. If nothing is stable enough, do not call the tool.`;
+	const cwdLine = cwd ? `Working directory: ${cwd}\n\n` : "";
+	const userText = `${cwdLine}CURRENT REFLECTIONS:\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\nCURRENT OBSERVATIONS:\n${joinOrEmpty(observations.map((observation) => observationToReflectorLine(observation, coverageTierForObservation(observation, coverageById))))}\n\nCrystallize any missing durable facts or patterns into new reflections. If nothing is stable enough, do not call the tool.`;
 	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
 	const context: AgentContext = { systemPrompt: REFLECTOR_SYSTEM, messages: [], tools: [recordReflections as AgentTool<any>] };
 	const reasoning = (model as { reasoning?: unknown }).reasoning;

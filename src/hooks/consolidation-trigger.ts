@@ -317,6 +317,7 @@ async function runObserverStage(
 			allowedSourceEntryIds: sourceEntryIds,
 			maxTurns: runtime.config.agentMaxTurns,
 			thinkingLevel: runtime.config.model?.thinking ?? "low",
+			cwd: ctx.cwd,
 		});
 	} catch (error) {
 		if (error instanceof ObserverStreamError) {
@@ -387,6 +388,7 @@ async function runReflectorStage(
 		observations: folded.activeObservations,
 		maxTurns: runtime.config.agentMaxTurns,
 		thinkingLevel: runtime.config.model?.thinking ?? "low",
+		cwd: ctx.cwd,
 	});
 	if (!reflections) return { outcome: "continue", sameRunReflections: [] };
 

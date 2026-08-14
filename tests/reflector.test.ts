@@ -208,4 +208,26 @@ describe("V3 reflector agent", () => {
 		const loop = fakeAgentLoop(() => {});
 		await expect(runReflector({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
 	});
+
+	it("injects the working directory into the reflector user text when provided", async () => {
+		let userText = "";
+		const loop = fakeAgentLoop((prompts) => {
+			userText = prompts[0].content[0].text;
+		});
+
+		await runReflector({ ...baseArgs, cwd: "/tmp/test-project", agentLoop: loop });
+
+		expect(userText).toContain("Working directory: /tmp/test-project");
+	});
+
+	it("omits the working directory line when cwd is not provided", async () => {
+		let userText = "";
+		const loop = fakeAgentLoop((prompts) => {
+			userText = prompts[0].content[0].text;
+		});
+
+		await runReflector({ ...baseArgs, agentLoop: loop });
+
+		expect(userText).not.toContain("Working directory:");
+	});
 });

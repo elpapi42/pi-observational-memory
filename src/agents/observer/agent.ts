@@ -23,6 +23,7 @@ interface RunObserverArgs {
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
 	thinkingLevel?: ModelThinkingLevel;
+	cwd?: string;
 }
 
 const RelevanceSchema = Type.Union([
@@ -99,7 +100,7 @@ export function normalizeSourceEntryIds(
 }
 
 export async function runObserver(args: RunObserverArgs): Promise<Observation[] | undefined> {
-	const { model, apiKey, headers, priorReflections, priorObservations, chunk, allowedSourceEntryIds, signal } = args;
+	const { model, apiKey, headers, priorReflections, priorObservations, chunk, allowedSourceEntryIds, signal, cwd } = args;
 	const conversation = chunk.trim();
 	if (!conversation) return undefined;
 
@@ -158,7 +159,8 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 	};
 
 	const now = nowTimestamp();
-	const userText = `Current local time: ${now}
+	const cwdLine = cwd ? `\nWorking directory: ${cwd}` : "";
+	const userText = `Current local time: ${now}${cwdLine}
 
 CURRENT REFLECTIONS:
 ${joinOrEmpty(priorReflections)}
