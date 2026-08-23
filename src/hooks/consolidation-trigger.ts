@@ -272,7 +272,14 @@ async function runObserverStage(
 		estimatedTokens: chunkTokens,
 		truncatedSourceEntryIds,
 	} = serializeSourceAddressedBranchEntries(backlogEntries, { maxTokens: maxChunkTokens });
-	if (!chunk.trim() || sourceEntryIds.length === 0) return "continue";
+	if (!chunk.trim() || sourceEntryIds.length === 0) {
+		// Zero-chunk backlog (nothing renderable after coverage): take the same
+		// backoff as the deliberate-empty verdict (#23), or the observer re-fires
+		// every turn over the same span.
+		debugLog("observer.empty_chunk", { tokens });
+		runtime.observerEmptyBackoff = { sessionIdentity, coverageId, tokensAtEmpty: tokens };
+		return "continue";
+	}
 	const coversUpToId = sourceEntryIds.at(-1);
 	if (!coversUpToId) return "continue";
 

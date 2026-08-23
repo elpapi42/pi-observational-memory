@@ -24,6 +24,7 @@ import {
 	observation,
 	observationsDroppedEntry,
 	observationsRecordedEntry,
+	rawMessage,
 	reflection,
 	reflectionsRecordedEntry,
 	textCustomMessage,
@@ -401,6 +402,55 @@ describe("V3 consolidation trigger", () => {
 		await runLaunchedWork();
 
 		expect(mockAgents.runObserver).toHaveBeenCalledTimes(2);
+	});
+
+	it("backs off observer re-fires after a zero-chunk backlog until enough new tokens arrive", async () => {
+		const entries = [
+			textCustomMessage("raw-1", "a".repeat(40)), // 10 tokens
+			rawMessage("asst-1", "ok", {
+				message: { role: "assistant", content: [{ type: "text", text: "ok" }], stopReason: "end_turn", usage: { totalTokens: 50 } },
+			}),
+			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "asst-1" }),
+			rawMessage("raw-2", "", {
+				message: { role: "assistant", content: [], stopReason: "end_turn" }, // zero raw tokens, renders nothing
+			}),
+		];
+		const { fire, runLaunchedWork, addEntries, runtime, ctx } = setup({
+			entries,
+			observeAfterTokens: 10,
+			reflectAfterTokens: 999,
+		});
+		// Provider-reported growth is what makes the stage due: the raw backlog after
+		// coverage is 0 tokens, so only a real-usage delta can cross the threshold.
+		ctx.getContextUsage = vi.fn(() => ({ tokens: 100, contextWindow: 200000 }));
+
+		fire();
+		await runLaunchedWork();
+
+		// Zero-chunk backlog: no model call, no coverage, and the deliberate-empty
+		// backoff is armed over the same span.
+		expect(mockAgents.runObserver).not.toHaveBeenCalled();
+		expect(runtime.observerEmptyBackoff).toEqual({
+			sessionIdentity: "session-1",
+			coverageId: "asst-1",
+			tokensAtEmpty: 50,
+		});
+
+		// Same span (no new tokens): the backoff suppresses the re-fire.
+		runtime.consolidationInFlight = false;
+		fire();
+		await runLaunchedWork();
+		expect(mockAgents.runObserver).not.toHaveBeenCalled();
+
+		// Enough new source tokens: the backoff clears and the observer re-fires.
+		mockAgents.runObserver.mockResolvedValueOnce([obsA]);
+		addEntries(textCustomMessage("raw-3", "b".repeat(40)));
+		ctx.getContextUsage = vi.fn(() => ({ tokens: 150, contextWindow: 200000 }));
+		runtime.consolidationInFlight = false;
+		fire();
+		await runLaunchedWork();
+		expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
+		expect(runtime.observerEmptyBackoff).toBeUndefined();
 	});
 
 	it("surfaces API stream errors as observer failure, never as empty", async () => {
