@@ -103,6 +103,8 @@ export class Runtime {
 	consolidationPromise: Promise<void> | null = null;
 	consolidationPhase: ConsolidationPhase | undefined;
 	compactInFlight = false;
+	/** Session generation (session id, falling back to session file) that owns `compactInFlight`; a replaced session discards the stale flag. */
+	compactInFlightSession: string | undefined;
 	compactHookInFlight = false;
 	resolveFailureNotified = false;
 	lastObserverError: string | undefined;
