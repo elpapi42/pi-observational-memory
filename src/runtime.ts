@@ -52,6 +52,13 @@ type NotifyLevel = "warning" | "info" | "error";
 type Notify = (message: string, type?: NotifyLevel) => void;
 export type ConsolidationPhase = "observer" | "reflector" | "dropper";
 
+/** Captures the extension/session generation that owns a unit of deferred work. */
+export interface RuntimeGeneration {
+	readonly generation: number;
+	readonly sessionIdentity: string | undefined;
+	readonly signal: AbortSignal;
+}
+
 /**
  * Whether pi positively reports a working credential source for this model's provider.
  *
@@ -116,6 +123,61 @@ export class Runtime {
 		coverageId: string | undefined;
 		tokensAtEmpty: number;
 	} | undefined;
+	private generation = 0;
+	private sessionIdentity: string | undefined;
+	private disposed = false;
+	private lifecycleController = new AbortController();
+	private compactionTimer: ReturnType<typeof setTimeout> | undefined;
+
+	startSession(sessionIdentity: string | undefined): void {
+		if (this.disposed) return;
+		if (this.sessionIdentity !== undefined && this.sessionIdentity !== sessionIdentity) {
+			this.lifecycleController.abort();
+			this.lifecycleController = new AbortController();
+			this.generation += 1;
+			this.clearCompactionTimer();
+			this.compactInFlight = false;
+		}
+		this.sessionIdentity = sessionIdentity;
+	}
+
+	captureGeneration(sessionIdentity: string | undefined): RuntimeGeneration {
+		return {
+			generation: this.generation,
+			sessionIdentity,
+			signal: this.lifecycleController.signal,
+		};
+	}
+
+	isGenerationActive(captured: RuntimeGeneration): boolean {
+		return !this.disposed
+			&& !captured.signal.aborted
+			&& captured.generation === this.generation
+			&& captured.sessionIdentity === this.sessionIdentity;
+	}
+
+	setCompactionTimer(timer: ReturnType<typeof setTimeout>): void {
+		if (this.disposed) {
+			clearTimeout(timer);
+			return;
+		}
+		this.compactionTimer = timer;
+	}
+
+	clearCompactionTimer(timer?: ReturnType<typeof setTimeout>): void {
+		if (timer !== undefined && this.compactionTimer !== timer) return;
+		if (this.compactionTimer !== undefined) clearTimeout(this.compactionTimer);
+		this.compactionTimer = undefined;
+	}
+
+	dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
+		this.generation += 1;
+		this.lifecycleController.abort();
+		this.clearCompactionTimer();
+		this.compactInFlight = false;
+	}
 
 	ensureConfig(cwd: string): void {
 		if (this.configLoaded) return;
@@ -123,7 +185,8 @@ export class Runtime {
 		this.configLoaded = true;
 	}
 
-	async resolveModel(ctx: ResolveCtx): Promise<ResolveResult> {
+	async resolveModel(ctx: ResolveCtx, signal?: AbortSignal): Promise<ResolveResult> {
+		signal?.throwIfAborted();
 		let model = ctx.model;
 		if (this.config.model) {
 			const configured = ctx.modelRegistry.find(this.config.model.provider, this.config.model.id);
@@ -138,6 +201,7 @@ export class Runtime {
 		}
 		if (!model) return { ok: false, reason: "no model available (session has no model and no observational-memory model configured)" };
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+		signal?.throwIfAborted();
 		const provider = (model as { provider?: string }).provider ?? "unknown";
 		const isOAuth = ctx.modelRegistry.isUsingOAuth?.(model) === true;
 		// `auth.ok === false` is the only unambiguous failure: pi returns it when a
@@ -181,7 +245,8 @@ export class Runtime {
 		// Only attempted when everything else already looks like the ambient shape, so an
 		// ordinary unauthenticated provider still fails on the first call.
 		if (auth.ok === true && !usable && !isOAuth && !resolvedEmptyApiKey && !providerCredentialConfigured) {
-			providerCredentialConfigured = await this.recheckProviderCredential(ctx.modelRegistry, model, provider);
+			providerCredentialConfigured = await this.recheckProviderCredential(ctx.modelRegistry, model, provider, signal);
+			signal?.throwIfAborted();
 		}
 		const signsAtRequestTime =
 			auth.ok === true && !isOAuth && !resolvedEmptyApiKey && providerCredentialConfigured;
@@ -224,9 +289,16 @@ export class Runtime {
 	 *
 	 * Implements the second half of pi's own auth gate for the only case that needs it: an
 	 * otherwise-ambient-looking resolution whose provider is missing from a stale or never
-	 * populated availability snapshot. Bounded and rate-limited; never throws.
+	 * populated availability snapshot. Bounded and rate-limited; only lifecycle cancellation
+	 * is propagated to the caller.
 	 */
-	private async recheckProviderCredential(registry: unknown, model: unknown, provider: string): Promise<boolean> {
+	private async recheckProviderCredential(
+		registry: unknown,
+		model: unknown,
+		provider: string,
+		signal?: AbortSignal,
+	): Promise<boolean> {
+		signal?.throwIfAborted();
 		const last = this.availabilityRecheckedAt.get(provider);
 		const now = Date.now();
 		if (last !== undefined && now - last < AVAILABILITY_RECHECK_REARM_MS) return false;
@@ -239,9 +311,14 @@ export class Runtime {
 		}
 
 		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), AVAILABILITY_RECHECK_TIMEOUT_MS);
-		let refreshError: string | undefined;
 		let timedOut = false;
+		const timer = setTimeout(() => {
+			timedOut = true;
+			controller.abort();
+		}, AVAILABILITY_RECHECK_TIMEOUT_MS);
+		const abortFromLifecycle = () => controller.abort(signal?.reason);
+		signal?.addEventListener("abort", abortFromLifecycle, { once: true });
+		let refreshError: string | undefined;
 		try {
 			// allowNetwork:false — a credential re-check must not wait on a model-catalog fetch.
 			// providers:[provider] — scope the work, and the snapshot writes, to the one provider.
@@ -254,17 +331,16 @@ export class Runtime {
 			await Promise.race([
 				refresh.call(registry, { allowNetwork: false, providers: [provider], signal: controller.signal }),
 				new Promise<void>((resolve) => {
-					controller.signal.addEventListener("abort", () => {
-						timedOut = true;
-						resolve();
-					});
+					controller.signal.addEventListener("abort", () => resolve(), { once: true });
 				}),
 			]);
 		} catch (error) {
 			refreshError = error instanceof Error ? error.message : String(error);
 		} finally {
 			clearTimeout(timer);
+			signal?.removeEventListener("abort", abortFromLifecycle);
 		}
+		signal?.throwIfAborted();
 
 		// Re-read even when the refresh reported an error or timed out: a scoped pass can
 		// update the snapshot for this provider and still fail elsewhere.
@@ -318,7 +394,7 @@ export class Runtime {
 				await work();
 			} catch (error) {
 				errorMessage = error instanceof Error ? error.message : String(error);
-				if (hasUI && ui) ui.notify(`Observational memory: ${label} failed: ${errorMessage}`, "warning");
+				if (!this.disposed && hasUI && ui) ui.notify(`Observational memory: ${label} failed: ${errorMessage}`, "warning");
 			} finally {
 				onFinally(errorMessage);
 			}

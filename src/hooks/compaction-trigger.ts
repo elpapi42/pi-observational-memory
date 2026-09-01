@@ -7,6 +7,10 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 	// Pi emits agent_settled only after retries, automatic compaction, and queued
 	// continuation have finished, so retry policy stays owned by Pi.
 	pi.on("agent_settled", (_event, ctx) => {
+		const sessionIdentity = ctx.sessionManager?.getSessionId?.()
+			?? ctx.sessionManager?.getSessionFile?.();
+		const generation = runtime.captureGeneration(sessionIdentity);
+		if (!runtime.isGenerationActive(generation)) return;
 		runtime.ensureConfig(ctx.cwd);
 		if (runtime.config.passive === true) return;
 		if (runtime.compactInFlight) return;
@@ -18,8 +22,8 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 		const threshold = resolveCompactAfterTokens(runtime.config, contextWindow);
 		if (progress < threshold) return;
 
-		// Capture ctx properties synchronously — the setTimeout + async work below
-		// may outlive the extension ctx (stale after session replacement/reload).
+		// Capture the UI handle for notifications. Deferred session operations stay
+		// behind the generation guard because ctx becomes stale after reload.
 		const hasUI = ctx.hasUI;
 		const ui = ctx.ui;
 
@@ -29,7 +33,10 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 		);
 
 		runtime.compactInFlight = true;
-		setTimeout(() => {
+		let timer: ReturnType<typeof setTimeout>;
+		timer = setTimeout(() => {
+			runtime.clearCompactionTimer(timer);
+			if (!runtime.isGenerationActive(generation)) return;
 			try {
 				if (!ctx.isIdle()) {
 					runtime.compactInFlight = false;
@@ -39,6 +46,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					);
 					return;
 				}
+				if (!runtime.isGenerationActive(generation)) return;
 				const currentEntries = ctx.sessionManager?.getBranch?.() as Entry[] | undefined;
 				if (!currentEntries) {
 					runtime.compactInFlight = false;
@@ -53,12 +61,15 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					);
 					return;
 				}
+				if (!runtime.isGenerationActive(generation)) return;
 				ctx.compact({
 					onComplete: () => {
+						if (!runtime.isGenerationActive(generation)) return;
 						runtime.compactInFlight = false;
 						if (hasUI) ui?.notify("Observational memory: compaction complete", "info");
 					},
 					onError: (error: { message: string }) => {
+						if (!runtime.isGenerationActive(generation)) return;
 						runtime.compactInFlight = false;
 						if (error.message === "Compaction cancelled") {
 							// We already notified the user with the real reason before returning { cancel: true }.
@@ -68,10 +79,12 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					},
 				});
 			} catch (error) {
+				if (!runtime.isGenerationActive(generation)) return;
 				runtime.compactInFlight = false;
 				const msg = error instanceof Error ? error.message : String(error);
 				if (hasUI) ui?.notify(`Observational memory: compact threw: ${msg}`, "error");
 			}
 		}, 0);
+		runtime.setCompactionTimer(timer);
 	});
 }

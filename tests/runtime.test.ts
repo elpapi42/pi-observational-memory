@@ -136,6 +136,61 @@ describe("Runtime V3 behavior", () => {
 		expect(runtime.consolidationPhase).toBeUndefined();
 	});
 
+	it("invalidates captured work and aborts its signal on dispose", () => {
+		const runtime = new Runtime();
+		runtime.startSession("session-1");
+		const generation = runtime.captureGeneration("session-1");
+
+		expect(runtime.isGenerationActive(generation)).toBe(true);
+		expect(generation.signal.aborted).toBe(false);
+
+		runtime.dispose();
+
+		expect(generation.signal.aborted).toBe(true);
+		expect(runtime.isGenerationActive(generation)).toBe(false);
+	});
+
+	it("does not revive a disposed runtime but allows a fresh runtime generation", () => {
+		const stale = new Runtime();
+		stale.startSession("session-1");
+		const staleGeneration = stale.captureGeneration("session-1");
+		stale.dispose();
+		stale.startSession("session-1");
+
+		const fresh = new Runtime();
+		fresh.startSession("session-1");
+		const freshGeneration = fresh.captureGeneration("session-1");
+
+		expect(stale.isGenerationActive(staleGeneration)).toBe(false);
+		expect(fresh.isGenerationActive(freshGeneration)).toBe(true);
+		expect(freshGeneration.signal.aborted).toBe(false);
+	});
+
+	it("stops model resolution before post-await registry access after dispose", async () => {
+		const runtime = new Runtime();
+		runtime.startSession("session-1");
+		const generation = runtime.captureGeneration("session-1");
+		let resolveAuth!: (value: { ok: true; apiKey: string }) => void;
+		const auth = new Promise<{ ok: true; apiKey: string }>((resolve) => {
+			resolveAuth = resolve;
+		});
+		const registry = {
+			getApiKeyAndHeaders: vi.fn(() => auth),
+			isUsingOAuth: vi.fn(() => false),
+		};
+		const resolution = runtime.resolveModel({
+			model: { provider: "anthropic" },
+			modelRegistry: registry,
+			hasUI: false,
+		}, generation.signal);
+
+		runtime.dispose();
+		resolveAuth({ ok: true, apiKey: "key" });
+
+		await expect(resolution).rejects.toMatchObject({ name: "AbortError" });
+		expect(registry.isUsingOAuth).not.toHaveBeenCalled();
+	});
+
 	it("records stage-specific consolidation errors", () => {
 		const runtime = new Runtime();
 		const notify = vi.fn();
