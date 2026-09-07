@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { resolveCompactAfterTokens } from "../config.js";
-import type { Runtime } from "../runtime.js";
+import { DISABLED_MESSAGE, type Runtime } from "../runtime.js";
 import {
 	diffProjection,
 	foldLedger,
@@ -38,6 +38,10 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 	pi.registerCommand("om:status", {
 		description: "Show observational memory status",
 		handler: async (_args, ctx) => {
+			if (!runtime.enabled) {
+				ctx.ui.notify(DISABLED_MESSAGE, "info");
+				return;
+			}
 			runtime.ensureConfig(ctx.cwd);
 			const entries = ctx.sessionManager.getBranch() as Entry[];
 			const folded = foldLedger(entries);

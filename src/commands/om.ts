@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Runtime } from "../runtime.js";
+import { restoreRecallTool } from "../tool-gate.js";
 
 /**
  * Strict bare `/om` activation command (#10).
@@ -41,6 +42,7 @@ export function registerActivationCommand(pi: ExtensionAPI, runtime: Runtime): v
 			}
 
 			runtime.enabled = true;
+			restoreRecallTool(pi, runtime);
 			ctx.ui.notify("Observational memory enabled for this session.", "info");
 		},
 	});

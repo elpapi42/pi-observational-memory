@@ -25,6 +25,7 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unk
 		}),
 	};
 	const runtime = {
+		enabled: true,
 		ensureConfig: vi.fn(),
 		config: {
 			observeAfterTokens: 10,
@@ -59,6 +60,25 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unk
 	};
 	return { run, notify };
 }
+
+describe("V3 /om:status gated by runtime.enabled (#12)", () => {
+	it("returns only the stable disabled message and never reads config or the branch", async () => {
+		let handler: ((args: unknown, ctx: any) => Promise<void>) | undefined;
+		const pi = { registerCommand: vi.fn((_name: string, command: { handler: typeof handler }) => { handler = command.handler; }) };
+		const ensureConfig = vi.fn();
+		const runtime = { enabled: false, ensureConfig, config: {} };
+		registerStatusCommand(pi as any, runtime as any);
+		if (!handler) throw new Error("status handler not registered");
+
+		const notify = vi.fn();
+		const getBranch = vi.fn(() => []);
+		await handler(undefined, { cwd: "/tmp/project", ui: { notify }, sessionManager: { getBranch }, model: undefined, getContextUsage: () => undefined });
+
+		expect(notify).toHaveBeenCalledWith("Observational memory is disabled; run /om to enable it.", "info");
+		expect(ensureConfig).not.toHaveBeenCalled();
+		expect(getBranch).not.toHaveBeenCalled();
+	});
+});
 
 describe("V3 /om:status", () => {
 	it("renders concise no-memory status without V2 committed/pending language", async () => {

@@ -20,13 +20,18 @@ import { registerLifecycleReset } from "../src/hooks/lifecycle.js";
 import { Runtime } from "../src/runtime.js";
 import { observation, textCustomMessage } from "./fixtures/session.js";
 
-function setup() {
+function setup(activeTools: string[] = ["read", "bash", "recall"]) {
 	const handlers: Record<string, ((event: unknown, ctx: any) => void) | undefined> = {};
+	let currentActiveTools = [...activeTools];
 	const pi = {
 		on: vi.fn((eventName: string, cb: (event: unknown, ctx: any) => void) => {
 			handlers[eventName] = cb;
 		}),
 		appendEntry: vi.fn(),
+		getActiveTools: vi.fn(() => currentActiveTools),
+		setActiveTools: vi.fn((names: string[]) => {
+			currentActiveTools = [...names];
+		}),
 	};
 
 	const runtime = new Runtime();
@@ -38,7 +43,7 @@ function setup() {
 	registerConsolidationTrigger(pi as any, runtime);
 	registerCompactionTrigger(pi as any, runtime);
 
-	return { pi, runtime, handlers };
+	return { pi, runtime, handlers, getActiveTools: () => currentActiveTools };
 }
 
 describe("session lifecycle reset and generation invalidation", () => {
@@ -70,6 +75,34 @@ describe("session lifecycle reset and generation invalidation", () => {
 			handlers.session_start!({ type: "session_start", reason }, {});
 			expect(runtime.enabled).toBe(false);
 		}
+	});
+
+	it("gates recall out of the active tool allowlist on session_start while preserving other active tools (#12)", () => {
+		const { runtime, handlers, getActiveTools } = setup(["read", "bash", "recall"]);
+
+		handlers.session_start!({ type: "session_start", reason: "startup" }, {});
+
+		expect(getActiveTools()).toEqual(["read", "bash"]);
+		expect(runtime.recallActiveBeforeGate).toBe(true);
+	});
+
+	it("re-runs the recall gate on every session boundary reason without duplicating removals", () => {
+		const reasons = ["startup", "reload", "new", "resume", "fork"] as const;
+		for (const reason of reasons) {
+			const { handlers, getActiveTools } = setup(["read", "recall"]);
+			handlers.session_start!({ type: "session_start", reason }, {});
+			expect(getActiveTools()).toEqual(["read"]);
+		}
+	});
+
+	it("leaves the active tool allowlist untouched when recall was never active", () => {
+		const { runtime, handlers, pi, getActiveTools } = setup(["read", "bash"]);
+
+		handlers.session_start!({ type: "session_start", reason: "startup" }, {});
+
+		expect(getActiveTools()).toEqual(["read", "bash"]);
+		expect(runtime.recallActiveBeforeGate).toBe(false);
+		expect(pi.setActiveTools).not.toHaveBeenCalled();
 	});
 
 	it("bumps the generation and clears in-flight flags on session_shutdown", () => {

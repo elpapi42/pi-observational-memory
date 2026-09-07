@@ -26,7 +26,7 @@ function setup(entries: TestEntry[], clipboardResult = true) {
 			handler = command.handler;
 		}),
 	};
-	const runtime = { ensureConfig: vi.fn() };
+	const runtime = { enabled: true, ensureConfig: vi.fn() };
 	const copyToClipboard = vi.fn(async () => clipboardResult);
 	registerViewCommand(pi as any, runtime as any, { copyToClipboard });
 	if (!handler) throw new Error("view handler not registered");
@@ -163,5 +163,26 @@ describe("V3 /om:view", () => {
 		expect(copyToClipboard).not.toHaveBeenCalled();
 		expect(clipboardText).toBeUndefined();
 		expect(output).toBe("Usage: /om:view [full]");
+	});
+});
+
+describe("V3 /om:view gated by runtime.enabled (#12)", () => {
+	it("returns only the stable disabled message and never reads config, the branch, or clipboard", async () => {
+		let handler: ((args: unknown, ctx: any) => Promise<void>) | undefined;
+		const pi = { registerCommand: vi.fn((_name: string, command: { handler: typeof handler }) => { handler = command.handler; }) };
+		const ensureConfig = vi.fn();
+		const runtime = { enabled: false, ensureConfig };
+		const copyToClipboard = vi.fn(async () => true);
+		registerViewCommand(pi as any, runtime as any, { copyToClipboard });
+		if (!handler) throw new Error("view handler not registered");
+
+		const notify = vi.fn();
+		const getBranch = vi.fn(() => []);
+		await handler(["full"], { cwd: "/tmp/project", ui: { notify }, sessionManager: { getBranch } });
+
+		expect(notify).toHaveBeenCalledWith("Observational memory is disabled; run /om to enable it.", "info");
+		expect(ensureConfig).not.toHaveBeenCalled();
+		expect(getBranch).not.toHaveBeenCalled();
+		expect(copyToClipboard).not.toHaveBeenCalled();
 	});
 });
