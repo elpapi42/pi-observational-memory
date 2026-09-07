@@ -18,6 +18,14 @@ function observationsPoolMaxTokens(runtime: Runtime): number {
 
 export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.on("session_before_compact", async (event: SessionBeforeCompactEvent, ctx: ExtensionContext) => {
+		// Disabled/passive delegation must happen before the duplicate guard, any
+		// config/ledger reads, or state mutation (#13): a disabled or passive
+		// runtime must never notify, read observational ledger state, resolve a
+		// model, write to the ledger, or claim compaction ownership.
+		if (!runtime.enabled) return;
+		runtime.ensureConfig(ctx.cwd);
+		if (runtime.config.passive === true) return;
+
 		if (runtime.compactHookInFlight) {
 			if (ctx.hasUI) {
 				ctx.ui.notify(
@@ -30,7 +38,6 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 
 		runtime.compactHookInFlight = true;
 		try {
-			runtime.ensureConfig(ctx.cwd);
 			const { preparation, branchEntries } = event;
 			const { firstKeptEntryId, tokensBefore } = preparation;
 			const projection = buildCompactionProjection(
