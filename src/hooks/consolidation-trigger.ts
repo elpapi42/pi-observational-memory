@@ -5,6 +5,7 @@ import { ObserverStreamError, runObserver } from "../agents/observer/agent.js";
 import { runReflector } from "../agents/reflector/agent.js";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
 import { resolveObserverChunkMaxTokens } from "../config.js";
+import { getOpenCodeSessionHeaders } from "../session-headers.js";
 import type { ResolveResult, Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import {
@@ -124,7 +125,7 @@ function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "ob
 		});
 		if (cached.ok) {
 			runtime.resolveFailureNotified = false;
-			return cached;
+			return withOpenCodeSessionHeaders(cached, ctx);
 		}
 		debugLog(`${stage}.model_unavailable`, { reason: cached.reason });
 		if (!runtime.resolveFailureNotified && ctx.hasUI && ctx.ui) {
@@ -133,6 +134,24 @@ function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "ob
 		}
 		return undefined;
 	};
+}
+
+/**
+ * Merge OpenCode session headers into a resolved worker model (see
+ * `session-headers.js`). Auth headers win on conflict, matching pi's own
+ * `mergeProviderAttributionHeaders` order. The session id is read lazily so a
+ * rotation mid-run is picked up by the next stage.
+ */
+function withOpenCodeSessionHeaders(resolved: ResolvedModel, ctx: ConsolidationCtx): ResolvedModel {
+	let sessionId: string | undefined;
+	try {
+		sessionId = ctx.sessionManager.getSessionId?.();
+	} catch {
+		sessionId = undefined;
+	}
+	const sessionHeaders = getOpenCodeSessionHeaders(resolved.model, sessionId);
+	if (!sessionHeaders) return resolved;
+	return { ...resolved, headers: { ...sessionHeaders, ...resolved.headers } };
 }
 
 export function registerConsolidationTrigger(pi: ExtensionAPI, runtime: Runtime): void {

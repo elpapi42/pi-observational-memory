@@ -14,6 +14,16 @@ caller-supplied `Authorization` header as a substitute apiKey. The acceptance ru
 re-introduce a hard `apiKey` requirement — it breaks compaction/consolidation for every OAuth model.
 Tests: `npm test` (vitest); typecheck: `npm run typecheck`.
 
+## OpenCode session headers
+
+OpenCode Go rejects requests without `x-opencode-session` (400 MissingSessionID). Pi's
+main session attaches `x-opencode-session` + `x-opencode-client: pi` itself, but the
+consolidation workers call `agentLoop` directly, so `makeModelResolver`
+(`src/hooks/consolidation-trigger.ts`) merges `getOpenCodeSessionHeaders`
+(`src/session-headers.ts`, mirroring pi's `provider-attribution.js`) into the resolved
+auth headers. Auth headers win on conflict. Any new background model call must go
+through the same wrapper or it will 400 on `opencode`/`opencode-go` models.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

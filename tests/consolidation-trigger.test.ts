@@ -250,6 +250,51 @@ describe("V3 consolidation trigger", () => {
 		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [obs], coversUpToId: "raw-1" });
 	});
 
+	it("attaches x-opencode-session headers for opencode-go worker models", async () => {
+		const obs = observation("cccccccccccc", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
+		mockAgents.runObserver.mockResolvedValueOnce([obs]);
+		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+		const { fire, runLaunchedWork, runtime } = setup({ entries, reflectAfterTokens: 999, sessionId: "session-7" });
+		runtime.resolveModel.mockResolvedValueOnce({
+			ok: true,
+			model: { provider: "opencode-go", id: "mimo-v2.5", baseUrl: "https://opencode.ai/zen/go/v1" },
+			apiKey: "go-key",
+			headers: { Authorization: "Bearer go-key" },
+		});
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({
+			apiKey: "go-key",
+			headers: {
+				"x-opencode-session": "session-7",
+				"x-opencode-client": "pi",
+				Authorization: "Bearer go-key",
+			},
+		}));
+	});
+
+	it("leaves non-OpenCode worker models untouched", async () => {
+		const obs = observation("cccccccccccc", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
+		mockAgents.runObserver.mockResolvedValueOnce([obs]);
+		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+		const { fire, runLaunchedWork, runtime } = setup({ entries, reflectAfterTokens: 999 });
+		runtime.resolveModel.mockResolvedValueOnce({
+			ok: true,
+			model: { provider: "anthropic", id: "claude" },
+			apiKey: "key",
+			headers: { h: "v" },
+		});
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({
+			headers: { h: "v" },
+		}));
+	});
+
 	it("uses existing observation coverage and retries larger ranges after no-output", async () => {
 		const prior = observation("cccccccccccc", { sourceEntryIds: ["raw-1"] });
 		const newObs = observation("dddddddddddd", { sourceEntryIds: ["raw-2"] });
