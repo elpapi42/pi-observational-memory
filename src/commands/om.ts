@@ -21,6 +21,11 @@ export function registerActivationCommand(pi: ExtensionAPI, runtime: Runtime): v
 	pi.registerCommand("om", {
 		description: "Enable observational memory for this session",
 		handler: async (args, ctx) => {
+			if (ctx.mode !== "tui" && ctx.mode !== "rpc") {
+				ctx.ui.notify("Observational memory activation requires TUI or RPC mode.", "warning");
+				return;
+			}
+
 			if (args.trim().length > 0) {
 				ctx.ui.notify("Usage: /om (no arguments)", "info");
 				return;

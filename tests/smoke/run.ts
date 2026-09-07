@@ -81,7 +81,6 @@ async function runProcessA(baseUrl: string): Promise<void> {
 		},
 		compaction: { keepRecentTokens: 1, reserveTokens: 1 },
 	});
-
 	const reportPath = join(cwd, "child-report.json");
 	const host = spawnRpcHost(
 		ompBin,
@@ -157,12 +156,14 @@ async function runProcessA(baseUrl: string): Promise<void> {
 			const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
 				activeToolNames: string[];
 				recallActive: boolean;
+				omToolResultCount: number;
 				omEntryCount: number;
 				omEntryCustomTypes: string[];
 				compactionEntryCount: number;
 				compactionSummary: string | null;
 				compactionDetails: unknown;
 			};
+			assert(report.omToolResultCount === 0, "Child subagent produced no observational-memory tool results");
 			assert(
 				!report.recallActive,
 				`Child subagent cannot access observational-memory recall while disabled (active tools: ${JSON.stringify(report.activeToolNames)})`,

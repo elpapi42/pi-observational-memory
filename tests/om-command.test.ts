@@ -4,8 +4,12 @@ import { registerActivationCommand } from "../src/commands/om.js";
 import { DEFAULTS, type Config } from "../src/config.js";
 import { Runtime } from "../src/runtime.js";
 
-function setup(configOverrides: Partial<Config> = {}, activeTools: string[] = ["read", "bash"]) {
-	let handler: ((args: string, ctx: { cwd: string; ui: { notify: ReturnType<typeof vi.fn> } }) => Promise<void>) | undefined;
+function setup(
+	configOverrides: Partial<Config> = {},
+	activeTools: string[] = ["read", "bash"],
+	mode: "tui" | "rpc" | "print" = "tui",
+) {
+	let handler: ((args: string, ctx: { mode: "tui" | "rpc" | "print"; cwd: string; ui: { notify: ReturnType<typeof vi.fn> } }) => Promise<void>) | undefined;
 	let currentActiveTools = [...activeTools];
 	const pi = {
 		registerCommand: vi.fn((name: string, command: { handler: typeof handler }) => {
@@ -27,10 +31,10 @@ function setup(configOverrides: Partial<Config> = {}, activeTools: string[] = ["
 
 	const notices: Array<{ message: string; type?: string }> = [];
 	const ctx = {
+		mode,
 		cwd: "/tmp/project",
 		ui: { notify: vi.fn((message: string, type?: string) => { notices.push({ message, type }); }) },
 	};
-
 	return { runtime, notices, pi, getActiveTools: () => currentActiveTools, invoke: (args = "") => handler!(args, ctx) };
 }
 
@@ -70,6 +74,17 @@ describe("/om activation command", () => {
 		expect(runtime.enabled).toBe(false);
 		expect(notices).toEqual([{ message: "Usage: /om (no arguments)", type: "info" }]);
 	});
+	it("rejects print mode without mutating activation state", async () => {
+		const { runtime, invoke, notices } = setup({}, ["read", "bash"], "print");
+
+		await invoke("");
+
+		expect(runtime.enabled).toBe(false);
+		expect(notices).toEqual([
+			{ message: "Observational memory activation requires TUI or RPC mode.", type: "warning" },
+		]);
+	});
+
 
 	it("is a hard lockout under passive mode: activation never proceeds", async () => {
 		const { runtime, invoke, notices } = setup({ passive: true });

@@ -63,17 +63,22 @@ export default function childTaskTool(pi: ExtensionAPI): void {
 			const branchAfterCompact = childSessionManager.getBranch();
 			child.dispose();
 
-			const omCustomTypes = ["om.observations.recorded", "om.reflections.recorded", "om.observations.dropped"];
-			const omEntries = branchAfterCompact.filter(
-				(entry: { type: string; customType?: string }) => entry.type === "custom" && omCustomTypes.includes(entry.customType ?? ""),
-			);
 			const compactionEntries = branchAfterCompact.filter((entry: { type: string }) => entry.type === "compaction");
 
+			const omEntries = branchAfterCompact.filter(
+				(entry: { type: string; customType?: string }) => entry.type === "custom" && (entry.customType?.startsWith("om.") ?? false),
+			);
+			const omToolResultCount = branchBeforeCompact.filter((entry: { type: string; message?: { role?: string; toolName?: string } }) => (
+				entry.type === "message"
+				&& entry.message?.role === "toolResult"
+				&& (entry.message.toolName === "recall" || entry.message.toolName === "record_observations" || entry.message.toolName === "_recall" || entry.message.toolName === "_record_observations")
+			)).length;
 			writeFileSync(reportPath, JSON.stringify({
 				preCompactEntryCount: branchBeforeCompact.length,
 				postCompactEntryCount: branchAfterCompact.length,
 				activeToolNames,
 				recallActive: activeToolNames.includes("recall"),
+				omToolResultCount,
 				omEntryCount: omEntries.length,
 				omEntryCustomTypes: omEntries.map((entry: { customType?: string }) => entry.customType),
 				compactionEntryCount: compactionEntries.length,
