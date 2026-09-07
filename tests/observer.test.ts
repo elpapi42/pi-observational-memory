@@ -15,7 +15,7 @@ function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => P
 }
 
 function assistantEndEvent(stopReason: string, errorMessage?: string): any {
-	return { type: "message_end", message: { role: "assistant", stopReason, errorMessage } };
+	return { type: "message_end", message: { role: "assistant", stopReason, errorMessage, usage: { input: 0, output: 0 } } };
 }
 
 describe("OBSERVATION_TIMESTAMP_PATTERN", () => {

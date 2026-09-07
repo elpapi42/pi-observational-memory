@@ -10,6 +10,7 @@ import { OBSERVER_SYSTEM } from "./prompts.js";
 import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
 import type { Observation, Relevance } from "../../session-ledger/index.js";
 import { observationLineTokenCount } from "../../tokens.js";
+import type { AgentRunStats } from "../stats.js";
 
 interface RunObserverArgs {
 	model: Model<any>;
@@ -24,6 +25,8 @@ interface RunObserverArgs {
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
 	thinkingLevel?: ModelThinkingLevel;
+	/** Reports wall-clock/token stats once the run finishes, regardless of outcome (empty, recorded, or stream error). */
+	onUsage?: (stats: AgentRunStats) => void;
 }
 
 const RelevanceSchema = Type.Union([
@@ -211,18 +214,24 @@ ${conversation}`;
 
 	const loop = args.agentLoop ?? agentLoop;
 	const stream = loop(prompts, context, config, signal, streamSimple);
+	const startedAt = Date.now();
+	let inputTokens = 0;
+	let outputTokens = 0;
 	let streamError: { stopReason: string; errorMessage?: string } | undefined;
 	for await (const event of stream) {
 		// Drain events; the tool's execute already collects records.
 		logAgentStreamError("observer", event);
+		if (event.type !== "message_end" || event.message.role !== "assistant") continue;
+		inputTokens += event.message.usage.input;
+		outputTokens += event.message.usage.output;
 		// Watch for a terminal API/stream failure so it is not conflated with
 		// a deliberate empty result.
-		const message = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string } }).message;
-		if (message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")) {
-			streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+		if (event.message.stopReason === "error" || event.message.stopReason === "aborted") {
+			streamError = { stopReason: event.message.stopReason, errorMessage: event.message.errorMessage };
 		}
 	}
 	await stream.result();
+	args.onUsage?.({ durationMs: Date.now() - startedAt, inputTokens, outputTokens });
 
 	if (accumulated.size === 0) {
 		if (streamError) throw new ObserverStreamError(streamError.stopReason, streamError.errorMessage);

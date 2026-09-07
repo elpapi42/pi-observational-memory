@@ -1,4 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentRunStats } from "../agents/stats.js";
+import { formatAgentStats } from "../agents/stats.js";
 import { runDropper } from "../agents/dropper/agent.js";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { ObserverStreamError, runObserver } from "../agents/observer/agent.js";
@@ -316,6 +318,7 @@ async function runObserverStage(
 	});
 
 	let observations: Observation[] | undefined;
+	let usageStats: AgentRunStats | undefined;
 	try {
 		observations = await runObserver({
 			model: resolved.model as any,
@@ -328,8 +331,10 @@ async function runObserverStage(
 			allowedSourceEntryIds: sourceEntryIds,
 			maxTurns: runtime.config.agentMaxTurns,
 			thinkingLevel: runtime.config.model?.thinking ?? "low",
+			onUsage: (stats) => { usageStats = stats; },
 		});
 	} catch (error) {
+		if (usageStats) ctx.ui?.notify(formatAgentStats("observer", usageStats), "info");
 		if (error instanceof ObserverStreamError) {
 			// API/stream failure is not a clean empty (#32): surface it as a real
 			// failure instead of the "no observations" path. Coverage stays put.
@@ -338,6 +343,7 @@ async function runObserverStage(
 		}
 		throw error;
 	}
+	if (usageStats) ctx.ui?.notify(formatAgentStats("observer", usageStats), "info");
 	if (!runtime.isCurrentGeneration(generation)) return "abort";
 	if (!observations || observations.length === 0) {
 		// Deliberate empty: routine info, not a warning, and back off re-fires
@@ -393,6 +399,7 @@ async function runReflectorStage(
 	if (!runtime.isCurrentGeneration(generation)) return { outcome: "abort", sameRunReflections: [] };
 
 	const folded = foldLedger(entries);
+	let reflectorUsageStats: AgentRunStats | undefined;
 	const reflections = await runReflector({
 		model: resolved.model as any,
 		apiKey: resolved.apiKey,
@@ -402,7 +409,9 @@ async function runReflectorStage(
 		observations: folded.activeObservations,
 		maxTurns: runtime.config.agentMaxTurns,
 		thinkingLevel: runtime.config.model?.thinking ?? "low",
+		onUsage: (stats) => { reflectorUsageStats = stats; },
 	});
+	if (reflectorUsageStats) ctx.ui?.notify(formatAgentStats("reflector", reflectorUsageStats), "info");
 	if (!runtime.isCurrentGeneration(generation)) return { outcome: "abort", sameRunReflections: [] };
 	if (!reflections) return { outcome: "continue", sameRunReflections: [] };
 
@@ -469,6 +478,7 @@ async function runDropperStage(
 	if (!runtime.isCurrentGeneration(generation)) return "abort";
 
 	const reflectionsForDropper = mergeReflections(folded.reflections, sameRunReflections);
+	let dropperUsageStats: AgentRunStats | undefined;
 	const droppedIds = await runDropper({
 		model: resolved.model as any,
 		apiKey: resolved.apiKey,
@@ -479,7 +489,9 @@ async function runDropperStage(
 		targetTokens: runtime.config.observationsPoolTargetTokens,
 		maxTurns: runtime.config.agentMaxTurns,
 		thinkingLevel: runtime.config.model?.thinking ?? "low",
+		onUsage: (stats) => { dropperUsageStats = stats; },
 	});
+	if (dropperUsageStats) ctx.ui?.notify(formatAgentStats("dropper", dropperUsageStats), "info");
 	if (!runtime.isCurrentGeneration(generation)) return "abort";
 	const coversUpToId = earlierCoverageMarkerId(entries, observationCoverageId, sameRunReflectionCoverageId);
 	const data = coversUpToId && droppedIds ? buildObservationsDroppedData(droppedIds, coversUpToId) : undefined;
