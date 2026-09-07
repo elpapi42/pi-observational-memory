@@ -55,7 +55,7 @@ def main() -> int:
                     else:
                         sys.stdout.buffer.write(data)
                         sys.stdout.buffer.flush()
-            if child_status is not None and not selector.get_map():
+            if child_status is not None and master_fd not in selector.get_map():
                 break
             if master_fd not in selector.get_map() and child_status is None:
                 _, child_status = os.waitpid(child_pid, 0)
