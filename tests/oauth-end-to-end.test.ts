@@ -145,6 +145,7 @@ describe("OAuth provider end-to-end consolidation", () => {
 		};
 
 		const runtime = new Runtime();
+		runtime.enabled = true;
 		runtime.configLoaded = true;
 		runtime.config = { ...DEFAULTS, observeAfterTokens: 1, reflectAfterTokens: 1_000_000, agentMaxTurns: 1 };
 
@@ -199,6 +200,7 @@ describe("OAuth provider end-to-end consolidation", () => {
 		};
 
 		const runtime = new Runtime();
+		runtime.enabled = true;
 		runtime.configLoaded = true;
 		runtime.config = { ...DEFAULTS, observeAfterTokens: 1, reflectAfterTokens: 1_000_000, agentMaxTurns: 1 };
 

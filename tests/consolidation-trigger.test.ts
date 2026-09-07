@@ -48,6 +48,7 @@ function setup(args: {
 	observationsPoolTargetTokens?: number;
 	showWorkerNotifications?: boolean;
 	passive?: boolean;
+	enabled?: boolean;
 	consolidationInFlight?: boolean;
 	appendEntryReturnsId?: boolean;
 	sessionId?: string;
@@ -67,6 +68,9 @@ function setup(args: {
 	};
 	let launchedWork: (() => Promise<void>) | undefined;
 	const runtime = {
+		enabled: args.enabled ?? true,
+		generation: 0,
+		isCurrentGeneration: vi.fn(() => true),
 		config: {
 			showWorkerNotifications: args.showWorkerNotifications ?? true,
 			passive: args.passive ?? false,
