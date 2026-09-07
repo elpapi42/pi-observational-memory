@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultScript, startMockModelServer } from "./mock-model-server.ts";
 import { spawnRpcHost, type RpcHost } from "./rpc-client.ts";
+import { spawnTuiHost, type TuiHost } from "./tui-client.ts";
 
 /**
  * Real-host smoke test for observational memory's activation boundary (#14).
@@ -13,15 +14,10 @@ import { spawnRpcHost, type RpcHost } from "./rpc-client.ts";
  * pattern, so `bun run test` never picks it up; it is only run via
  * `bun run test:smoke`, which requires the real `omp` CLI on `PATH`.
  *
- * Scope note: OMP's RPC mode (`--mode rpc`) dispatches slash commands through
- * the exact same extension command handlers a real interactive TUI
- * session uses (confirmed in OMP's RPC and extension docs — RPC
- * and TUI are both `ExtensionContext.mode` values reaching the same command
- * registration). Driving two independent RPC processes therefore exercises
- * "parent OMP session" and "independently controlled OMP RPC session"
- * exactly as the spec requires, without needing PTY automation of the
- * interactive terminal UI, which would be neither deterministic nor
- * CI-safe.
+ * Scope note: the smoke covers both real OMP command surfaces. The TUI path
+ * uses a real pseudo-terminal allocated by `script`; the RPC path uses OMP's
+ * JSONL command route. Both paths reach the same extension command handlers,
+ * and the separate RPC process also exercises independent headless activation.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -29,6 +25,7 @@ const repoRoot = resolve(here, "..", "..");
 const omExtensionPath = join(repoRoot, "src", "index.ts");
 const providerExtensionPath = join(here, "fixture-provider.ts");
 const taskToolExtensionPath = join(here, "child-task-tool.ts");
+const tuiPtyPath = join(here, "tui-pty.py");
 const ompBin = process.env.OM_SMOKE_OMP_BIN ?? "omp";
 
 let failures = 0;
@@ -192,6 +189,80 @@ async function runProcessA(baseUrl: string): Promise<void> {
 	}
 }
 
+async function runProcessTui(baseUrl: string): Promise<void> {
+	const cwd = makeCwd("tui");
+	writeSettings(cwd, {
+		"observational-memory": {
+			model: { provider: "om-smoke", id: "om-smoke-model" },
+			observeAfterTokens: 999_999_999,
+			reflectAfterTokens: 999_999_999,
+			compactAfterTokens: 999_999_999,
+			showWorkerNotifications: true,
+		},
+		compaction: { keepRecentTokens: 1, reserveTokens: 1 },
+	});
+	const host: TuiHost = spawnTuiHost(
+		tuiPtyPath,
+		ompBin,
+		[omExtensionPath, providerExtensionPath],
+		{ ...process.env, OM_SMOKE_BASE_URL: baseUrl },
+		cwd,
+	);
+
+	try {
+		await host.waitFor(
+			(output) => output.includes("LSP Servers") || output.includes("No LSP servers"),
+			30_000,
+			"OMP TUI startup",
+		);
+		await new Promise<void>((resolve) => setTimeout(resolve, 4_000));
+		host.send("/om");
+		await host.waitFor(
+			(output) => output.includes("Observational memory enabled for this session."),
+			30_000,
+			"TUI /om activation",
+		);
+		assert(host.has("Observational memory enabled for this session."), "TUI: /om activates observational memory");
+
+		host.send("/om:status");
+		await host.waitFor((output) => output.includes("── Memory ──"), 30_000, "TUI /om:status");
+		assert(host.has("── Memory ──"), "TUI: /om:status reports enabled memory");
+
+		host.send("/om:view");
+		await host.waitFor((output) => output.includes("── Reflections ──"), 30_000, "TUI /om:view");
+		assert(host.has("── Reflections ──"), "TUI: /om:view reports enabled memory");
+
+		const largePrompt = `SMOKE_MARKER: tui SMOKE_ACTION: plain ${"SMOKE_PADDING ".repeat(4_000)}`;
+		const firstPromptOffset = host.outputLength();
+		host.send(largePrompt);
+		await host.waitForAfter(firstPromptOffset, (output) => output.includes("Acknowledged."), 30_000, "TUI model response");
+
+		const secondPromptOffset = host.outputLength();
+		host.send(largePrompt);
+		await host.waitForAfter(secondPromptOffset, (output) => output.includes("Acknowledged."), 30_000, "TUI second model response");
+		const compactionOffset = host.outputLength();
+		for (let turn = 0; turn < 2; turn++) {
+			const extraPromptOffset = host.outputLength();
+			host.send(largePrompt);
+			await host.waitForAfter(extraPromptOffset, (output) => output.includes("Acknowledged."), 30_000, "TUI extra model response");
+		}
+		await new Promise<void>((resolve) => setTimeout(resolve, 3_000));
+		host.send("/compact");
+		const compactionOutput = await host.waitForAfter(
+			compactionOffset,
+			(output) => output.includes("soft-compacted") || output.includes("Already compacted") || output.includes("Compaction failed"),
+			30_000,
+			"TUI enabled compaction",
+		);
+		const compacted = compactionOutput.includes("soft-compacted") || compactionOutput.includes("Already compacted");
+		if (!compacted) console.error(`TUI compaction output tail:\n${compactionOutput.slice(-2_000)}`);
+		assert(compacted, "TUI: enabled empty projection delegates to native compaction");
+	} finally {
+		await host.stop();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+}
+
 async function runProcessB(baseUrl: string): Promise<void> {
 	const cwd = makeCwd("independent-rpc");
 	writeSettings(cwd, { "observational-memory": { showWorkerNotifications: true } });
@@ -251,7 +322,7 @@ async function runProcessC(baseUrl: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-	for (const path of [omExtensionPath, providerExtensionPath, taskToolExtensionPath]) {
+	for (const path of [omExtensionPath, providerExtensionPath, taskToolExtensionPath, tuiPtyPath]) {
 		if (!existsSync(path)) {
 			console.error(`Missing required extension file: ${path}`);
 			process.exit(1);
@@ -260,6 +331,7 @@ async function main(): Promise<void> {
 
 	const { server, baseUrl } = await startMockModelServer(defaultScript);
 	try {
+		await runProcessTui(baseUrl);
 		await runProcessA(baseUrl);
 		await runProcessB(baseUrl);
 		await runProcessC(baseUrl);

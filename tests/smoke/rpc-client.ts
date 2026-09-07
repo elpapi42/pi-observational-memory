@@ -18,6 +18,7 @@ export class RpcHost {
 	private readonly waiters: Array<{ predicate: (e: RpcEvent) => boolean; resolve: (e: RpcEvent) => void }> = [];
 	private readonly stderrChunks: string[] = [];
 	private nextRequestId = 0;
+	private closed = false;
 
 	constructor(piBin: string, args: string[], env: NodeJS.ProcessEnv, cwd: string) {
 		this.proc = spawn(piBin, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });

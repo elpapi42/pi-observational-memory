@@ -162,7 +162,7 @@ export function defaultScript(info: RecordedRequest): string {
 			Array.from(info.rawBody.matchAll(/\[Source entry id:\s*([^\]]+)\]/g)).map((m) => m[1].trim()),
 		));
 		const sourceId = sourceIds[0];
-		const recordTool = "_record_observations";
+		const recordTool = info.toolNames.includes("_record_observations") ? "_record_observations" : "record_observations";
 		if (!sourceId) return textStream("No new content to observe.");
 		if (observedSourceIds.has(sourceId)) return textStream("Observation recorded.");
 		observedSourceIds.add(sourceId);
