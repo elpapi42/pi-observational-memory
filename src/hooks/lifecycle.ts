@@ -23,6 +23,7 @@ export function registerLifecycleReset(pi: ExtensionAPI, runtime: Runtime): void
 		gateRecallTool(pi, runtime);
 	});
 	pi.on("session_shutdown", (_event: SessionShutdownEvent) => {
+		runtime.resetActivation();
 		runtime.invalidateGeneration();
 	});
 }

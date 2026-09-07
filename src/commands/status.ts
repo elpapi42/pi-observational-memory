@@ -38,7 +38,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 	pi.registerCommand("om:status", {
 		description: "Show observational memory status",
 		handler: async (_args, ctx) => {
-			if (!runtime.enabled) {
+			if (!(runtime.isEnabledForSession?.(ctx.sessionManager.getSessionId?.()) ?? runtime.enabled)) {
 				ctx.ui.notify(DISABLED_MESSAGE, "info");
 				return;
 			}

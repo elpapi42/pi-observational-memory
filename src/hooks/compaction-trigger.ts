@@ -7,7 +7,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 	// Pi emits agent_settled only after retries, automatic compaction, and queued
 	// continuation have finished, so retry policy stays owned by Pi.
 	pi.on("agent_settled", (_event, ctx) => {
-		if (!runtime.enabled) return;
+		if (!(runtime.isEnabledForSession?.(ctx.sessionManager?.getSessionId?.()) ?? runtime.enabled)) return;
 		runtime.ensureConfig(ctx.cwd);
 		if (runtime.config.passive === true) return;
 		if (runtime.compactInFlight) return;
