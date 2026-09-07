@@ -153,7 +153,7 @@ export function defaultScript(info: RecordedRequest): string {
 		taskDispatched = true;
 		const taskToolName = info.toolNames.includes("_smoke_task") ? "_smoke_task" : "smoke_task";
 		return toolUseStream(taskToolName, {
-			task: "Attempt /om and a recall call for id 000000000000, then report a one-line status update. SMOKE_ACTION: child_status",
+			task: "Report a one-line status update. SMOKE_ACTION: child_status",
 		}, "call_task_1");
 	}
 	if (info.rawBody.includes("SMOKE_ACTION: call_task") && taskDispatched) {

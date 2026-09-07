@@ -149,7 +149,7 @@ async function runProcessA(baseUrl: string): Promise<void> {
 		);
 
 		await host.promptAndSettle(
-			"SMOKE_MARKER: smokeA\nSMOKE_ACTION: call_task\nPlease call the smoke task tool. In the child session, attempt /om and a recall call for id 000000000000 before reporting status.",
+			"SMOKE_MARKER: smokeA\nSMOKE_ACTION: call_task\nPlease call the smoke task tool and report the child session status.",
 		);
 
 		assert(existsSync(reportPath), `Process A: smoke_task wrote a child session report${existsSync(reportPath) ? "" : `; host stderr: ${host.stderrText()}`}`);
