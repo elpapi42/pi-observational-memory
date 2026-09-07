@@ -16,11 +16,18 @@ import { gateRecallTool } from "../tool-gate.js";
  * observer/reflector/dropper/compaction work still in flight from the old
  * session stops before mutating state, writing to the ledger, or reporting
  * through a `ctx` that no longer belongs to the live session.
+ *
+ * Some OMP RPC session replacements rebind the existing extension runtime
+ * without emitting `session_start`. The `before_agent_start` fence catches
+ * that boundary before the next model turn and re-applies the recall gate.
  */
 export function registerLifecycleReset(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.on("session_start", (_event: SessionStartEvent) => {
 		runtime.resetActivation();
 		gateRecallTool(pi, runtime);
+	});
+	pi.on("before_agent_start", (_event, ctx) => {
+		runtime.isEnabledForSession(ctx.sessionManager.getSessionId?.());
 	});
 	pi.on("session_shutdown", (_event: SessionShutdownEvent) => {
 		runtime.resetActivation();

@@ -78,10 +78,14 @@ describe("session lifecycle reset and generation invalidation", () => {
 		}
 	});
 	it("re-gates recall when a session id changes without a session_start event", () => {
-		const { runtime, getActiveTools } = setup(["read", "recall"]);
+		const { runtime, handlers, getActiveTools } = setup(["read", "recall"]);
 		runtime.activatedSessionId = "session-1";
 
-		expect(runtime.isEnabledForSession("session-2")).toBe(false);
+		handlers.before_agent_start!({ type: "before_agent_start" }, {
+			sessionManager: { getSessionId: () => "session-2" },
+		});
+
+		expect(runtime.enabled).toBe(false);
 		expect(getActiveTools()).toEqual(["read"]);
 	});
 
