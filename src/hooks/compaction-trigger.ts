@@ -7,6 +7,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 	// Pi emits agent_settled only after retries, automatic compaction, and queued
 	// continuation have finished, so retry policy stays owned by Pi.
 	pi.on("agent_settled", (_event, ctx) => {
+		if (!runtime.enabled) return;
 		runtime.ensureConfig(ctx.cwd);
 		if (runtime.config.passive === true) return;
 		if (runtime.compactInFlight) return;
@@ -22,6 +23,9 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 		// may outlive the extension ctx (stale after session replacement/reload).
 		const hasUI = ctx.hasUI;
 		const ui = ctx.ui;
+		// Captured so the deferred callback can tell whether session_shutdown
+		// invalidated this runtime generation before acting on a stale ctx.
+		const generation = runtime.generation;
 
 		if (hasUI) ui?.notify(
 			`Observational memory: compaction threshold reached (~${progress.toLocaleString()} estimated source tokens); triggering compaction`,
@@ -30,6 +34,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 
 		runtime.compactInFlight = true;
 		setTimeout(() => {
+			if (!runtime.isCurrentGeneration(generation)) return;
 			try {
 				if (!ctx.isIdle()) {
 					runtime.compactInFlight = false;
@@ -55,10 +60,12 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 				}
 				ctx.compact({
 					onComplete: () => {
+						if (!runtime.isCurrentGeneration(generation)) return;
 						runtime.compactInFlight = false;
 						if (hasUI) ui?.notify("Observational memory: compaction complete", "info");
 					},
 					onError: (error: { message: string }) => {
+						if (!runtime.isCurrentGeneration(generation)) return;
 						runtime.compactInFlight = false;
 						if (error.message === "Compaction cancelled") {
 							// We already notified the user with the real reason before returning { cancel: true }.

@@ -99,6 +99,22 @@ export interface LaunchCtx {
 export class Runtime {
 	config: Config = { ...DEFAULTS };
 	configLoaded = false;
+	/**
+	 * Session-local observational-memory activation. Always starts `false` for a
+	 * fresh runtime; the only way to flip it to `true` is the strict bare `/om`
+	 * command (see `commands/om.ts`), and only when `config.passive` is not
+	 * `true`. Never persisted — no settings key, env var, or ledger marker backs
+	 * this field, so it cannot outlive the in-memory runtime that set it.
+	 */
+	enabled = false;
+	/**
+	 * Monotonic generation counter for this runtime's session-local lifecycle.
+	 * Bumped by {@link invalidateGeneration} on `session_shutdown`. Background
+	 * work captures the generation in effect when it launches and checks
+	 * {@link isCurrentGeneration} before mutating state or reporting, so work
+	 * left over from a torn-down session can never touch the next one.
+	 */
+	generation = 0;
 	consolidationInFlight = false;
 	consolidationPromise: Promise<void> | null = null;
 	consolidationPhase: ConsolidationPhase | undefined;
@@ -121,6 +137,42 @@ export class Runtime {
 		if (this.configLoaded) return;
 		this.config = loadConfig(cwd);
 		this.configLoaded = true;
+	}
+
+	/** True when `generation` is still the one captured when async work launched. */
+	isCurrentGeneration(generation: number): boolean {
+		return generation === this.generation;
+	}
+
+	/**
+	 * Invalidate the current generation. Called on `session_shutdown`, before the
+	 * extension runtime is torn down for quit, reload, or session replacement.
+	 *
+	 * Bumps `generation` so any consolidation/compaction work already in flight —
+	 * captured under the prior generation number — fails its next
+	 * {@link isCurrentGeneration} check and stops before mutating runtime state,
+	 * writing to the ledger, or notifying through a `ctx` that may now be stale.
+	 * Also clears the transient in-flight flags themselves so the next
+	 * generation (a resumed/forked/new session sharing this instance) starts
+	 * clean rather than wedged by a flag a stale callback never got to reset.
+	 */
+	invalidateGeneration(): void {
+		this.generation += 1;
+		this.consolidationInFlight = false;
+		this.consolidationPromise = null;
+		this.consolidationPhase = undefined;
+		this.compactInFlight = false;
+		this.compactHookInFlight = false;
+	}
+
+	/**
+	 * Reset session-local activation. Called on `session_start`, which fires for
+	 * every new runtime/session boundary (startup, reload, resume, fork, new
+	 * session, session switch). A fresh runtime/session always starts disabled,
+	 * regardless of any activation the prior session reached.
+	 */
+	resetActivation(): void {
+		this.enabled = false;
 	}
 
 	async resolveModel(ctx: ResolveCtx): Promise<ResolveResult> {
