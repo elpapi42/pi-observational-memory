@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { Runtime } from "../src/runtime.js";
 import {
 	RECALL_OBSERVATION_TOOL_NAME,
 	formatRecallCallForTui,
@@ -36,13 +37,17 @@ async function execute(id: string, entries: TestEntry[]) {
 describe("V3 recall tool", () => {
 	it("keeps the public tool name and TUI call rendering", () => {
 		const pi = { registerTool: vi.fn() };
-		registerRecallTool(pi as any);
+		const runtime = new Runtime();
+
+		registerRecallTool(pi as any, runtime);
 
 		expect(RECALL_OBSERVATION_TOOL_NAME).toBe("recall");
 		expect(recallObservationTool.name).toBe("recall");
 		expect(recallObservationTool.label).toBe("Recall memory evidence");
 		expect(formatRecallCallForTui("aaaaaaaaaaaa")).toBe("recall aaaaaaaaaaaa");
-		expect(pi.registerTool).toHaveBeenCalledWith(recallObservationTool);
+		expect(pi.registerTool).toHaveBeenCalledWith(
+			expect.objectContaining({ name: "recall", label: "Recall memory evidence" }),
+		);
 	});
 
 	it("renders active observation source evidence", async () => {
@@ -122,5 +127,54 @@ describe("V3 recall tool", () => {
 
 		expect(result.details?.status).toBe("not_found");
 		expect(text).toContain("No observation or reflection with id aaaaaaaaaaaa was found");
+	});
+
+	describe("gated by runtime.enabled (#12)", () => {
+		function registeredTool(runtime: Runtime) {
+			const pi = { registerTool: vi.fn() };
+			registerRecallTool(pi as any, runtime);
+			return pi.registerTool.mock.calls[0]?.[0] as typeof recallObservationTool;
+		}
+
+		it("returns the stable disabled message without reading the branch while disabled", async () => {
+			const runtime = new Runtime();
+			runtime.enabled = false;
+			const tool = registeredTool(runtime);
+			const { ctx, getBranch } = fakeCtx([oldV2ObservationEntry("v2-obs")]);
+
+			const result = await tool.execute("tool-1", { id: "aaaaaaaaaaaa" }, undefined as any, undefined as any, ctx as any);
+			const text = result.content.filter((part): part is { type: "text"; text: string } => part.type === "text").map((part) => part.text).join("\n");
+
+			expect(text).toBe("Observational memory is disabled; run /om to enable it.");
+			expect(result.details?.status).toBe("disabled");
+			expect(getBranch).not.toHaveBeenCalled();
+		});
+
+		it("returns the disabled message even for a malformed id, without validating it", async () => {
+			const runtime = new Runtime();
+			runtime.enabled = false;
+			const tool = registeredTool(runtime);
+			const { ctx } = fakeCtx([]);
+
+			const result = await tool.execute("tool-1", { id: "not-a-valid-id" }, undefined as any, undefined as any, ctx as any);
+			const text = result.content.filter((part): part is { type: "text"; text: string } => part.type === "text").map((part) => part.text).join("\n");
+
+			expect(text).toBe("Observational memory is disabled; run /om to enable it.");
+			expect(result.details?.status).toBe("disabled");
+		});
+
+		it("performs the normal recall lookup once enabled", async () => {
+			const runtime = new Runtime();
+			runtime.enabled = true;
+			const tool = registeredTool(runtime);
+			const obs = observation("aaaaaaaaaaaa", { content: "User likes tea.", sourceEntryIds: ["raw-1"] });
+			const entries = [rawMessage("raw-1", "I like tea."), observationsRecordedEntry("om-obs", { observations: [obs], coversUpToId: "raw-1" })];
+			const { ctx, getBranch } = fakeCtx(entries);
+
+			const result = await tool.execute("tool-1", { id: "aaaaaaaaaaaa" }, undefined as any, undefined as any, ctx as any);
+
+			expect(getBranch).toHaveBeenCalledOnce();
+			expect(result.details?.status).toBe("ok");
+		});
 	});
 });

@@ -21,5 +21,5 @@ export default function observationalMemory(pi: ExtensionAPI) {
 
 	registerStatusCommand(pi, runtime);
 	registerViewCommand(pi, runtime);
-	registerRecallTool(pi);
+	registerRecallTool(pi, runtime);
 }

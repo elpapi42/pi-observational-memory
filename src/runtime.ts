@@ -1,6 +1,15 @@
 import { type Config, DEFAULTS, loadConfig } from "./config.js";
 import { debugLog } from "./debug-log.js";
 
+/**
+ * Stable, machine-readable guidance surfaced by every gated observational-memory
+ * surface (`/om:status`, `/om:view`, `recall`) while the runtime is disabled (#12).
+ * Deliberately generic: it never distinguishes "never enabled" from "passive
+ * lockout" from "reset by a new session", because none of those gated surfaces may
+ * read config, branch, ledger, model, or clipboard state to explain the reason.
+ */
+export const DISABLED_MESSAGE = "Observational memory is disabled; run /om to enable it.";
+
 export type ResolveResult =
 	| { ok: true; model: unknown; apiKey?: string; headers?: Record<string, string>; env?: Record<string, string>; baseUrl?: string }
 	| { ok: false; reason: string };
@@ -107,6 +116,15 @@ export class Runtime {
 	 * this field, so it cannot outlive the in-memory runtime that set it.
 	 */
 	enabled = false;
+	/**
+	 * Whether the `recall` tool was part of the active model tool allowlist the
+	 * last time {@link gateRecallTool} ran (every `session_start`), before that
+	 * gate removed it while disabled (#12). `undefined` means the gate has not
+	 * run yet. `restoreRecallTool` uses this to put `recall` back only when it
+	 * belongs — never forcing it into an allowlist that excluded it for another
+	 * reason (for example, a `--tools` flag that never included it).
+	 */
+	recallActiveBeforeGate: boolean | undefined = undefined;
 	/**
 	 * Monotonic generation counter for this runtime's session-local lifecycle.
 	 * Bumped by {@link invalidateGeneration} on `session_shutdown`. Background
