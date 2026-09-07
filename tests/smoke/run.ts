@@ -25,6 +25,7 @@ const repoRoot = resolve(here, "..", "..");
 const omExtensionPath = join(repoRoot, "src", "index.ts");
 const providerExtensionPath = join(here, "fixture-provider.ts");
 const taskToolExtensionPath = join(here, "child-task-tool.ts");
+const seedExtensionPath = join(here, "seed-ledger.ts");
 const tuiPtyPath = join(here, "tui-pty.py");
 const ompBin = process.env.OM_SMOKE_OMP_BIN ?? "omp";
 
@@ -317,7 +318,7 @@ async function runProcessB(baseUrl: string): Promise<void> {
 async function runProcessC(baseUrl: string): Promise<void> {
 	const cwd = makeCwd("passive");
 	writeSettings(cwd, { "observational-memory": { passive: true } });
-	const host = spawnRpcHost(ompBin, [omExtensionPath, providerExtensionPath], {
+	const host = spawnRpcHost(ompBin, [omExtensionPath, providerExtensionPath, seedExtensionPath], {
 		...process.env,
 		OM_SMOKE_BASE_URL: baseUrl,
 	}, cwd);
@@ -327,6 +328,11 @@ async function runProcessC(baseUrl: string): Promise<void> {
 		assert(
 			activation.notifications.some((n) => n.includes("locked out: passive mode")),
 			"Process C: passive mode is a hard lockout against real /om activation over RPC",
+		);
+		const seed = await host.promptAndSettle("/smoke_seed_om");
+		assert(
+			seed.notifications.some((n) => n.includes("Smoke observational-memory ledger seeded.")),
+			"Process C: passive session contains pre-existing observational-memory ledger data",
 		);
 
 		const passivePadding = "PASSIVE_PADDING ".repeat(10_000);
@@ -379,7 +385,7 @@ async function runProcessRestart(baseUrl: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-	for (const path of [omExtensionPath, providerExtensionPath, taskToolExtensionPath, tuiPtyPath]) {
+	for (const path of [omExtensionPath, providerExtensionPath, taskToolExtensionPath, seedExtensionPath, tuiPtyPath]) {
 		if (!existsSync(path)) {
 			console.error(`Missing required extension file: ${path}`);
 			process.exit(1);

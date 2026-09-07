@@ -27,7 +27,8 @@ export function registerLifecycleReset(pi: ExtensionAPI, runtime: Runtime): void
 		gateRecallTool(pi, runtime);
 	});
 	pi.on("before_agent_start", (_event, ctx) => {
-		runtime.isEnabledForSession(ctx.sessionManager.getSessionId?.());
+		const enabled = runtime.isEnabledForSession(ctx.sessionManager.getSessionId?.());
+		if (!enabled && pi.getActiveTools().includes("recall")) gateRecallTool(pi, runtime);
 	});
 	pi.on("session_shutdown", (_event: SessionShutdownEvent) => {
 		runtime.resetActivation();

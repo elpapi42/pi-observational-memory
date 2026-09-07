@@ -31,11 +31,13 @@ credentials). It asserts, end to end:
    starts disabled (not inheriting the first process's activation) and can
    independently activate itself with its own `/om`.
 4. **Passive lockout.** A third process configured with
-   `"observational-memory": { "passive": true }` proves `/om` is rejected with
-   an explicit lockout message, `/om:status` stays disabled, and passive
-   compaction delegates to OMP native compaction without observational sections.
+   `"observational-memory": { "passive": true }` seeds pre-existing
+   observational-memory ledger data, then proves `/om` is rejected with an
+   explicit lockout message, `/om:status` stays disabled, and passive
+   compaction delegates to OMP native compaction without observational
+   sections.
 5. **Lifecycle and restart reset.** After activating, the parent process issues
-   RPC `{"type":"new_session"}` and confirms `/om:status` reports disabled again.
+   RPC `{"type":"new_session"}` and confirms `/om:status` reports disabled.
    A separate pair of persistent-session OMP processes also confirms that a
    fresh process does not inherit activation from the prior process.
 

@@ -229,6 +229,19 @@ A typical config:
 
 Most users can start with the defaults and tune only if they have a specific reason.
 
+## OMP activation boundary
+
+When this extension is loaded by OMP, observational memory starts disabled.
+In a parent OMP TUI or externally controlled RPC session, run the bare
+`/om` command once to enable it for that session. Print and JSON modes reject
+`/om`; native child sessions have no command channel and remain disabled.
+
+Activation is in-memory and session-local. It is not persisted in project or
+global settings, environment configuration, session metadata, or ledger data.
+`passive: true` is a hard lockout: `/om` cannot enable memory, and disabled
+status, view, recall, workers, and compaction surfaces remain inert or use
+OMP's native compaction path.
+
 ### Scaling compaction to the model's context window
 
 By default `compactAfterTokensMode` is `"calibrated"`, so the proactive

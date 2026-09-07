@@ -1,8 +1,11 @@
 # Configuration
 
-This page documents the current V3 configuration for `pi-observational-memory`.
+This page documents the current V3 configuration for `pi-observational-memory`
+when loaded by OMP.
 
-V3 keeps the existing `observational-memory` settings namespace, but the setting names changed. Old V2 keys are not aliases; they are ignored. If you are upgrading, read [Migrating from V2](#migrating-from-v2).
+V3 keeps the existing `observational-memory` settings namespace, but the
+setting names changed. Old V2 keys are not aliases; they are ignored. If you
+are upgrading, read [Migrating from V2](#migrating-from-v2).
 
 ## Where settings live
 
@@ -22,7 +25,21 @@ All extension-owned settings live under:
 }
 ```
 
-The extension loads config once for its runtime. After changing settings, restart Pi or reload the extension so the new values are picked up.
+The extension loads config once for its runtime. After changing settings,
+restart OMP or reload the extension so the new values are picked up.
+
+## OMP activation
+
+OMP sessions start with observational memory disabled. In a parent OMP TUI or
+externally controlled RPC session, the bare `/om` command enables memory for
+that session. Print and JSON modes reject `/om`; native child sessions have no
+command channel and remain disabled.
+
+Activation is in-memory and session-local. It is not persisted in project or
+global settings, environment configuration, session metadata, or ledger data.
+`passive: true` is a hard lockout: `/om` cannot enable memory, and disabled
+status, view, recall, workers, and compaction surfaces remain inert or use
+OMP's native compaction path.
 
 ## Full V3 example
 
@@ -48,8 +65,6 @@ The extension loads config once for its runtime. After changing settings, restar
 }
 ```
 
-You can omit everything. Defaults work for ordinary sessions, and if `model` is unset the memory workers use the current session model.
-
 ## Settings reference
 
 | Setting | Type | Default | What it controls |
@@ -66,7 +81,7 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `model.id` | string | unset | Model id in Pi's model registry. Required when `model` is set. |
 | `model.thinking` | enum | unset; workers fall back to `low` | Optional reasoning/thinking level for memory workers. |
 | `showWorkerNotifications` | boolean | `true` | Shows routine observer, reflector, and dropper progress notifications. |
-| `passive` | boolean | `false` | Disables proactive background memory and auto-compaction triggers. |
+| `passive` | boolean | `false` | Hard-locks observational memory: `/om` cannot enable it, gated surfaces stay inert while disabled, and compaction delegates to OMP native behavior. |
 | `debugLog` | boolean | `false` | Writes best-effort per-session extension debug events to Pi's agent directory. |
 
 Valid `model.thinking` values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.

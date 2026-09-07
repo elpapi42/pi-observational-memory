@@ -88,6 +88,20 @@ describe("session lifecycle reset and generation invalidation", () => {
 		expect(runtime.enabled).toBe(false);
 		expect(getActiveTools()).toEqual(["read"]);
 	});
+	it("re-gates recall after shutdown when the host reuses the runtime", () => {
+		const { runtime, handlers, getActiveTools } = setup(["read", "recall"]);
+
+		handlers.session_shutdown!({ type: "session_shutdown", reason: "new" }, {});
+		expect(runtime.enabled).toBe(false);
+		expect(getActiveTools()).toEqual(["read", "recall"]);
+
+		handlers.before_agent_start!({ type: "before_agent_start" }, {
+			sessionManager: { getSessionId: () => "session-2" },
+		});
+
+		expect(getActiveTools()).toEqual(["read"]);
+	});
+
 
 
 	it("gates recall out of the active tool allowlist on session_start while preserving other active tools (#12)", () => {
