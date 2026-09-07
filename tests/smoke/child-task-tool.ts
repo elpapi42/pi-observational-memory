@@ -34,13 +34,13 @@ export default function childTaskTool(pi: ExtensionAPI): void {
 		async execute(_toolCallId, args, _signal, _onUpdate, ctx) {
 			const omExtensionPath = requireEnv("OM_SMOKE_OM_EXTENSION_PATH");
 			const providerExtensionPath = requireEnv("OM_SMOKE_PROVIDER_EXTENSION_PATH");
+			const notificationProbePath = requireEnv("OM_SMOKE_NOTIFICATION_PROBE_PATH");
 			const childMarker = requireEnv("OM_SMOKE_CHILD_MARKER");
 			const reportPath = requireEnv("OM_SMOKE_REPORT_PATH");
-
 			const loader = new DefaultResourceLoader({
 				cwd: ctx.cwd,
 				agentDir: ctx.cwd,
-				additionalExtensionPaths: [omExtensionPath, providerExtensionPath],
+				additionalExtensionPaths: [omExtensionPath, providerExtensionPath, notificationProbePath],
 				systemPromptOverride: () => `SMOKE_MARKER: ${childMarker}\nYou are a minimal test agent. Follow instructions literally and briefly.`,
 			});
 			await loader.reload();
@@ -73,6 +73,10 @@ export default function childTaskTool(pi: ExtensionAPI): void {
 				&& entry.message?.role === "toolResult"
 				&& (entry.message.toolName === "recall" || entry.message.toolName === "record_observations" || entry.message.toolName === "_recall" || entry.message.toolName === "_record_observations")
 			)).length;
+			const observationalNotificationCount = (globalThis as typeof globalThis & {
+				__omSmokeObservationalNotificationCount?: number;
+			}).__omSmokeObservationalNotificationCount ?? 0;
+
 			writeFileSync(reportPath, JSON.stringify({
 				preCompactEntryCount: branchBeforeCompact.length,
 				postCompactEntryCount: branchAfterCompact.length,
@@ -80,6 +84,7 @@ export default function childTaskTool(pi: ExtensionAPI): void {
 				recallActive: activeToolNames.includes("recall"),
 				omToolResultCount,
 				omEntryCount: omEntries.length,
+				observationalNotificationCount,
 				omEntryCustomTypes: omEntries.map((entry: { customType?: string }) => entry.customType),
 				compactionEntryCount: compactionEntries.length,
 				compactionSummary: compaction?.summary ?? null,

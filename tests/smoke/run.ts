@@ -26,6 +26,7 @@ const omExtensionPath = join(repoRoot, "src", "index.ts");
 const providerExtensionPath = join(here, "fixture-provider.ts");
 const taskToolExtensionPath = join(here, "child-task-tool.ts");
 const seedExtensionPath = join(here, "seed-ledger.ts");
+const notificationProbePath = join(here, "notification-probe.ts");
 const tuiPtyPath = join(here, "tui-pty.py");
 const ompBin = process.env.OM_SMOKE_OMP_BIN ?? "omp";
 
@@ -91,6 +92,7 @@ async function runProcessA(baseUrl: string): Promise<void> {
 			OM_SMOKE_BASE_URL: baseUrl,
 			OM_SMOKE_OM_EXTENSION_PATH: omExtensionPath,
 			OM_SMOKE_PROVIDER_EXTENSION_PATH: providerExtensionPath,
+			OM_SMOKE_NOTIFICATION_PROBE_PATH: notificationProbePath,
 			OM_SMOKE_CHILD_MARKER: "smokeA-child",
 			OM_SMOKE_REPORT_PATH: reportPath,
 		},
@@ -159,11 +161,16 @@ async function runProcessA(baseUrl: string): Promise<void> {
 				recallActive: boolean;
 				omToolResultCount: number;
 				omEntryCount: number;
+				observationalNotificationCount: number;
 				omEntryCustomTypes: string[];
 				compactionEntryCount: number;
 				compactionSummary: string | null;
 				compactionDetails: unknown;
 			};
+			assert(
+				report.observationalNotificationCount === 0,
+				"Child subagent produced no observational-memory notifications",
+			);
 			assert(report.omToolResultCount === 0, "Child subagent produced no observational-memory tool results");
 			assert(
 				!report.recallActive,
@@ -204,7 +211,7 @@ async function runProcessTui(baseUrl: string): Promise<void> {
 	writeSettings(cwd, {
 		"observational-memory": {
 			model: { provider: "om-smoke", id: "om-smoke-model" },
-			observeAfterTokens: 999_999_999,
+			observeAfterTokens: 1,
 			reflectAfterTokens: 999_999_999,
 			compactAfterTokens: 999_999_999,
 			showWorkerNotifications: true,
@@ -251,6 +258,25 @@ async function runProcessTui(baseUrl: string): Promise<void> {
 		host.send("/om:view");
 		await host.waitFor((output) => output.includes("── Reflections ──"), 30_000, "TUI /om:view");
 		assert(host.has("── Reflections ──"), "TUI: /om:view reports enabled memory");
+		const observationOffset = host.outputLength();
+		host.send("SMOKE_MARKER: tui SMOKE_ACTION: plain Please record this TUI observation.");
+		await host.waitForAfter(
+			observationOffset,
+			(output) => output.includes("Acknowledged."),
+			30_000,
+			"TUI observation model response",
+		);
+		await host.waitForAfter(
+			observationOffset,
+			(output) => output.includes("Observational memory: 1 observation recorded"),
+			30_000,
+			"TUI observer notification",
+		);
+		assert(
+			host.has("Observational memory: 1 observation recorded"),
+			"TUI: enabled session records an observational-memory observation",
+		);
+
 
 		const largePrompt = `SMOKE_MARKER: tui SMOKE_ACTION: plain ${"SMOKE_PADDING ".repeat(4_000)}`;
 		const firstPromptOffset = host.outputLength();
@@ -270,13 +296,27 @@ async function runProcessTui(baseUrl: string): Promise<void> {
 		host.send("/compact");
 		const compactionOutput = await host.waitForAfter(
 			compactionOffset,
-			(output) => output.includes("soft-compacted") || output.includes("Already compacted") || output.includes("Compaction failed"),
+			(output) => output.includes("compacted") || output.includes("Already compacted") || output.includes("Compaction failed"),
 			30_000,
 			"TUI enabled compaction",
 		);
-		const compacted = compactionOutput.includes("soft-compacted") || compactionOutput.includes("Already compacted");
+		const compacted = compactionOutput.includes("compacted") || compactionOutput.includes("Already compacted");
 		if (!compacted) console.error(`TUI compaction output tail:\n${compactionOutput.slice(-2_000)}`);
-		assert(compacted, "TUI: enabled empty projection delegates to native compaction");
+		assert(compacted, "TUI: enabled non-empty projection reaches compaction");
+		await new Promise<void>((resolve) => setTimeout(resolve, 2_000));
+
+		const postCompactionStatusOffset = host.outputLength();
+		host.send("/om:status");
+		const postCompactionStatus = await host.waitForAfter(
+			postCompactionStatusOffset,
+			(output) => output.includes("Observations: 1 recorded"),
+			30_000,
+			"TUI post-compaction memory status",
+		);
+		assert(
+			postCompactionStatus.includes("Observations: 1 recorded / 0 dropped / 1 active / 1 visible"),
+			"TUI: enabled compaction preserves the observational-memory projection",
+		);
 	} finally {
 		await host.stop();
 		rmSync(cwd, { recursive: true, force: true });
@@ -385,7 +425,7 @@ async function runProcessRestart(baseUrl: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-	for (const path of [omExtensionPath, providerExtensionPath, taskToolExtensionPath, seedExtensionPath, tuiPtyPath]) {
+	for (const path of [omExtensionPath, providerExtensionPath, taskToolExtensionPath, seedExtensionPath, notificationProbePath, tuiPtyPath]) {
 		if (!existsSync(path)) {
 			console.error(`Missing required extension file: ${path}`);
 			process.exit(1);

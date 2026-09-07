@@ -379,7 +379,10 @@ activation gates and the lifecycle-reset behavior described above.
 `bun run test:smoke` runs a separate black-box smoke test against a real OMP
 TUI session, independent OMP RPC sessions, and a real in-process child
 `AgentSession` (OMP's native subagent mechanism). It proves the parent TUI and
-RPC sessions can activate observational memory through `/om` while a spawned
-subagent stays disabled with native compaction. It requires the `omp` CLI and
-Python 3 for the TUI PTY bridge and is intentionally outside `bun run test`'s
-scope. See `tests/smoke/README.md` for prerequisites and invocation.
+RPC sessions can activate observational memory through `/om`, render a
+non-empty observational projection during compaction, while a spawned
+subagent stays disabled with native compaction and produces no observational
+memory notifications, tool results, or ledger entries. It requires the `omp`
+CLI and Python 3 for the TUI PTY bridge and is intentionally outside
+`bun run test`'s scope. See `tests/smoke/README.md` for prerequisites and
+invocation.

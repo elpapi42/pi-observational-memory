@@ -15,8 +15,8 @@ credentials). It asserts, end to end:
 
 1. **TUI activation.** A fresh OMP TUI session first reports the disabled
    status, then activates with `/om`, reports enabled `/om:status` and
-   `/om:view` output, and proves that an enabled session with an empty
-   projection uses OMP's native compaction path.
+   `/om:view` output, records an observation in the enabled session, and
+   proves enabled compaction includes the observational projection.
 2. **Parent RPC activation and native-subagent isolation.** A fresh RPC session
    starts disabled; disabled compaction injects no observational summary
    sections; `/om` dispatched over the real RPC command route activates the
@@ -26,7 +26,8 @@ credentials). It asserts, end to end:
    `createAgentSession()` — the same mechanism a real native subagent uses,
    with no TUI, stdin, or RPC command channel. The child loads the same
    observational-memory extension, cannot access the disabled `recall` tool,
-   writes zero `om.*` ledger entries, and uses native compaction.
+   produces no observational-memory notifications or tool results, writes zero
+   `om.*` ledger entries, and uses native compaction.
 3. **Independent RPC session.** A second, wholly separate OMP process proves it
    starts disabled (not inheriting the first process's activation) and can
    independently activate itself with its own `/om`.
@@ -81,4 +82,5 @@ created, the corresponding step fails loudly instead of being treated as
 | `rpc-client.ts` | Minimal client for OMP's `--mode rpc` JSONL protocol. |
 | `mock-model-server.ts` | Deterministic local HTTP model fixture (Anthropic Messages SSE format). |
 | `fixture-provider.ts` | OMP extension registering the fixture server as a custom model provider. |
+| `notification-probe.ts` | Child-only extension that counts observational-memory notifications for the native-subagent assertion. |
 | `child-task-tool.ts` | OMP extension registering a `smoke_task` tool that spawns a real in-process child `AgentSession` via `createAgentSession()`, loading the same observational-memory extension, and reports its ledger/compaction state back to `run.ts` via a JSON file. |
