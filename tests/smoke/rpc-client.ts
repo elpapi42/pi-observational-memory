@@ -143,8 +143,11 @@ export function spawnRpcHost(
 	extensionPaths: string[],
 	env: NodeJS.ProcessEnv,
 	cwd: string,
+	options: { noSession?: boolean } = {},
 ): RpcHost {
-	const args = ["--mode", "rpc", "--no-session", "--no-extensions", "--model", "om-smoke/om-smoke-model"];
+	const args = ["--mode", "rpc"];
+	if (options.noSession !== false) args.push("--no-session");
+	args.push("--no-extensions", "--model", "om-smoke/om-smoke-model");
 	for (const path of extensionPaths) args.push("--extension", path);
 	return new RpcHost(piBin, args, env, cwd);
 }

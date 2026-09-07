@@ -132,6 +132,13 @@ export class Runtime {
 	 */
 	recallActiveBeforeGate: boolean | undefined = undefined;
 	/**
+	 * Re-applies session-boundary gates when an OMP host replaces the bound
+	 * session without reloading the extension runtime (for example, RPC
+	 * `new_session`). Set by the entrypoint because Runtime must not depend on
+	 * the host API directly.
+	 */
+	sessionBoundaryReset: (() => void) | undefined = undefined;
+	/**
 	 * Monotonic generation counter for this runtime's session-local lifecycle.
 	 * Bumped by {@link invalidateGeneration} on `session_shutdown`. Background
 	 * work captures the generation in effect when it launches and checks
@@ -208,6 +215,7 @@ export class Runtime {
 			&& this.activatedSessionId !== sessionId
 		) {
 			this.resetActivation();
+			this.sessionBoundaryReset?.();
 		}
 		return this.enabled;
 	}

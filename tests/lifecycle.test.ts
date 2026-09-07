@@ -18,6 +18,7 @@ import { registerCompactionTrigger } from "../src/hooks/compaction-trigger.js";
 import { registerConsolidationTrigger } from "../src/hooks/consolidation-trigger.js";
 import { registerLifecycleReset } from "../src/hooks/lifecycle.js";
 import { Runtime } from "../src/runtime.js";
+import { gateRecallTool } from "../src/tool-gate.js";
 import { observation, textCustomMessage } from "./fixtures/session.js";
 
 function setup(activeTools: string[] = ["read", "bash", "recall"]) {
@@ -33,11 +34,11 @@ function setup(activeTools: string[] = ["read", "bash", "recall"]) {
 			currentActiveTools = [...names];
 		}),
 	};
-
 	const runtime = new Runtime();
 	runtime.configLoaded = true;
 	runtime.config = { ...DEFAULTS, observeAfterTokens: 1, reflectAfterTokens: 1_000_000, agentMaxTurns: 1 };
 	runtime.enabled = true;
+	runtime.sessionBoundaryReset = () => gateRecallTool(pi as any, runtime);
 
 	registerLifecycleReset(pi as any, runtime);
 	registerConsolidationTrigger(pi as any, runtime);
@@ -76,6 +77,14 @@ describe("session lifecycle reset and generation invalidation", () => {
 			expect(runtime.enabled).toBe(false);
 		}
 	});
+	it("re-gates recall when a session id changes without a session_start event", () => {
+		const { runtime, getActiveTools } = setup(["read", "recall"]);
+		runtime.activatedSessionId = "session-1";
+
+		expect(runtime.isEnabledForSession("session-2")).toBe(false);
+		expect(getActiveTools()).toEqual(["read"]);
+	});
+
 
 	it("gates recall out of the active tool allowlist on session_start while preserving other active tools (#12)", () => {
 		const { runtime, handlers, getActiveTools } = setup(["read", "bash", "recall"]);

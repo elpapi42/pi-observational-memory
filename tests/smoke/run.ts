@@ -224,6 +224,16 @@ async function runProcessTui(baseUrl: string): Promise<void> {
 			"OMP TUI startup",
 		);
 		await new Promise<void>((resolve) => setTimeout(resolve, 4_000));
+		host.send("/om:status");
+		await host.waitFor(
+			(output) => output.includes("Observational memory is disabled; run /om to enable it."),
+			30_000,
+			"TUI initial disabled status",
+		);
+		assert(
+			host.has("Observational memory is disabled; run /om to enable it."),
+			"TUI: fresh session starts with observational memory disabled",
+		);
 		host.send("/om");
 		await host.waitFor(
 			(output) => output.includes("Observational memory enabled for this session."),
@@ -318,6 +328,15 @@ async function runProcessC(baseUrl: string): Promise<void> {
 			"Process C: passive mode is a hard lockout against real /om activation over RPC",
 		);
 
+		const passivePadding = "PASSIVE_PADDING ".repeat(10_000);
+		await host.promptAndSettle(passivePadding);
+		await host.promptAndSettle(passivePadding);
+		const passiveCompaction = await host.compact();
+		assert(
+			!passiveCompaction.summary.includes("## Observations") && !passiveCompaction.summary.includes("## Reflections"),
+			"Process C: passive compaction delegates to native without observational summary sections",
+		);
+
 		const status = await host.promptAndSettle("/om:status");
 		assert(
 			status.notifications.some((n) => n.includes("Observational memory is disabled; run /om to enable it.")),
@@ -325,6 +344,35 @@ async function runProcessC(baseUrl: string): Promise<void> {
 		);
 	} finally {
 		await host.stop();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+}
+
+async function runProcessRestart(baseUrl: string): Promise<void> {
+	const cwd = makeCwd("restart");
+	writeSettings(cwd, { "observational-memory": { showWorkerNotifications: true } });
+	const env = { ...process.env, OM_SMOKE_BASE_URL: baseUrl };
+	const first = spawnRpcHost(ompBin, [omExtensionPath, providerExtensionPath], env, cwd, { noSession: false });
+
+	try {
+		const activation = await first.promptAndSettle("/om");
+		assert(
+			activation.notifications.some((n) => n.includes("Observational memory enabled for this session.")),
+			"Restart boundary: first OMP process activates observational memory",
+		);
+	} finally {
+		await first.stop();
+	}
+
+	const second = spawnRpcHost(ompBin, [omExtensionPath, providerExtensionPath], env, cwd, { noSession: false });
+	try {
+		const status = await second.promptAndSettle("/om:status");
+		assert(
+			status.notifications.some((n) => n.includes("Observational memory is disabled; run /om to enable it.")),
+			"Restart boundary: a fresh OMP process does not inherit activation",
+		);
+	} finally {
+		await second.stop();
 		rmSync(cwd, { recursive: true, force: true });
 	}
 }
@@ -343,6 +391,7 @@ async function main(): Promise<void> {
 		await runProcessA(baseUrl);
 		await runProcessB(baseUrl);
 		await runProcessC(baseUrl);
+		await runProcessRestart(baseUrl);
 	} catch (error) {
 		failures += 1;
 		console.error("Smoke test crashed:", error);

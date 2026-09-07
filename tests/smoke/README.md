@@ -8,14 +8,15 @@ real host process or a real native subagent.
 
 ## What it proves
 
-`run.ts` drives one real OMP TUI session through a pseudo-terminal and three
+`run.ts` drives one real OMP TUI session through a pseudo-terminal and several
 independent OMP `--mode rpc` host processes against a deterministic local HTTP
 model fixture (`mock-model-server.ts`, no external network access or
 credentials). It asserts, end to end:
 
-1. **TUI activation.** A fresh OMP TUI session activates with `/om`, reports
-   enabled `/om:status` and `/om:view` output, and proves that an enabled
-   session with an empty projection uses OMP's native compaction path.
+1. **TUI activation.** A fresh OMP TUI session first reports the disabled
+   status, then activates with `/om`, reports enabled `/om:status` and
+   `/om:view` output, and proves that an enabled session with an empty
+   projection uses OMP's native compaction path.
 2. **Parent RPC activation and native-subagent isolation.** A fresh RPC session
    starts disabled; disabled compaction injects no observational summary
    sections; `/om` dispatched over the real RPC command route activates the
@@ -31,10 +32,12 @@ credentials). It asserts, end to end:
    independently activate itself with its own `/om`.
 4. **Passive lockout.** A third process configured with
    `"observational-memory": { "passive": true }` proves `/om` is rejected with
-   an explicit lockout message and `/om:status` stays disabled.
-5. **Lifecycle reset.** After activating, the parent process issues RPC
-   `{"type":"new_session"}` and confirms `/om:status` reports disabled again —
-   activation does not survive a session boundary.
+   an explicit lockout message, `/om:status` stays disabled, and passive
+   compaction delegates to OMP native compaction without observational sections.
+5. **Lifecycle and restart reset.** After activating, the parent process issues
+   RPC `{"type":"new_session"}` and confirms `/om:status` reports disabled again.
+   A separate pair of persistent-session OMP processes also confirms that a
+   fresh process does not inherit activation from the prior process.
 
 ## Why the smoke drives both TUI and RPC
 
