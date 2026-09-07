@@ -15,7 +15,13 @@ import {
 	type TestEntry,
 } from "./fixtures/session.js";
 
-function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number; compactHookInFlight?: boolean }) {
+function setup(args: {
+	entries: TestEntry[];
+	observationsPoolMaxTokens?: number;
+	compactHookInFlight?: boolean;
+	enabled?: boolean;
+	passive?: boolean;
+}) {
 	let handler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
 	const pi = {
 		on: vi.fn((eventName: string, cb: typeof handler) => {
@@ -25,7 +31,9 @@ function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number;
 		appendEntry: vi.fn(),
 	};
 	const runtime = {
+		enabled: args.enabled ?? true,
 		config: {
+			passive: args.passive ?? false,
 			observationsPoolMaxTokens: args.observationsPoolMaxTokens ?? 20_000,
 		},
 		compactHookInFlight: args.compactHookInFlight ?? false,
@@ -162,6 +170,89 @@ describe("V3 compaction hook", () => {
 	it("cancels duplicate in-flight compaction and notifies the UI", async () => {
 		const entries = [textCustomMessage("raw-1", "aaaa")];
 		const { run, ctx } = setup({ entries, compactHookInFlight: true });
+
+		await expect(run("raw-1")).resolves.toEqual({ cancel: true });
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Observational memory: another compaction is already in progress; cancelling duplicate",
+			"warning",
+		);
+	});
+});
+
+describe("V3 compaction hook activation gate (#13)", () => {
+	it("disabled runtime delegates natively before the duplicate guard, config load, or state mutation", async () => {
+		const obs1 = observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-1"], tokenCount: 10 });
+		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-aaaaaaaaaaaa", { observations: [obs1], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-eeeeeeeeeeee", { reflections: [ref1], coversUpToId: "raw-1" }),
+		];
+		const { run, runtime, ctx, pi } = setup({ entries, enabled: false, compactHookInFlight: true });
+
+		const result = await run("raw-1");
+
+		expect(result).toBeUndefined();
+		expect(runtime.ensureConfig).not.toHaveBeenCalled();
+		expect(runtime.resolveModel).not.toHaveBeenCalled();
+		expect(pi.appendEntry).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+		// The pre-existing in-flight flag was never inspected or cleared: disabled
+		// delegation returns before the duplicate guard runs at all.
+		expect(runtime.compactHookInFlight).toBe(true);
+	});
+
+	it("passive runtime delegates natively even with prior observational ledger entries, without entering the duplicate guard", async () => {
+		const obs1 = observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-1"], tokenCount: 10 });
+		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-aaaaaaaaaaaa", { observations: [obs1], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-eeeeeeeeeeee", { reflections: [ref1], coversUpToId: "raw-1" }),
+		];
+		const { run, runtime, ctx, pi } = setup({ entries, enabled: true, passive: true, compactHookInFlight: true });
+
+		const result = await run("raw-1");
+
+		expect(result).toBeUndefined();
+		expect(runtime.ensureConfig).toHaveBeenCalled();
+		expect(runtime.resolveModel).not.toHaveBeenCalled();
+		expect(pi.appendEntry).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+		expect(runtime.compactHookInFlight).toBe(true);
+	});
+
+	it("enabled non-empty projection preserves observational compaction ownership", async () => {
+		const obs1 = observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-1"], tokenCount: 10 });
+		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-aaaaaaaaaaaa", { observations: [obs1], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-eeeeeeeeeeee", { reflections: [ref1], coversUpToId: "raw-1" }),
+		];
+		const { run, runtime } = setup({ entries, enabled: true, passive: false });
+
+		const result = await run("raw-1") as any;
+
+		expect(runtime.ensureConfig).toHaveBeenCalled();
+		expect(result.compaction.summary).toContain("## Observations");
+		expect(result.compaction.details.observations.map((obs: any) => obs.id)).toEqual(["aaaaaaaaaaaa"]);
+	});
+
+	it("enabled empty projection delegates to native compaction rather than replacing context", async () => {
+		const entries = [textCustomMessage("raw-1", "aaaa")];
+		const { run, runtime } = setup({ entries, enabled: true, passive: false });
+
+		const result = await run("raw-1");
+
+		expect(runtime.ensureConfig).toHaveBeenCalled();
+		expect(result).toBeUndefined();
+		expect(runtime.compactHookInFlight).toBe(false);
+	});
+
+	it("enabled non-passive duplicate compaction still cancels and notifies", async () => {
+		const entries = [textCustomMessage("raw-1", "aaaa")];
+		const { run, ctx } = setup({ entries, enabled: true, passive: false, compactHookInFlight: true });
 
 		await expect(run("raw-1")).resolves.toEqual({ cancel: true });
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
