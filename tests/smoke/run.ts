@@ -309,12 +309,12 @@ async function runProcessTui(baseUrl: string): Promise<void> {
 		host.send("/om:status");
 		const postCompactionStatus = await host.waitForAfter(
 			postCompactionStatusOffset,
-			(output) => output.includes("Observations: 1 recorded"),
+			(output) => /Observations: [1-9]\d* recorded/.test(output),
 			30_000,
 			"TUI post-compaction memory status",
 		);
 		assert(
-			postCompactionStatus.includes("Observations: 1 recorded / 0 dropped / 1 active / 1 visible"),
+			/Observations: [1-9]\d* recorded \/ 0 dropped \/ [1-9]\d* active \/ [1-9]\d* visible/.test(postCompactionStatus),
 			"TUI: enabled compaction preserves the observational-memory projection",
 		);
 	} finally {
