@@ -491,7 +491,7 @@ export function registerRecallTool(pi: ExtensionAPI, runtime: Runtime): void {
 			// Gated (#12): while observational memory is disabled, `recall` must not
 			// validate the memory id, read the branch, or touch any ledger state — it
 			// returns only the same stable disabled guidance as `/om:status`/`/om:view`.
-			if (!runtime.enabled) {
+			if (!(runtime.isEnabledForSession?.(ctx.sessionManager.getSessionId?.()) ?? runtime.enabled)) {
 				return textResult(DISABLED_MESSAGE, emptyDetails("disabled", "", DISABLED_MESSAGE));
 			}
 			return recallObservationTool.execute(toolCallId, params, signal, onUpdate, ctx);

@@ -31,7 +31,8 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:smoke": "node --experimental-strip-types tests/smoke/run.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",

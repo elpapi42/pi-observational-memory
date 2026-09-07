@@ -22,7 +22,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 		// config/ledger reads, or state mutation (#13): a disabled or passive
 		// runtime must never notify, read observational ledger state, resolve a
 		// model, write to the ledger, or claim compaction ownership.
-		if (!runtime.enabled) return;
+		if (!(runtime.isEnabledForSession?.(ctx.sessionManager.getSessionId?.()) ?? runtime.enabled)) return;
 		runtime.ensureConfig(ctx.cwd);
 		if (runtime.config.passive === true) return;
 

@@ -155,7 +155,7 @@ function debugSessionMetadata(ctx: ConsolidationCtx): { sessionId?: string; sess
 }
 
 function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): void {
-	if (!runtime.enabled) return;
+	if (!(runtime.isEnabledForSession?.(ctx.sessionManager.getSessionId?.()) ?? runtime.enabled)) return;
 	runtime.ensureConfig(ctx.cwd);
 	if (runtime.config.passive === true) return;
 	if (runtime.consolidationInFlight) return;

@@ -117,6 +117,12 @@ export class Runtime {
 	 */
 	enabled = false;
 	/**
+	 * Session id that received the successful `/om` activation. This supplements
+	 * lifecycle events because some OMP session replacements rebind commands
+	 * without preserving the extension runtime object identity.
+	 */
+	activatedSessionId: string | undefined = undefined;
+	/**
 	 * Whether the `recall` tool was part of the active model tool allowlist the
 	 * last time {@link gateRecallTool} ran (every `session_start`), before that
 	 * gate removed it while disabled (#12). `undefined` means the gate has not
@@ -191,6 +197,19 @@ export class Runtime {
 	 */
 	resetActivation(): void {
 		this.enabled = false;
+		this.activatedSessionId = undefined;
+	}
+
+	isEnabledForSession(sessionId: string | undefined): boolean {
+		if (
+			this.enabled
+			&& sessionId !== undefined
+			&& this.activatedSessionId !== undefined
+			&& this.activatedSessionId !== sessionId
+		) {
+			this.resetActivation();
+		}
+		return this.enabled;
 	}
 
 	async resolveModel(ctx: ResolveCtx): Promise<ResolveResult> {

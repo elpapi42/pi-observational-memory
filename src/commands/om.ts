@@ -36,12 +36,13 @@ export function registerActivationCommand(pi: ExtensionAPI, runtime: Runtime): v
 				return;
 			}
 
-			if (runtime.enabled) {
+			if (runtime.isEnabledForSession?.(ctx.sessionManager?.getSessionId?.()) ?? runtime.enabled) {
 				ctx.ui.notify("Observational memory is already enabled.", "info");
 				return;
 			}
 
 			runtime.enabled = true;
+			runtime.activatedSessionId = ctx.sessionManager?.getSessionId?.();
 			restoreRecallTool(pi, runtime);
 			ctx.ui.notify("Observational memory enabled for this session.", "info");
 		},

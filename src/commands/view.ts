@@ -44,7 +44,7 @@ export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime, options:
 	pi.registerCommand("om:view", {
 		description: "Print and copy observational memory content (visible by default, full for recorded memory)",
 		handler: async (args, ctx) => {
-			if (!runtime.enabled) {
+			if (!(runtime.isEnabledForSession?.(ctx.sessionManager.getSessionId?.()) ?? runtime.enabled)) {
 				ctx.ui.notify(DISABLED_MESSAGE, "info");
 				return;
 			}

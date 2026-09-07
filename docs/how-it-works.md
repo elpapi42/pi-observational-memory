@@ -281,6 +281,28 @@ When exact source context is needed for precision or traceability, use the recal
 
 The renderer is deterministic. It does not call a model and does not rewrite memory content.
 
+## OMP activation boundary
+
+Every OMP runtime starts with observational memory disabled. The only activation
+path is the bare, one-shot `/om` command. It is available in the parent OMP TUI
+and in an externally controlled OMP RPC session; print and JSON modes reject the
+command, and native child sessions have no command channel.
+
+Activation is held in memory for the current session only. OMP restart, resume,
+fork, or new-session boundaries require `/om` again and never write an enabled
+marker to settings, session entries, or another sidecar file.
+
+When `passive: true`, `/om` is a hard lockout. While disabled, `/om:status`,
+`/om:view`, and `recall` return only `Observational memory is disabled; run /om
+to enable it.` without reading the branch, resolving a model, or touching the
+clipboard. The `recall` tool is also removed from the active model-tool
+allowlist until activation, and is restored only if it was active before gating.
+
+Disabled or passive workers do not launch, proactive compaction does not run,
+and the compaction hook delegates to OMP's native compaction. Once enabled, an
+empty observational projection still delegates natively; a non-empty projection
+owns the compaction summary.
+
 ## Commands
 
 ### `/om:status`
@@ -347,3 +369,18 @@ V3 does not use V2 state shapes. Old V2 custom memory entries, old V2 compaction
 - Kept observations and reflections are rendered without paraphrase.
 - Dropped observations remain recallable from ledger history.
 - Old V2 memory is ignored rather than migrated.
+
+## Testing
+
+`bun run test` runs the Vitest suite, which drives the extension against a
+simulated `ExtensionContext` — including the disabled/passive/enabled
+activation gates and the lifecycle-reset behavior described above.
+
+`bun run test:smoke` runs a separate black-box smoke test against a real,
+installed OMP host process and a real in-process child `AgentSession`
+(OMP's native subagent mechanism), proving that the parent OMP session and an
+independently controlled OMP RPC session both activate observational memory
+through `/om` while a spawned subagent stays disabled with native
+compaction. It requires the `omp` CLI on `PATH` and is intentionally outside
+`bun run test`'s scope. See `tests/smoke/README.md` for prerequisites and
+invocation.
