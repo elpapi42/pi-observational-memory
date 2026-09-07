@@ -58,6 +58,7 @@ export default function childTaskTool(pi: ExtensionAPI): void {
 			await child.prompt(childPadding);
 			await child.prompt(childPadding);
 			const branchBeforeCompact = childSessionManager.getBranch();
+			const activeToolNames = child.getActiveToolNames();
 			const compaction = await child.compact();
 			const branchAfterCompact = childSessionManager.getBranch();
 			child.dispose();
@@ -71,6 +72,8 @@ export default function childTaskTool(pi: ExtensionAPI): void {
 			writeFileSync(reportPath, JSON.stringify({
 				preCompactEntryCount: branchBeforeCompact.length,
 				postCompactEntryCount: branchAfterCompact.length,
+				activeToolNames,
+				recallActive: activeToolNames.includes("recall"),
 				omEntryCount: omEntries.length,
 				omEntryCustomTypes: omEntries.map((entry: { customType?: string }) => entry.customType),
 				compactionEntryCount: compactionEntries.length,

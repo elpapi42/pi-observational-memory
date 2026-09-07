@@ -24,8 +24,8 @@ credentials). It asserts, end to end:
    spawns a genuine in-process child `AgentSession` via OMP's SDK
    `createAgentSession()` — the same mechanism a real native subagent uses,
    with no TUI, stdin, or RPC command channel. The child loads the same
-   observational-memory extension, writes zero `om.*` ledger entries, and uses
-   native compaction.
+   observational-memory extension, cannot access the disabled `recall` tool,
+   writes zero `om.*` ledger entries, and uses native compaction.
 3. **Independent RPC session.** A second, wholly separate OMP process proves it
    starts disabled (not inheriting the first process's activation) and can
    independently activate itself with its own `/om`.

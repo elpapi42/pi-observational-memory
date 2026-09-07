@@ -148,17 +148,25 @@ async function runProcessA(baseUrl: string): Promise<void> {
 			"Process A: enabled compaction supplies the observational projection",
 		);
 
-		await host.promptAndSettle("SMOKE_MARKER: smokeA\nSMOKE_ACTION: call_task\nPlease call the smoke task tool now.");
+		await host.promptAndSettle(
+			"SMOKE_MARKER: smokeA\nSMOKE_ACTION: call_task\nPlease call the smoke task tool. In the child session, attempt /om and a recall call for id 000000000000 before reporting status.",
+		);
 
 		assert(existsSync(reportPath), `Process A: smoke_task wrote a child session report${existsSync(reportPath) ? "" : `; host stderr: ${host.stderrText()}`}`);
 		if (existsSync(reportPath)) {
 			const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
+				activeToolNames: string[];
+				recallActive: boolean;
 				omEntryCount: number;
 				omEntryCustomTypes: string[];
 				compactionEntryCount: number;
 				compactionSummary: string | null;
 				compactionDetails: unknown;
 			};
+			assert(
+				!report.recallActive,
+				`Child subagent cannot access observational-memory recall while disabled (active tools: ${JSON.stringify(report.activeToolNames)})`,
+			);
 			assert(report.omEntryCount === 0, `Child subagent wrote zero observational-memory ledger entries (found: ${JSON.stringify(report.omEntryCustomTypes)})`);
 			assert(report.compactionEntryCount >= 1, "Child subagent produced a native compaction entry");
 			assert(
