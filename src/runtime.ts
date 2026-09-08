@@ -209,9 +209,12 @@ export class Runtime {
 		if (!usable) {
 			debugLog("resolve.request_time_signing", { provider, providerCredentialConfigured });
 		}
+		// Match pi's request model: OAuth may route to an account-specific endpoint
+		// (e.g. Copilot Business). Do not mutate the shared session/registry model.
+		const requestModel = auth.baseUrl ? { ...(model as object), baseUrl: auth.baseUrl } : model;
 		return {
 			ok: true,
-			model,
+			model: requestModel,
 			apiKey: auth.apiKey as string | undefined,
 			headers: auth.headers as Record<string, string> | undefined,
 			env: auth.env as Record<string, string> | undefined,
