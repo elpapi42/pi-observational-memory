@@ -250,6 +250,90 @@ describe("V3 consolidation trigger", () => {
 		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [obs], coversUpToId: "raw-1" });
 	});
 
+	it("adds x-opencode-session headers for opencode-go worker models", async () => {
+		const obs = observation("cccccccccccc", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
+		mockAgents.runObserver.mockResolvedValueOnce([obs]);
+		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+		const { fire, runLaunchedWork, pi, runtime } = setup({ entries, reflectAfterTokens: 999, sessionId: "session-abc" });
+		runtime.resolveModel.mockResolvedValueOnce({
+			ok: true,
+			model: { provider: "opencode-go", baseUrl: "https://opencode.ai/zen/go/v1", reasoning: true },
+			apiKey: "go-key",
+		});
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({
+			apiKey: "go-key",
+			headers: { "x-opencode-session": "session-abc", "x-opencode-client": "pi" },
+		}));
+		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [obs], coversUpToId: "raw-1" });
+	});
+
+	it("merges x-opencode-session with existing auth headers and preserves them", async () => {
+		const obs = observation("cccccccccccc", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
+		mockAgents.runObserver.mockResolvedValueOnce([obs]);
+		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+		const { fire, runLaunchedWork, runtime } = setup({ entries, reflectAfterTokens: 999, sessionId: "session-1" });
+		runtime.resolveModel.mockResolvedValueOnce({
+			ok: true,
+			model: { provider: "opencode-go", baseUrl: "https://opencode.ai/zen/go/v1" },
+			apiKey: "go-key",
+			headers: { Authorization: "Bearer go-key" },
+		});
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({
+			headers: {
+				Authorization: "Bearer go-key",
+				"x-opencode-session": "session-1",
+				"x-opencode-client": "pi",
+			},
+		}));
+	});
+
+	it("detects opencode hosts by baseUrl even when provider is generic", async () => {
+		const obs = observation("cccccccccccc", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
+		mockAgents.runObserver.mockResolvedValueOnce([obs]);
+		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+		const { fire, runLaunchedWork, runtime } = setup({ entries, reflectAfterTokens: 999, sessionId: "session-1" });
+		runtime.resolveModel.mockResolvedValueOnce({
+			ok: true,
+			model: { provider: "custom", baseUrl: "https://opencode.ai/zen/go/v1" },
+			apiKey: "go-key",
+		});
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({
+			headers: { "x-opencode-session": "session-1", "x-opencode-client": "pi" },
+		}));
+	});
+
+	it("leaves headers untouched for non-opencode worker models", async () => {
+		const obs = observation("cccccccccccc", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
+		mockAgents.runObserver.mockResolvedValueOnce([obs]);
+		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+		const { fire, runLaunchedWork, runtime } = setup({ entries, reflectAfterTokens: 999, sessionId: "session-1" });
+		runtime.resolveModel.mockResolvedValueOnce({
+			ok: true,
+			model: { provider: "anthropic", baseUrl: "https://api.anthropic.com" },
+			apiKey: "k",
+		});
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({
+			apiKey: "k",
+			headers: undefined,
+		}));
+	});
+
 	it("uses existing observation coverage and retries larger ranges after no-output", async () => {
 		const prior = observation("cccccccccccc", { sourceEntryIds: ["raw-1"] });
 		const newObs = observation("dddddddddddd", { sourceEntryIds: ["raw-2"] });
