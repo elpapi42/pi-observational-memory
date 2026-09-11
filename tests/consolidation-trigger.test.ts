@@ -39,6 +39,18 @@ beforeEach(() => {
 	mockAgents.runDropper.mockResolvedValue(undefined);
 });
 
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((resolvePromise) => {
+		resolve = resolvePromise;
+	});
+	return { promise, resolve };
+}
+
+async function flushMicrotasks(): Promise<void> {
+	for (let i = 0; i < 12; i += 1) await Promise.resolve();
+}
+
 function setup(args: {
 	entries: TestEntry[];
 	observeAfterTokens?: number;
@@ -66,7 +78,12 @@ function setup(args: {
 		}),
 	};
 	let launchedWork: (() => Promise<void>) | undefined;
+	let lifecycleController = new AbortController();
 	const runtime = {
+		generation: 0,
+		sessionIdentity: undefined as string | undefined,
+		disposed: false,
+		compactionTimer: undefined as ReturnType<typeof setTimeout> | undefined,
 		config: {
 			showWorkerNotifications: args.showWorkerNotifications ?? true,
 			passive: args.passive ?? false,
@@ -86,6 +103,42 @@ function setup(args: {
 		lastReflectorError: undefined as string | undefined,
 		lastDropperError: undefined as string | undefined,
 		ensureConfig: vi.fn(),
+		startSession: vi.fn((identity: string | undefined) => {
+			if (runtime.disposed) return;
+			if (runtime.sessionIdentity !== undefined && runtime.sessionIdentity !== identity) {
+				lifecycleController.abort();
+				lifecycleController = new AbortController();
+				runtime.generation += 1;
+			}
+			runtime.sessionIdentity = identity;
+		}),
+		captureGeneration: vi.fn((identity: string | undefined) => ({
+			generation: runtime.generation,
+			sessionIdentity: identity,
+			signal: lifecycleController.signal,
+		})),
+		isGenerationActive: vi.fn((generation: { generation: number; sessionIdentity: string | undefined; signal: AbortSignal }) => (
+			!runtime.disposed
+			&& !generation.signal.aborted
+			&& generation.generation === runtime.generation
+			&& generation.sessionIdentity === runtime.sessionIdentity
+		)),
+		dispose: vi.fn(() => {
+			if (runtime.disposed) return;
+			runtime.disposed = true;
+			runtime.generation += 1;
+			lifecycleController.abort();
+			if (runtime.compactionTimer !== undefined) clearTimeout(runtime.compactionTimer);
+			runtime.compactionTimer = undefined;
+			runtime.compactInFlight = false;
+		}),
+		setCompactionTimer: vi.fn((timer: ReturnType<typeof setTimeout>) => {
+			runtime.compactionTimer = timer;
+		}),
+		clearCompactionTimer: vi.fn((timer?: ReturnType<typeof setTimeout>) => {
+			if (timer !== undefined && runtime.compactionTimer !== timer) return;
+			runtime.compactionTimer = undefined;
+		}),
 		resolveModel: vi.fn(async () => ({ ok: true, model: { reasoning: true }, apiKey: "key", headers: { h: "v" } })),
 		launchConsolidationTask: vi.fn((_ctx, work) => {
 			runtime.consolidationInFlight = true;
@@ -102,6 +155,8 @@ function setup(args: {
 		}),
 	};
 	registerConsolidationTrigger(pi as any, runtime as any);
+	if (!handlers.session_start) throw new Error("session_start lifecycle handler not registered");
+	if (!handlers.session_shutdown) throw new Error("session_shutdown lifecycle handler not registered");
 	if (!handlers.agent_start) throw new Error("agent_start consolidation handler not registered");
 	if (!handlers.turn_end) throw new Error("turn_end consolidation handler not registered");
 	const ctx = {
@@ -115,6 +170,7 @@ function setup(args: {
 			getSessionId: () => sessionId,
 		},
 	};
+	handlers.session_start(undefined, ctx);
 	return {
 		pi,
 		runtime,
@@ -122,12 +178,14 @@ function setup(args: {
 		fire: (eventName = "turn_end") => handlers[eventName]!(undefined, ctx),
 		fireAgentStart: () => handlers.agent_start!(undefined, ctx),
 		fireTurnEnd: () => handlers.turn_end!(undefined, ctx),
+		shutdown: () => handlers.session_shutdown!(undefined, ctx),
 		runLaunchedWork: async () => launchedWork?.(),
 		addEntries: (...more: TestEntry[]) => {
 			entries = [...entries, ...more];
 		},
 		setSessionId: (next: string) => {
 			sessionId = next;
+			handlers.session_start!(undefined, ctx);
 		},
 		getEntries: () => entries,
 	};
@@ -138,10 +196,12 @@ describe("V3 consolidation trigger", () => {
 	const obsB = observation("bbbbbbbbbbbb", { sourceEntryIds: ["raw-2"], tokenCount: 10 });
 	const refA = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
 
-	it("registers agent_start and turn_end consolidation entrypoints", () => {
+	it("registers lifecycle and consolidation entrypoints", () => {
 		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
 		const { pi } = setup({ entries });
 
+		expect(pi.on).toHaveBeenCalledWith("session_start", expect.any(Function));
+		expect(pi.on).toHaveBeenCalledWith("session_shutdown", expect.any(Function));
 		expect(pi.on).toHaveBeenCalledWith("agent_start", expect.any(Function));
 		expect(pi.on).toHaveBeenCalledWith("turn_end", expect.any(Function));
 	});
@@ -224,7 +284,9 @@ describe("V3 consolidation trigger", () => {
 			allowedSourceEntryIds: ["raw-1"],
 			maxTurns: 9,
 			thinkingLevel: "minimal",
+			signal: expect.any(AbortSignal),
 		}));
+		expect(mockAgents.runObserver.mock.calls[0][0].signal.aborted).toBe(false);
 		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [obs], coversUpToId: "raw-1" });
 	});
 
@@ -550,7 +612,13 @@ describe("V3 consolidation trigger", () => {
 		fire();
 		await runLaunchedWork();
 
-		expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({ observations: [obsA], maxTurns: 9, thinkingLevel: "minimal" }));
+		expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({
+			observations: [obsA],
+			maxTurns: 9,
+			thinkingLevel: "minimal",
+			signal: expect.any(AbortSignal),
+		}));
+		expect(mockAgents.runReflector.mock.calls[0][0].signal.aborted).toBe(false);
 		expect(mockAgents.runDropper).not.toHaveBeenCalled();
 		expect(pi.appendEntry).toHaveBeenCalledWith(OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" });
 	});
@@ -570,7 +638,12 @@ describe("V3 consolidation trigger", () => {
 		await runLaunchedWork();
 
 		expect(mockAgents.runReflector).toHaveBeenCalled();
-		expect(mockAgents.runDropper).toHaveBeenCalledWith(expect.objectContaining({ reflections: [newRef], observations: [obsA] }));
+		expect(mockAgents.runDropper).toHaveBeenCalledWith(expect.objectContaining({
+			reflections: [newRef],
+			observations: [obsA],
+			signal: expect.any(AbortSignal),
+		}));
+		expect(mockAgents.runDropper.mock.calls[0][0].signal.aborted).toBe(false);
 		expect(pi.appendEntry.mock.calls[0]).toEqual([OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" }]);
 		expect(pi.appendEntry.mock.calls[1]).toEqual([OM_OBSERVATIONS_DROPPED, { observationIds: ["aaaaaaaaaaaa"], coversUpToId: "raw-1" }]);
 	});
@@ -751,6 +824,118 @@ describe("V3 consolidation trigger", () => {
 		expect(dropperFailure.runtime.lastDropperError).toBe("drop failed");
 		expect(dropperFailure.pi.appendEntry).toHaveBeenCalledTimes(1);
 		expect(dropperFailure.pi.appendEntry).toHaveBeenCalledWith(OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" });
+	});
+
+	it("aborts an active observer and ignores late output after session shutdown", async () => {
+		const late = observation("lateobserver", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
+		const pending = deferred<Observation[] | undefined>();
+		mockAgents.runObserver.mockReturnValueOnce(pending.promise);
+		const harness = setup({
+			entries: [textCustomMessage("raw-1", "aaaaaaaa")],
+			reflectAfterTokens: 999,
+		});
+
+		harness.fire();
+		const work = harness.runLaunchedWork();
+		await flushMicrotasks();
+		const signal = mockAgents.runObserver.mock.calls[0][0].signal as AbortSignal;
+		expect(signal.aborted).toBe(false);
+
+		harness.shutdown();
+		expect(signal.aborted).toBe(true);
+		pending.resolve([late]);
+		await work;
+
+		expect(harness.pi.appendEntry).not.toHaveBeenCalled();
+		expect(harness.runtime.recordConsolidationStageError).not.toHaveBeenCalled();
+		expect(harness.ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("failed"), "warning");
+	});
+
+	it("does not append late reflector output when inference ignores its aborted signal", async () => {
+		const late = reflection("latereflectr", ["aaaaaaaaaaaa"]);
+		const pending = deferred<Reflection[] | undefined>();
+		mockAgents.runReflector.mockReturnValueOnce(pending.promise);
+		const harness = setup({
+			entries: [
+				textCustomMessage("raw-1", "aaaaaaaa"),
+				observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+			],
+			observeAfterTokens: 999,
+		});
+
+		harness.fire();
+		const work = harness.runLaunchedWork();
+		await flushMicrotasks();
+		const signal = mockAgents.runReflector.mock.calls[0][0].signal as AbortSignal;
+		harness.shutdown();
+		expect(signal.aborted).toBe(true);
+
+		// Simulate an inference implementation that ignores AbortSignal and resolves.
+		pending.resolve([late]);
+		await work;
+
+		expect(harness.pi.appendEntry).not.toHaveBeenCalled();
+		expect(harness.runtime.recordConsolidationStageError).not.toHaveBeenCalled();
+		expect(harness.ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("failed"), "warning");
+	});
+
+	it("aborts an active dropper and ignores late drops after session shutdown", async () => {
+		const newRef = reflection("freshreflect", ["aaaaaaaaaaaa"]);
+		const pending = deferred<string[] | undefined>();
+		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
+		mockAgents.runDropper.mockReturnValueOnce(pending.promise);
+		const harness = setup({
+			entries: [
+				textCustomMessage("raw-1", "aaaaaaaa"),
+				observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+			],
+			observeAfterTokens: 999,
+			observationsPoolTargetTokens: 5,
+		});
+
+		harness.fire();
+		const work = harness.runLaunchedWork();
+		await flushMicrotasks();
+		const signal = mockAgents.runDropper.mock.calls[0][0].signal as AbortSignal;
+		expect(harness.pi.appendEntry).toHaveBeenCalledTimes(1);
+
+		harness.shutdown();
+		expect(signal.aborted).toBe(true);
+		pending.resolve(["aaaaaaaaaaaa"]);
+		await work;
+
+		expect(harness.pi.appendEntry).toHaveBeenCalledTimes(1);
+		expect(harness.runtime.recordConsolidationStageError).not.toHaveBeenCalled();
+	});
+
+	it("lets a fresh extension generation retry reflector output exactly once", async () => {
+		const recovered = reflection("reloadretry1", ["aaaaaaaaaaaa"]);
+		const pending = deferred<Reflection[] | undefined>();
+		mockAgents.runReflector.mockReturnValueOnce(pending.promise).mockResolvedValueOnce([recovered]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+		];
+		const stale = setup({ entries, observeAfterTokens: 999 });
+
+		stale.fire();
+		const staleWork = stale.runLaunchedWork();
+		await flushMicrotasks();
+		stale.shutdown();
+
+		const fresh = setup({ entries, observeAfterTokens: 999 });
+		fresh.fire();
+		await fresh.runLaunchedWork();
+		pending.resolve([recovered]);
+		await staleWork;
+
+		expect(stale.pi.appendEntry).not.toHaveBeenCalled();
+		expect(fresh.pi.appendEntry).toHaveBeenCalledTimes(1);
+		expect(fresh.pi.appendEntry).toHaveBeenCalledWith(
+			OM_REFLECTIONS_RECORDED,
+			{ reflections: [recovered], coversUpToId: "raw-1" },
+		);
+		expect(mockAgents.runReflector).toHaveBeenCalledTimes(2);
 	});
 });
 

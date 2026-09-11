@@ -11,7 +11,12 @@ function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensM
 			handler = cb;
 		}),
 	};
+	const controller = new AbortController();
 	const runtime = {
+		generation: 0,
+		sessionIdentity: "session-1" as string | undefined,
+		disposed: false,
+		compactionTimer: undefined as ReturnType<typeof setTimeout> | undefined,
 		ensureConfig: vi.fn(),
 		config: {
 			compactAfterTokens: args.compactAfterTokens ?? 3,
@@ -22,6 +27,32 @@ function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensM
 		compactInFlight: args.compactInFlight ?? false,
 		observerPromise: new Promise(() => {}),
 		reflectDropPromise: new Promise(() => {}),
+		captureGeneration: vi.fn((identity: string | undefined) => ({
+			generation: runtime.generation,
+			sessionIdentity: identity,
+			signal: controller.signal,
+		})),
+		isGenerationActive: vi.fn((generation: { generation: number; sessionIdentity: string | undefined; signal: AbortSignal }) => (
+			!runtime.disposed
+			&& !generation.signal.aborted
+			&& generation.generation === runtime.generation
+			&& generation.sessionIdentity === runtime.sessionIdentity
+		)),
+		setCompactionTimer: vi.fn((timer: ReturnType<typeof setTimeout>) => {
+			runtime.compactionTimer = timer;
+		}),
+		clearCompactionTimer: vi.fn((timer?: ReturnType<typeof setTimeout>) => {
+			if (timer !== undefined && runtime.compactionTimer !== timer) return;
+			runtime.compactionTimer = undefined;
+		}),
+		dispose: vi.fn(() => {
+			runtime.disposed = true;
+			runtime.generation += 1;
+			controller.abort();
+			if (runtime.compactionTimer !== undefined) clearTimeout(runtime.compactionTimer);
+			runtime.compactionTimer = undefined;
+			runtime.compactInFlight = false;
+		}),
 	};
 	registerCompactionTrigger(pi as any, runtime as any);
 	if (!handler) throw new Error("agent_settled handler was not registered");
@@ -37,7 +68,7 @@ function fakeCtx(branches: TestEntry[][], overrides: Record<string, unknown> = {
 	const getBranch = vi.fn(() => branches[Math.min(branchIndex++, branches.length - 1)]);
 	return {
 		cwd: "/tmp/project",
-		sessionManager: { getBranch },
+		sessionManager: { getBranch, getSessionId: vi.fn(() => "session-1") },
 		hasUI: true,
 		ui: { notify: vi.fn() },
 		isIdle: vi.fn(() => true),
@@ -83,6 +114,20 @@ describe("V3 compaction trigger", () => {
 			"Observational memory: compaction threshold reached (~3 estimated source tokens); triggering compaction",
 			"info",
 		);
+	});
+
+	it("cancels deferred compaction when the extension generation is disposed", async () => {
+		const { handler, runtime } = captureHandler({ compactAfterTokens: 3 });
+		const ctx = fakeCtx([dueBranch]);
+
+		handler(agentSettled(), ctx);
+		expect(runtime.compactInFlight).toBe(true);
+		runtime.dispose();
+		await vi.runAllTimersAsync();
+
+		expect(runtime.compactInFlight).toBe(false);
+		expect(ctx.compact).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("deferred"), expect.anything());
 	});
 
 	it("skips passive mode", async () => {
