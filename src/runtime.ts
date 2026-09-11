@@ -1,6 +1,15 @@
 import { type Config, DEFAULTS, loadConfig } from "./config.js";
 import { debugLog } from "./debug-log.js";
 
+/**
+ * Stable, machine-readable guidance surfaced by every gated observational-memory
+ * surface (`/om:status`, `/om:view`, `recall`) while the runtime is disabled (#12).
+ * Deliberately generic: it never distinguishes "never enabled" from "passive
+ * lockout" from "reset by a new session", because none of those gated surfaces may
+ * read config, branch, ledger, model, or clipboard state to explain the reason.
+ */
+export const DISABLED_MESSAGE = "Observational memory is disabled; run /om to enable it.";
+
 export type ResolveResult =
 	| { ok: true; model: unknown; apiKey?: string; headers?: Record<string, string>; env?: Record<string, string>; baseUrl?: string }
 	| { ok: false; reason: string };
@@ -99,6 +108,44 @@ export interface LaunchCtx {
 export class Runtime {
 	config: Config = { ...DEFAULTS };
 	configLoaded = false;
+	/**
+	 * Session-local observational-memory activation. Always starts `false` for a
+	 * fresh runtime; the only way to flip it to `true` is the strict bare `/om`
+	 * command (see `commands/om.ts`), and only when `config.passive` is not
+	 * `true`. Never persisted — no settings key, env var, or ledger marker backs
+	 * this field, so it cannot outlive the in-memory runtime that set it.
+	 */
+	enabled = false;
+	/**
+	 * Session id that received the successful `/om` activation. This supplements
+	 * lifecycle events because some OMP session replacements rebind commands
+	 * without preserving the extension runtime object identity.
+	 */
+	activatedSessionId: string | undefined = undefined;
+	/**
+	 * Whether the `recall` tool was part of the active model tool allowlist the
+	 * last time {@link gateRecallTool} ran (every `session_start`), before that
+	 * gate removed it while disabled (#12). `undefined` means the gate has not
+	 * run yet. `restoreRecallTool` uses this to put `recall` back only when it
+	 * belongs — never forcing it into an allowlist that excluded it for another
+	 * reason (for example, a `--tools` flag that never included it).
+	 */
+	recallActiveBeforeGate: boolean | undefined = undefined;
+	/**
+	 * Re-applies session-boundary gates when an OMP host replaces the bound
+	 * session without reloading the extension runtime (for example, RPC
+	 * `new_session`). Set by the entrypoint because Runtime must not depend on
+	 * the host API directly.
+	 */
+	sessionBoundaryReset: (() => void) | undefined = undefined;
+	/**
+	 * Monotonic generation counter for this runtime's session-local lifecycle.
+	 * Bumped by {@link invalidateGeneration} on `session_shutdown`. Background
+	 * work captures the generation in effect when it launches and checks
+	 * {@link isCurrentGeneration} before mutating state or reporting, so work
+	 * left over from a torn-down session can never touch the next one.
+	 */
+	generation = 0;
 	consolidationInFlight = false;
 	consolidationPromise: Promise<void> | null = null;
 	consolidationPhase: ConsolidationPhase | undefined;
@@ -121,6 +168,56 @@ export class Runtime {
 		if (this.configLoaded) return;
 		this.config = loadConfig(cwd);
 		this.configLoaded = true;
+	}
+
+	/** True when `generation` is still the one captured when async work launched. */
+	isCurrentGeneration(generation: number): boolean {
+		return generation === this.generation;
+	}
+
+	/**
+	 * Invalidate the current generation. Called on `session_shutdown`, before the
+	 * extension runtime is torn down for quit, reload, or session replacement.
+	 *
+	 * Bumps `generation` so any consolidation/compaction work already in flight —
+	 * captured under the prior generation number — fails its next
+	 * {@link isCurrentGeneration} check and stops before mutating runtime state,
+	 * writing to the ledger, or notifying through a `ctx` that may now be stale.
+	 * Also clears the transient in-flight flags themselves so the next
+	 * generation (a resumed/forked/new session sharing this instance) starts
+	 * clean rather than wedged by a flag a stale callback never got to reset.
+	 */
+	invalidateGeneration(): void {
+		this.generation += 1;
+		this.consolidationInFlight = false;
+		this.consolidationPromise = null;
+		this.consolidationPhase = undefined;
+		this.compactInFlight = false;
+		this.compactHookInFlight = false;
+	}
+
+	/**
+	 * Reset session-local activation. Called on `session_start`, which fires for
+	 * every new runtime/session boundary (startup, reload, resume, fork, new
+	 * session, session switch). A fresh runtime/session always starts disabled,
+	 * regardless of any activation the prior session reached.
+	 */
+	resetActivation(): void {
+		this.enabled = false;
+		this.activatedSessionId = undefined;
+	}
+
+	isEnabledForSession(sessionId: string | undefined): boolean {
+		if (
+			this.enabled
+			&& sessionId !== undefined
+			&& this.activatedSessionId !== undefined
+			&& this.activatedSessionId !== sessionId
+		) {
+			this.resetActivation();
+			this.sessionBoundaryReset?.();
+		}
+		return this.enabled;
 	}
 
 	async resolveModel(ctx: ResolveCtx): Promise<ResolveResult> {

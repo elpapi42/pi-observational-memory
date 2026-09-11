@@ -3,6 +3,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { Message, ToolResultMessage } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { DISABLED_MESSAGE, type Runtime } from "../runtime.js";
 import {
 	recallMemorySources,
 	type Entry,
@@ -23,7 +24,8 @@ type RecallObservationToolStatus =
 	| "invalid_id"
 	| "not_found"
 	| "no_source"
-	| "source_unavailable";
+	| "source_unavailable"
+	| "disabled";
 
 type ObservationDetails = Pick<Observation, "id" | "content" | "timestamp" | "relevance"> & { status?: "active" | "dropped" };
 type ReflectionDetails = Pick<Reflection, "id" | "content" | "supportingObservationIds"> & { reflectionIndex: number };
@@ -307,7 +309,7 @@ function tokenSummary(tokens: number): string {
 }
 
 function isFailureStatus(status: RecallObservationToolStatus): boolean {
-	return status === "invalid_id" || status === "not_found";
+	return status === "invalid_id" || status === "not_found" || status === "disabled";
 }
 
 function observationCountForHeader(details: RecallObservationToolDetails): number {
@@ -387,6 +389,10 @@ function memoryRows(details: RecallObservationToolDetails): string[] {
 
 function noteRows(details: RecallObservationToolDetails, sources: RecallSourceEntryDetails[]): string[] {
 	const notes: string[] = [];
+	if (details.status === "disabled") {
+		notes.push(noteLine("disabled", DISABLED_MESSAGE));
+		return notes;
+	}
 	if (details.status === "invalid_id") {
 		notes.push(noteLine("invalid id", `memory ids must be 12 lowercase hex characters; received ${details.memoryId}`));
 		return notes;
@@ -478,6 +484,17 @@ export const recallObservationTool = defineTool({
 	},
 });
 
-export function registerRecallTool(pi: ExtensionAPI): void {
-	pi.registerTool(recallObservationTool);
+export function registerRecallTool(pi: ExtensionAPI, runtime: Runtime): void {
+	pi.registerTool({
+		...recallObservationTool,
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			// Gated (#12): while observational memory is disabled, `recall` must not
+			// validate the memory id, read the branch, or touch any ledger state — it
+			// returns only the same stable disabled guidance as `/om:status`/`/om:view`.
+			if (!(runtime.isEnabledForSession?.(ctx.sessionManager.getSessionId?.()) ?? runtime.enabled)) {
+				return textResult(DISABLED_MESSAGE, emptyDetails("disabled", "", DISABLED_MESSAGE));
+			}
+			return recallObservationTool.execute(toolCallId, params, signal, onUpdate, ctx);
+		},
+	});
 }

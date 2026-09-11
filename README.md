@@ -179,11 +179,9 @@ Requires Pi 0.81.0 or newer. Proactive compaction uses the `agent_settled` lifec
 pi install npm:pi-observational-memory
 ```
 
-Or install from GitHub/local development:
+Or install from a local checkout:
 
 ```bash
-pi install git:github.com/elpapi42/pi-observational-memory
-# or, from a local checkout:
 pi install /absolute/path/to/pi-observational-memory
 ```
 
@@ -228,6 +226,19 @@ A typical config:
 ```
 
 Most users can start with the defaults and tune only if they have a specific reason.
+
+## OMP activation boundary
+
+When this extension is loaded by OMP, observational memory starts disabled.
+In a parent OMP TUI or externally controlled RPC session, run the bare
+`/om` command once to enable it for that session. Print and JSON modes reject
+`/om`; native child sessions have no command channel and remain disabled.
+
+Activation is in-memory and session-local. It is not persisted in project or
+global settings, environment configuration, session metadata, or ledger data.
+`passive: true` is a hard lockout: `/om` cannot enable memory, and disabled
+status, view, recall, workers, and compaction surfaces remain inert or use
+OMP's native compaction path.
 
 ### Scaling compaction to the model's context window
 
@@ -299,7 +310,7 @@ Valid `model.thinking` values are:
 
 If no `model` is configured, memory workers use the session model.
 
-Set `showWorkerNotifications` to `false` to hide routine worker start and completion messages (including deliberate-empty observer info messages). Model fallback/unavailability, worker failures (including observer stream errors), compaction notifications, and explicit `/om:*` command output remain visible.
+Set `showWorkerNotifications` to `false` to hide routine worker start and completion messages (including deliberate-empty observer info messages). Model fallback/unavailability, worker failures (including observer stream errors), compaction notifications, and explicit `/om:*` command output remain visible. A per-stage LLM performance line (`Observational memory: observer — 12.4s wall, 20,144 tok in, 340 tok out, 27.4 out tok/s`) prints after every completed observer/reflector/dropper run — including failures and deliberate-empty results — independent of `showWorkerNotifications`, since it's diagnostic signal for judging the configured (often local) memory-worker model.
 
 `observationsPoolMaxTokens` and `observationsPoolTargetTokens` intentionally describe different pools. Max tokens control when compaction performs a full fold over visible memory. Target tokens control the folded active observation pool that the dropper maintains after successful reflection. If the target is omitted, it defaults to half of max.
 

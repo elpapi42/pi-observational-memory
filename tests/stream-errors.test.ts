@@ -100,7 +100,7 @@ describe("agent stream error logging", () => {
 			async *[Symbol.asyncIterator]() {
 				yield {
 					type: "message_end",
-					message: { role: "assistant", content: [], stopReason: "error", errorMessage: "upstream 400" },
+					message: { role: "assistant", content: [], stopReason: "error", errorMessage: "upstream 400", usage: { input: 0, output: 0 } },
 				};
 			},
 			result: async () => ({}),

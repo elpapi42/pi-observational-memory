@@ -7,6 +7,7 @@ import { debugLog } from "../../debug-log.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { logAgentStreamError } from "../stream-errors.js";
 import { reflectionToSummaryLine, type Observation, type Reflection } from "../../session-ledger/index.js";
+import type { AgentRunStats } from "../stats.js";
 import { DROPPER_SYSTEM } from "./prompts.js";
 import {
 	REFLECTION_COVERAGE_DROP_RANK,
@@ -49,6 +50,8 @@ interface RunDropperArgs {
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
 	thinkingLevel?: ModelThinkingLevel;
+	/** Reports wall-clock/token stats once the run finishes, regardless of outcome. */
+	onUsage?: (stats: AgentRunStats) => void;
 }
 
 const RELEVANCE_DROP_RANK: Record<Observation["relevance"], number> = {
@@ -254,11 +257,19 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 
 	const loop = args.agentLoop ?? agentLoop;
 	const stream = loop(prompts, context, config, signal, streamSimple);
+	const startedAt = Date.now();
+	let inputTokens = 0;
+	let outputTokens = 0;
 	for await (const event of stream) {
 		// Tool execution collects candidate ids.
 		logAgentStreamError("dropper", event);
+		if (event.type === "message_end" && event.message.role === "assistant") {
+			inputTokens += event.message.usage.input;
+			outputTokens += event.message.usage.output;
+		}
 	}
 	await stream.result();
+	args.onUsage?.({ durationMs: Date.now() - startedAt, inputTokens, outputTokens });
 	const droppedIds = selectDropCandidates(proposedDropIds, observations, maxDropsAllowed, reflections);
 	const reason = droppedIds.length > 0
 		? "selected_nonempty"

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerCompactionTrigger } from "../src/hooks/compaction-trigger.js";
 import { compactionEntry, rawMessage, textCustomMessage, type TestEntry } from "./fixtures/session.js";
 
-function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensMode?: "calibrated" | "ratio"; compactAfterTokensRatio?: number; passive?: boolean; compactInFlight?: boolean } = {}) {
+function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensMode?: "calibrated" | "ratio"; compactAfterTokensRatio?: number; passive?: boolean; compactInFlight?: boolean; enabled?: boolean } = {}) {
 	let handler: ((event: unknown, ctx: unknown) => void) | undefined;
 	const pi = {
 		on: vi.fn((name: string, cb: typeof handler) => {
@@ -12,6 +12,9 @@ function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensM
 		}),
 	};
 	const runtime = {
+		enabled: args.enabled ?? true,
+		generation: 0,
+		isCurrentGeneration: vi.fn(() => true),
 		ensureConfig: vi.fn(),
 		config: {
 			compactAfterTokens: args.compactAfterTokens ?? 3,

@@ -2,17 +2,17 @@
 
 This is the V3 technical reference for `pi-observational-memory`.
 
-V3 is ledger-centered: memory state is reconstructed by folding V3 ledger entries on the current branch. When that projection is non-empty, V3 renders it model-free into the summary the agent sees. Empty projections delegate to Pi's native summarizer.
+V3 is ledger-centered: memory state is reconstructed by folding V3 ledger entries on the current branch. When that projection is non-empty, V3 renders it model-free into the summary the agent sees. Empty projections delegate to OMP's native summarizer.
 
 ## Runtime entry points
 
-`src/index.ts` registers one shared runtime and these Pi surfaces:
+`src/index.ts` registers one shared runtime and these OMP surfaces:
 
 | Surface | Purpose |
 |---|---|
 | `turn_end` observer trigger | Maybe run the observer in the background. |
 | `turn_end` reflect/drop trigger | Maybe run the due reflector, then run dropper maintenance only after same-run successful reflection. |
-| `agent_settled` compaction trigger | Maybe call `ctx.compact()` when idle and over `compactAfterTokens`, after Pi finishes retries and queued continuation. |
+| `agent_settled` compaction trigger | Maybe call `ctx.compact()` when idle and over `compactAfterTokens`, after OMP finishes retries and queued continuation. |
 | `session_before_compact` hook | Build the V3 compaction payload deterministically. |
 | `/om:status` | Show ledger counts, drift, progress clocks, and worker state. |
 | `/om:view` | Show visible or full memory content and attempt to copy the rendered memory text. |
@@ -197,17 +197,17 @@ Reflector no-output and reflector failure skip same-turn dropper. Dropper failur
 
 ## Auto-compaction trigger
 
-The auto-compaction trigger runs on `agent_settled`, after Pi has finished automatic retries, automatic compaction, and queued continuation.
+The auto-compaction trigger runs on `agent_settled`, after OMP has finished automatic retries, automatic compaction, and queued continuation.
 
 It skips when:
 
 - `passive` is true;
 - compaction is already in flight;
 - estimated source-entry progress after the latest compaction boundary is below `compactAfterTokens`;
-- Pi is not idle after the deferred check;
+- OMP is not idle after the deferred check;
 - the raw threshold is no longer met after the deferred check.
 
-The count starts at `firstKeptEntryId` when Pi provides that boundary. Memory
+The count starts at `firstKeptEntryId` when OMP provides that boundary. Memory
 ledger entries and compaction metadata contribute zero. The trigger uses this
 same raw metric before scheduling and in the deferred re-check, then calls
 `ctx.compact()` when all checks pass.
@@ -225,7 +225,7 @@ It does only deterministic work:
 3. Read `event.preparation.firstKeptEntryId` and `event.preparation.tokensBefore`.
 4. Build a compaction projection from branch entries and `firstKeptEntryId`.
 5. Render a summary from projected reflections and observations.
-6. If the summary is empty, return no extension result so Pi uses native compaction.
+6. If the summary is empty, return no extension result so OMP uses native compaction.
 7. Otherwise return `{ compaction: { summary, firstKeptEntryId, tokensBefore, details } }` where `details.type` is `om.folded`.
 
 It does not:
@@ -236,7 +236,7 @@ It does not:
 - wait for worker promises;
 - append ledger entries.
 
-If another compaction hook is already in flight, it returns `{ cancel: true }`. Delegating an empty projection is intentionally different: Pi proceeds with its native summarizer so pre-cut context is preserved.
+If another compaction hook is already in flight, it returns `{ cancel: true }`. Delegating an empty projection is intentionally different: OMP proceeds with its native summarizer so pre-cut context is preserved.
 
 ## Projections
 
@@ -281,6 +281,28 @@ When exact source context is needed for precision or traceability, use the recal
 
 The renderer is deterministic. It does not call a model and does not rewrite memory content.
 
+## OMP activation boundary
+
+Every OMP runtime starts with observational memory disabled. The only activation
+path is the bare, one-shot `/om` command. It is available in the parent OMP TUI
+and in an externally controlled OMP RPC session; print and JSON modes reject the
+command, and native child sessions have no command channel.
+
+Activation is held in memory for the current session only. OMP restart, resume,
+fork, or new-session boundaries require `/om` again and never write an enabled
+marker to settings, session entries, or another sidecar file.
+
+When `passive: true`, `/om` is a hard lockout. While disabled, `/om:status`,
+`/om:view`, and `recall` return only `Observational memory is disabled; run /om
+to enable it.` without reading the branch, resolving a model, or touching the
+clipboard. The `recall` tool is also removed from the active model-tool
+allowlist until activation, and is restored only if it was active before gating.
+
+Disabled or passive workers do not launch, proactive compaction does not run,
+and the compaction hook delegates to OMP's native compaction. Once enabled, an
+empty observational projection still delegates natively; a non-empty projection
+owns the compaction summary.
+
 ## Commands
 
 ### `/om:status`
@@ -302,7 +324,7 @@ Shows:
 
 Default mode shows visible memory and attempts to copy the rendered memory text to the clipboard. If no V3 compaction has happened yet, visible memory can be empty because nothing has been folded into `om.folded` details; use `/om:view full` to inspect recorded branch memory before the first compaction.
 
-Clipboard copy uses platform clipboard commands (`pbcopy`, `clip`, `wl-copy`, `xclip`, `xsel`, or `termux-clipboard-set`). If copying succeeds, Pi shows `Copied /om:view output to clipboard.` If copying fails, the command still prints the memory view and shows a warning. The clipboard text is only the rendered memory content; it does not include the success/failure line.
+Clipboard copy uses platform clipboard commands (`pbcopy`, `clip`, `wl-copy`, `xclip`, `xsel`, or `termux-clipboard-set`). If copying succeeds, OMP shows `Copied /om:view output to clipboard.` If copying fails, the command still prints the memory view and shows a warning. The clipboard text is only the rendered memory content; it does not include the success/failure line.
 
 ### `/om:view full`
 
@@ -340,10 +362,27 @@ V3 does not use V2 state shapes. Old V2 custom memory entries, old V2 compaction
 ## Invariants
 
 - The branch-local V3 ledger is the memory source of truth.
-- Pi compaction summaries represent what the agent sees.
-- Non-empty V3 compaction projections are deterministic and model-free; empty projections delegate to Pi's native summarizer.
+- OMP compaction summaries represent what the agent sees.
+- Non-empty V3 compaction projections are deterministic and model-free; empty projections delegate to OMP's native summarizer.
 - Observer input is raw/source entries only.
 - `coversUpToId` is a progress/projection watermark, not provenance.
 - Kept observations and reflections are rendered without paraphrase.
 - Dropped observations remain recallable from ledger history.
 - Old V2 memory is ignored rather than migrated.
+
+## Testing
+
+`bun run test` runs the Vitest suite, which drives the extension against a
+simulated `ExtensionContext` — including the disabled/passive/enabled
+activation gates and the lifecycle-reset behavior described above.
+
+`bun run test:smoke` runs a separate black-box smoke test against a real OMP
+TUI session, independent OMP RPC sessions, and a real in-process child
+`AgentSession` (OMP's native subagent mechanism). It proves the parent TUI and
+RPC sessions can activate observational memory through `/om`, render a
+non-empty observational projection during compaction, while a spawned
+subagent stays disabled with native compaction and produces no observational
+memory notifications, tool results, or ledger entries. It requires the `omp`
+CLI and Python 3 for the TUI PTY bridge and is intentionally outside
+`bun run test`'s scope. See `tests/smoke/README.md` for prerequisites and
+invocation.

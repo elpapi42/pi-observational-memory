@@ -1,4 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentRunStats } from "../agents/stats.js";
+import { formatAgentStats } from "../agents/stats.js";
 import { runDropper } from "../agents/dropper/agent.js";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { ObserverStreamError, runObserver } from "../agents/observer/agent.js";
@@ -171,6 +173,7 @@ function debugSessionMetadata(ctx: ConsolidationCtx): { sessionId?: string; sess
 }
 
 function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): void {
+	if (!(runtime.isEnabledForSession?.(ctx.sessionManager.getSessionId?.()) ?? runtime.enabled)) return;
 	runtime.ensureConfig(ctx.cwd);
 	if (runtime.config.passive === true) return;
 	if (runtime.consolidationInFlight) return;
@@ -178,6 +181,7 @@ function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	if (!anyStageDue(entries, runtime, realContextTokens(ctx))) return;
 
+	const generation = runtime.generation;
 	const runId = `consolidation-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
 	const consolidationCtx: ConsolidationCtx = {
 		cwd: ctx.cwd,
@@ -196,7 +200,8 @@ function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 		...sessionMetadata,
 		runId,
 	}, async () => {
-		await runConsolidationPipeline(pi, runtime, consolidationCtx);
+		if (!runtime.isCurrentGeneration(generation)) return;
+		await runConsolidationPipeline(pi, runtime, consolidationCtx, generation);
 	}));
 }
 
@@ -204,31 +209,36 @@ export async function runConsolidationPipeline(
 	pi: ExtensionAPI,
 	runtime: Runtime,
 	ctx: ConsolidationCtx,
+	generation: number,
 ): Promise<void> {
 	const resolveModel = makeModelResolver(runtime, ctx);
 
 	runtime.consolidationPhase = "observer";
 	try {
-		const observerOutcome = await runObserverStage(pi, runtime, ctx, resolveModel);
+		const observerOutcome = await runObserverStage(pi, runtime, ctx, resolveModel, generation);
 		if (observerOutcome === "abort") return;
 	} catch (error) {
 		debugLog("observer.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "observer", error) });
 		return;
 	}
 
+	if (!runtime.isCurrentGeneration(generation)) return;
+
 	runtime.consolidationPhase = "reflector";
 	let reflectorResult: ReflectorStageResult;
 	try {
-		reflectorResult = await runReflectorStage(pi, runtime, ctx, resolveModel);
+		reflectorResult = await runReflectorStage(pi, runtime, ctx, resolveModel, generation);
 		if (reflectorResult.outcome === "abort") return;
 	} catch (error) {
 		debugLog("reflector.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "reflector", error) });
 		return;
 	}
 
+	if (!runtime.isCurrentGeneration(generation)) return;
+
 	runtime.consolidationPhase = "dropper";
 	try {
-		await runDropperStage(pi, runtime, ctx, resolveModel, reflectorResult.sameRunReflections, reflectorResult.effectiveReflectionCoverageId);
+		await runDropperStage(pi, runtime, ctx, resolveModel, reflectorResult.sameRunReflections, reflectorResult.effectiveReflectionCoverageId, generation);
 	} catch (error) {
 		debugLog("dropper.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "dropper", error) });
 	}
@@ -239,6 +249,7 @@ async function runObserverStage(
 	runtime: Runtime,
 	ctx: ConsolidationCtx,
 	resolveModel: (stage: "observer") => Promise<ResolvedModel | undefined>,
+	generation: number,
 ): Promise<StageOutcome> {
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const currentTokens = realContextTokens(ctx);
@@ -272,6 +283,7 @@ async function runObserverStage(
 	// derives from the resolved model's context window.
 	const resolved = await resolveModel("observer");
 	if (!resolved) return "abort";
+	if (!runtime.isCurrentGeneration(generation)) return "abort";
 
 	const lastCoverageIdx = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
 	const backlogEntries = sourceEntriesAfter(entries, lastCoverageIdx);
@@ -322,6 +334,7 @@ async function runObserverStage(
 	});
 
 	let observations: Observation[] | undefined;
+	let usageStats: AgentRunStats | undefined;
 	try {
 		observations = await runObserver({
 			model: resolved.model as any,
@@ -334,8 +347,10 @@ async function runObserverStage(
 			allowedSourceEntryIds: sourceEntryIds,
 			maxTurns: runtime.config.agentMaxTurns,
 			thinkingLevel: runtime.config.model?.thinking ?? "low",
+			onUsage: (stats) => { usageStats = stats; },
 		});
 	} catch (error) {
+		if (usageStats) ctx.ui?.notify(formatAgentStats("observer", usageStats), "info");
 		if (error instanceof ObserverStreamError) {
 			// API/stream failure is not a clean empty (#32): surface it as a real
 			// failure instead of the "no observations" path. Coverage stays put.
@@ -344,6 +359,8 @@ async function runObserverStage(
 		}
 		throw error;
 	}
+	if (usageStats) ctx.ui?.notify(formatAgentStats("observer", usageStats), "info");
+	if (!runtime.isCurrentGeneration(generation)) return "abort";
 	if (!observations || observations.length === 0) {
 		// Deliberate empty: routine info, not a warning, and back off re-fires
 		// over the same span (#23).
@@ -378,6 +395,7 @@ async function runReflectorStage(
 	runtime: Runtime,
 	ctx: ConsolidationCtx,
 	resolveModel: (stage: "reflector") => Promise<ResolvedModel | undefined>,
+	generation: number,
 ): Promise<ReflectorStageResult> {
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const currentTokens = realContextTokens(ctx);
@@ -394,8 +412,10 @@ async function runReflectorStage(
 	);
 	const resolved = await resolveModel("reflector");
 	if (!resolved) return { outcome: "abort", sameRunReflections: [] };
+	if (!runtime.isCurrentGeneration(generation)) return { outcome: "abort", sameRunReflections: [] };
 
 	const folded = foldLedger(entries);
+	let reflectorUsageStats: AgentRunStats | undefined;
 	const reflections = await runReflector({
 		model: resolved.model as any,
 		apiKey: resolved.apiKey,
@@ -405,7 +425,10 @@ async function runReflectorStage(
 		observations: folded.activeObservations,
 		maxTurns: runtime.config.agentMaxTurns,
 		thinkingLevel: runtime.config.model?.thinking ?? "low",
+		onUsage: (stats) => { reflectorUsageStats = stats; },
 	});
+	if (reflectorUsageStats) ctx.ui?.notify(formatAgentStats("reflector", reflectorUsageStats), "info");
+	if (!runtime.isCurrentGeneration(generation)) return { outcome: "abort", sameRunReflections: [] };
 	if (!reflections) return { outcome: "continue", sameRunReflections: [] };
 
 	const data = buildReflectionsRecordedData(reflections, observationCoverageId);
@@ -425,6 +448,7 @@ async function runDropperStage(
 	resolveModel: (stage: "dropper") => Promise<ResolvedModel | undefined>,
 	sameRunReflections: Reflection[],
 	sameRunReflectionCoverageId: string | undefined,
+	generation: number,
 ): Promise<StageOutcome> {
 	if (!sameRunReflectionCoverageId || sameRunReflections.length === 0) {
 		debugLog("dropper.waiting_for_reflection", { sameRunReflections: sameRunReflections.length });
@@ -467,8 +491,10 @@ async function runDropperStage(
 	);
 	const resolved = await resolveModel("dropper");
 	if (!resolved) return "abort";
+	if (!runtime.isCurrentGeneration(generation)) return "abort";
 
 	const reflectionsForDropper = mergeReflections(folded.reflections, sameRunReflections);
+	let dropperUsageStats: AgentRunStats | undefined;
 	const droppedIds = await runDropper({
 		model: resolved.model as any,
 		apiKey: resolved.apiKey,
@@ -479,7 +505,10 @@ async function runDropperStage(
 		targetTokens: runtime.config.observationsPoolTargetTokens,
 		maxTurns: runtime.config.agentMaxTurns,
 		thinkingLevel: runtime.config.model?.thinking ?? "low",
+		onUsage: (stats) => { dropperUsageStats = stats; },
 	});
+	if (dropperUsageStats) ctx.ui?.notify(formatAgentStats("dropper", dropperUsageStats), "info");
+	if (!runtime.isCurrentGeneration(generation)) return "abort";
 	const coversUpToId = earlierCoverageMarkerId(entries, observationCoverageId, sameRunReflectionCoverageId);
 	const data = coversUpToId && droppedIds ? buildObservationsDroppedData(droppedIds, coversUpToId) : undefined;
 	debugLog("dropper.append", {

@@ -11,6 +11,7 @@ import { truncateRecordContent } from "../../serialize.js";
 import { REFLECTOR_SYSTEM } from "./prompts.js";
 import { estimateStringTokens } from "../../tokens.js";
 import { reflectionToSummaryLine, type Observation, type Reflection } from "../../session-ledger/index.js";
+import type { AgentRunStats } from "../stats.js";
 import {
 	coverageTierForObservation,
 	reflectionCoverageMap,
@@ -30,6 +31,8 @@ interface RunReflectorArgs {
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
 	thinkingLevel?: ModelThinkingLevel;
+	/** Reports wall-clock/token stats once the run finishes, regardless of outcome. */
+	onUsage?: (stats: AgentRunStats) => void;
 }
 
 const RecordReflectionsSchema = Type.Object({
@@ -187,11 +190,19 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 
 	const loop = args.agentLoop ?? agentLoop;
 	const stream = loop(prompts, context, config, signal, streamSimple);
+	const startedAt = Date.now();
+	let inputTokens = 0;
+	let outputTokens = 0;
 	for await (const event of stream) {
 		// Tool execution collects records.
 		logAgentStreamError("reflector", event);
+		if (event.type === "message_end" && event.message.role === "assistant") {
+			inputTokens += event.message.usage.input;
+			outputTokens += event.message.usage.output;
+		}
 	}
 	await stream.result();
+	args.onUsage?.({ durationMs: Date.now() - startedAt, inputTokens, outputTokens });
 	const acceptedReflections = Array.from(accumulated.values());
 	const afterCoverageById = reflectionCoverageMap(observations, [...reflections, ...acceptedReflections]);
 	debugLog("reflector.result", {
