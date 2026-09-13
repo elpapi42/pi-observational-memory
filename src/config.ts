@@ -45,6 +45,14 @@ export interface Config {
 	observationsPoolMaxTokens: number;
 	observationsPoolTargetTokens: number;
 	agentMaxTurns: number;
+	/**
+	 * Maximum output tokens requested for background memory-agent loops
+	 * (observer/reflector/dropper). Always clamped to the model's own
+	 * `maxTokens` when available. Lower it for local servers with a modest
+	 * context window, where concurrent sub-agent requests share KV with the
+	 * main session and the default 32K response budget can overflow the slot.
+	 */
+	agentMaxTokens: number;
 	model?: ConfiguredModel;
 	showWorkerNotifications: boolean;
 	passive: boolean;
@@ -60,6 +68,7 @@ export const DEFAULTS: Config = {
 	observationsPoolMaxTokens: 20_000,
 	observationsPoolTargetTokens: 10_000,
 	agentMaxTurns: 16,
+	agentMaxTokens: 32_000,
 	showWorkerNotifications: true,
 	passive: false,
 	debugLog: false,
@@ -189,6 +198,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"observationsPoolMaxTokens",
 		"observationsPoolTargetTokens",
 		"agentMaxTurns",
+		"agentMaxTokens",
 	] as const;
 	for (const key of numberKeys) {
 		const normalizedValue = positiveIntegerOrUndefined(value[key]);
