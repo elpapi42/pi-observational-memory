@@ -8,6 +8,7 @@ import {
 } from "../src/agents/reflector/agent.js";
 import { hashId } from "../src/ids.js";
 import { estimateStringTokens } from "../src/tokens.js";
+import { AGENT_LOOP_MAX_TOKENS } from "../src/model-budget.js";
 import { observation, reflection } from "./fixtures/session.js";
 
 function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void): any {
@@ -19,6 +20,56 @@ function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => P
 		},
 	})) as any;
 }
+
+describe("runReflector maxTokens clamping", () => {
+	const args = {
+		apiKey: "test",
+		reflections: [],
+		observations: [observation("aaaaaaaaaaaa"), observation("bbbbbbbbbbbb")],
+	};
+
+	function captureLoopConfig() {
+		let loopConfig: any;
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			loopConfig = config;
+		});
+		return { loop, config: () => loopConfig };
+	}
+
+	it("clamps the loop maxTokens to a model whose maxTokens is below the configured budget", async () => {
+		const { loop, config } = captureLoopConfig();
+
+		await runReflector({
+			...args,
+			model: { maxTokens: 8_192 } as any,
+			maxOutputTokens: 32_000,
+			agentLoop: loop,
+		});
+
+		expect(config().maxTokens).toBe(8_192);
+	});
+
+	it("passes the configured maxOutputTokens through when the model advertises no maxTokens", async () => {
+		const { loop, config } = captureLoopConfig();
+
+		await runReflector({
+			...args,
+			model: {} as any,
+			maxOutputTokens: 8_192,
+			agentLoop: loop,
+		});
+
+		expect(config().maxTokens).toBe(8_192);
+	});
+
+	it("defaults the loop maxTokens to AGENT_LOOP_MAX_TOKENS", async () => {
+		const { loop, config } = captureLoopConfig();
+
+		await runReflector({ ...args, model: {} as any, agentLoop: loop });
+
+		expect(config().maxTokens).toBe(AGENT_LOOP_MAX_TOKENS);
+	});
+});
 
 describe("V3 reflector agent", () => {
 	const obsA = observation("aaaaaaaaaaaa");

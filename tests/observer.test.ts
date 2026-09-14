@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { normalizeSourceEntryIds, OBSERVATION_TIMESTAMP_PATTERN, ObserverStreamError, runObserver } from "../src/agents/observer/agent.js";
+import { AGENT_LOOP_MAX_TOKENS } from "../src/model-budget.js";
 
 function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void, events: any[] = []): any {
 	return ((prompts: any[], context: any, config: any) => ({
@@ -17,6 +18,58 @@ function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => P
 function assistantEndEvent(stopReason: string, errorMessage?: string): any {
 	return { type: "message_end", message: { role: "assistant", stopReason, errorMessage } };
 }
+
+describe("runObserver maxTokens clamping", () => {
+	function captureLoopConfig() {
+		let loopConfig: any;
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			loopConfig = config;
+		});
+		return { loop, config: () => loopConfig };
+	}
+
+	const args = {
+		apiKey: "test",
+		priorReflections: [],
+		priorObservations: [],
+		chunk: "[Source entry id: entry-a]\nUser asked for a memory update.",
+		allowedSourceEntryIds: ["entry-a"],
+	};
+
+	it("clamps the loop maxTokens to a model whose maxTokens is below the configured budget", async () => {
+		const { loop, config } = captureLoopConfig();
+
+		await runObserver({
+			...args,
+			model: { maxTokens: 8_192 } as any,
+			maxOutputTokens: 32_000,
+			agentLoop: loop,
+		});
+
+		expect(config().maxTokens).toBe(8_192);
+	});
+
+	it("passes the configured maxOutputTokens through when the model advertises no maxTokens", async () => {
+		const { loop, config } = captureLoopConfig();
+
+		await runObserver({
+			...args,
+			model: {} as any,
+			maxOutputTokens: 8_192,
+			agentLoop: loop,
+		});
+
+		expect(config().maxTokens).toBe(8_192);
+	});
+
+	it("defaults the loop maxTokens to AGENT_LOOP_MAX_TOKENS", async () => {
+		const { loop, config } = captureLoopConfig();
+
+		await runObserver({ ...args, model: {} as any, agentLoop: loop });
+
+		expect(config().maxTokens).toBe(AGENT_LOOP_MAX_TOKENS);
+	});
+});
 
 describe("OBSERVATION_TIMESTAMP_PATTERN", () => {
 	it("matches local minute timestamps without regex shorthand escapes", () => {
