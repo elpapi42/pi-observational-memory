@@ -41,6 +41,11 @@ The extension loads config once for its runtime. After changing settings, restar
       "id": "google/gemma-4-31b-it",
       "thinking": "low"
     },
+    "fallbackModel": {
+      "provider": "opencode-go",
+      "id": "deepseek-v4.1-flash",
+      "thinking": "low"
+    },
     "showWorkerNotifications": true,
     "passive": false,
     "debugLog": false
@@ -66,6 +71,10 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `model.provider` | string | unset | Provider name in Pi's model registry. Required when `model` is set. |
 | `model.id` | string | unset | Model id in Pi's model registry. Required when `model` is set. |
 | `model.thinking` | enum | unset; workers fall back to `low` | Optional reasoning/thinking level for memory workers. |
+| `fallbackModel` | object | unset | Optional model the memory workers fall back to when the primary memory model fails to resolve or a worker call errors. |
+| `fallbackModel.provider` | string | unset | Provider name in Pi's model registry. Required when `fallbackModel` is set. |
+| `fallbackModel.id` | string | unset | Model id in Pi's model registry. Required when `fallbackModel` is set. |
+| `fallbackModel.thinking` | enum | unset; falls back to `model.thinking` then `low` | Optional reasoning/thinking level used when the fallback is active. |
 | `showWorkerNotifications` | boolean | `true` | Shows routine observer, reflector, and dropper progress notifications. |
 | `passive` | boolean | `false` | Disables proactive background memory and auto-compaction triggers. |
 | `debugLog` | boolean | `false` | Writes best-effort per-session extension debug events to Pi's agent directory. |
@@ -169,6 +178,38 @@ Set `model` when you want the observer, reflector, and dropper to use a cheaper 
 `provider` and `id` must both be non-empty strings. `thinking` is optional. If the configured model cannot be resolved, the runtime attempts to fall back to the current session model and notifies once. Memory workers accept either an API key or OAuth-style auth headers (e.g. `Authorization: Bearer …`), so OAuth-authenticated providers work without an API key. If no usable model or credentials are available, the relevant background worker skips/fails safely rather than inventing memory.
 
 Workers stream through Pi's composed provider runtime, not `@earendil-works/pi-ai/compat` alone. Session models whose `api` id comes from `pi.registerProvider` (`cursor-sdk`, CLIProxyAPI, commandcode, and other custom APIs) work without a second built-in provider. `model` remains optional: set it only when you want cheaper/faster workers than the coding agent. Leaving it unset is the Cursor-only setup.
+
+## `fallbackModel`
+
+Default: unset, meaning there is no fallback and a failed memory model behaves exactly as before (the worker skips or fails safely).
+
+Set `fallbackModel` to give the memory workers a second model when the primary one is unavailable:
+
+```json
+{
+  "observational-memory": {
+    "model": {
+      "provider": "anthropic",
+      "id": "claude-haiku-4-5-20251001",
+      "thinking": "low"
+    },
+    "fallbackModel": {
+      "provider": "opencode-go",
+      "id": "deepseek-v4.1-flash",
+      "thinking": "low"
+    }
+  }
+}
+```
+
+The fallback is tried in two places:
+
+1. **Resolution.** When the primary memory model cannot be resolved — not in Pi's registry, or carrying no usable API key/auth headers — the fallback is resolved and used. The notification names both the primary failure and the fallback that took over.
+2. **Runtime.** When a worker stage (observer, reflector, or dropper) errors during its model call, that one stage is retried once with the fallback model. The retry is per-stage and per-pass; a successful retry is logged and notified.
+
+Once the fallback resolves, it is reused for the rest of the consolidation pass, so later stages do not re-pay a known-broken primary. If the primary model itself resolved through the fallback, no further runtime retry is attempted for that pass.
+
+`provider` and `id` must both be non-empty strings, exactly as for `model`. A `fallbackModel` identical to the configured `model` is rejected as a misconfiguration. A fallback that also fails leaves the existing skip/fail-safe behavior intact: no memory is invented, coverage does not advance, and the failure is surfaced (worker failure notification, `/om:status`, debug log).
 
 ## `showWorkerNotifications`
 

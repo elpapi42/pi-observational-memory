@@ -103,6 +103,34 @@ describe("V3 config", () => {
 		});
 	});
 
+	it("parses a fallback model and ignores invalid fallback values", () => {
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": {
+				model: { provider: "anthropic", id: "claude-haiku-4-5-20251001", thinking: "low" },
+				fallbackModel: { provider: "opencode-go", id: "deepseek-v4.1-flash", thinking: "low" },
+			},
+		});
+
+		expect(loadConfig(cwd, {})).toMatchObject({
+			model: { provider: "anthropic", id: "claude-haiku-4-5-20251001", thinking: "low" },
+			fallbackModel: { provider: "opencode-go", id: "deepseek-v4.1-flash", thinking: "low" },
+		});
+
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": {
+				fallbackModel: { provider: "opencode-go", id: "deepseek-v4.1-flash", thinking: "huge" },
+			},
+		});
+		expect(loadConfig(cwd, {})).toMatchObject({
+			fallbackModel: { provider: "opencode-go", id: "deepseek-v4.1-flash" },
+		});
+
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": { fallbackModel: { provider: "", id: "deepseek-v4.1-flash" } },
+		});
+		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
+	});
+
 	it("ignores invalid V3 values", () => {
 		writeJson(join(cwd, ".pi", "settings.json"), {
 			"observational-memory": {

@@ -54,6 +54,21 @@ export interface Config {
 	 */
 	agentMaxTokens: number;
 	model?: ConfiguredModel;
+	/**
+	 * Optional model the memory workers fall back to.
+	 *
+	 * Tried in two places:
+	 * - Resolution: when the primary memory model (this `model` when set,
+	 *   otherwise the session model) cannot be resolved — absent from Pi's
+	 *   registry, or carrying no usable credentials.
+	 * - Runtime: when a worker stage (observer/reflector/dropper) fails its
+	 *   model call, that one stage is retried once with this model.
+	 *
+	 * Once the fallback resolves, it is reused for the rest of the consolidation
+	 * pass so later stages do not re-pay a known-broken primary. A configured
+	 * fallback that also fails leaves the existing skip/fail-safe behavior intact.
+	 */
+	fallbackModel?: ConfiguredModel;
 	showWorkerNotifications: boolean;
 	passive: boolean;
 	debugLog: boolean;
@@ -214,6 +229,8 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
 	const model = normalizeModel(value.model);
 	if (model) normalized.model = model;
+	const fallbackModel = normalizeModel(value.fallbackModel);
+	if (fallbackModel) normalized.fallbackModel = fallbackModel;
 	return normalized;
 }
 
