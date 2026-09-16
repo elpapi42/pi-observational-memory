@@ -191,11 +191,17 @@ export class Runtime {
 	async resolveFallbackModel(ctx: ResolveCtx): Promise<ResolveResult> {
 		const target = this.config.fallbackModel;
 		if (!target) return { ok: false, reason: "no fallback model configured" };
-		// Misconfiguration guard: a fallback identical to the configured primary would
-		// re-run the exact failure instead of adding a second chance.
-		const primary = this.config.model;
-		if (primary && primary.provider === target.provider && primary.id === target.id) {
-			return { ok: false, reason: `fallback model ${target.provider}/${target.id} is identical to the configured model` };
+		// Misconfiguration guard: a fallback identical to the effective primary would
+		// re-run the exact failure instead of adding a second chance. The effective
+		// primary is the configured model when it resolves, else the session model,
+		// matching `resolvePrimaryModel`.
+		const configured = this.config.model;
+		const configuredResolved = configured
+			? (ctx.modelRegistry.find(configured.provider, configured.id) as { provider?: string; id?: string } | undefined)
+			: undefined;
+		const effectivePrimary = (configuredResolved ?? (ctx.model as { provider?: string; id?: string } | undefined));
+		if (effectivePrimary && effectivePrimary.provider === target.provider && effectivePrimary.id === target.id) {
+			return { ok: false, reason: `fallback model ${target.provider}/${target.id} is identical to the effective primary model` };
 		}
 		const model = ctx.modelRegistry.find(target.provider, target.id);
 		if (!model) return { ok: false, reason: `fallback model ${target.provider}/${target.id} not found` };

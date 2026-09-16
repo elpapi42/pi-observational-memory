@@ -310,9 +310,14 @@ describe("Runtime V3 behavior", () => {
 			runtime.config = { ...runtime.config, model: { provider: "anthropic", id: "haiku" }, fallbackModel: { provider: "anthropic", id: "haiku" } };
 			await expect(runtime.resolveFallbackModel({ model: undefined, modelRegistry: registry, hasUI: false })).resolves.toEqual({
 				ok: false,
-				reason: "fallback model anthropic/haiku is identical to the configured model",
+				reason: "fallback model anthropic/haiku is identical to the effective primary model",
 			});
-			expect(registry.find).not.toHaveBeenCalled();
+
+			runtime.config = { ...runtime.config, model: undefined, fallbackModel: { provider: "anthropic", id: "haiku" } };
+			await expect(runtime.resolveFallbackModel({ model: { provider: "anthropic", id: "haiku" }, modelRegistry: registry, hasUI: false })).resolves.toEqual({
+				ok: false,
+				reason: "fallback model anthropic/haiku is identical to the effective primary model",
+			});
 
 			runtime.config = { ...runtime.config, fallbackModel: { ...FALLBACK } };
 			await expect(runtime.resolveFallbackModel({ model: undefined, modelRegistry: registry, hasUI: false })).resolves.toEqual({

@@ -144,6 +144,27 @@ function workerThinkingLevel(runtime: Runtime, resolved: ResolvedModel) {
 	return runtime.config.model?.thinking ?? "low";
 }
 
+/**
+ * Context window the observer chunk is sized against. The chunk is serialized
+ * once and reused verbatim if the run falls back mid-call, so cap it to the
+ * smaller of the primary and fallback windows: otherwise a large-context primary
+ * plus a small-context fallback would send the fallback an over-context chunk and
+ * make the retry fail for a reason the fallback cannot fix. When no fallback is
+ * configured this is exactly the primary model's window.
+ */
+function observerChunkContextWindow(runtime: Runtime, ctx: ConsolidationCtx, resolved: ResolvedModel): number | undefined {
+	const primary = (resolved.model as { contextWindow?: number } | undefined)?.contextWindow;
+	const fallback = runtime.config.fallbackModel;
+	if (!fallback) return primary;
+	const fallbackModel = ctx.modelRegistry.find?.(fallback.provider, fallback.id) as { contextWindow?: number } | undefined;
+	const usablePrimary = typeof primary === "number" && primary > 0 ? primary : undefined;
+	const fallbackWindow = fallbackModel?.contextWindow;
+	const usableFallback = typeof fallbackWindow === "number" && fallbackWindow > 0 ? fallbackWindow : undefined;
+	if (usablePrimary === undefined) return usableFallback;
+	if (usableFallback === undefined) return usablePrimary;
+	return Math.min(usablePrimary, usableFallback);
+}
+
 type ModelResolver = {
 	resolve: (stage: ConsolidationPhase) => Promise<ResolvedModel | undefined>;
 	/** Resolve the configured fallback, caching it for the rest of the pass. */
@@ -374,7 +395,7 @@ async function runObserverStage(
 	// labels and rendered message content. Complete entries are kept intact.
 	// Only a first entry that cannot fit by itself is represented by a clearly
 	// marked head/tail excerpt; the original ledger entry remains untouched.
-	const contextWindow = (resolved.model as { contextWindow?: number }).contextWindow;
+	const contextWindow = observerChunkContextWindow(runtime, ctx, resolved);
 	const maxChunkTokens = resolveObserverChunkMaxTokens(runtime.config, contextWindow);
 	const {
 		text: chunk,

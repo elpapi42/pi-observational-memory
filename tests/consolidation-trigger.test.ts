@@ -881,6 +881,51 @@ describe("V3 consolidation trigger", () => {
 			expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
 			expect(runtime.resolveFallbackModel).not.toHaveBeenCalled();
 		});
+
+		it("uses the fallback model's thinking level on retry", async () => {
+			const obs = observation("cccccccccccc", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
+			mockAgents.runObserver
+				.mockRejectedValueOnce(new ObserverStreamError("error", "primary down"))
+				.mockResolvedValueOnce([obs]);
+			const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+			const { fire, runLaunchedWork, runtime } = setup({ entries, reflectAfterTokens: 999 });
+			(runtime.config as any).fallbackModel = { provider: "opencode-go", id: "deepseek-v4.1-flash", thinking: "high" };
+			runtime.resolveFallbackModel.mockResolvedValueOnce({
+				ok: true,
+				model: { provider: "opencode-go", id: "deepseek-v4.1-flash" },
+				apiKey: "go-key",
+			});
+
+			fire();
+			await runLaunchedWork();
+
+			expect(mockAgents.runObserver).toHaveBeenNthCalledWith(1, expect.objectContaining({ thinkingLevel: "minimal" }));
+			expect(mockAgents.runObserver).toHaveBeenNthCalledWith(2, expect.objectContaining({ thinkingLevel: "high" }));
+		});
+
+		it("caps the observer chunk to a smaller-context fallback window", async () => {
+			const first = observation("111111111111", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
+			mockAgents.runObserver.mockResolvedValueOnce([first]);
+			const entries = [
+				textCustomMessage("raw-1", "a".repeat(800)),
+				textCustomMessage("raw-2", "b".repeat(800)),
+			];
+			const { fire, runLaunchedWork, runtime, ctx } = setup({ entries, reflectAfterTokens: 999 });
+			(runtime.config as any).fallbackModel = { provider: "opencode-go", id: "deepseek-v4.1-flash" };
+			runtime.resolveModel.mockResolvedValueOnce({
+				ok: true,
+				model: { provider: "anthropic", contextWindow: 200000 },
+				apiKey: "key",
+			});
+			// Only the fallback model advertises a window; its 100-token window caps the
+			// chunk at the 256-token minimum so a single source entry fits per run.
+			ctx.modelRegistry = { find: vi.fn(() => ({ contextWindow: 100 })) };
+
+			fire();
+			await runLaunchedWork();
+
+			expect(mockAgents.runObserver).toHaveBeenNthCalledWith(1, expect.objectContaining({ allowedSourceEntryIds: ["raw-1"] }));
+		});
 	});
 });
 
