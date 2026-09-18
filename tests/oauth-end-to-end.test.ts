@@ -61,6 +61,41 @@ function toolUseStream(toolInput: unknown): string {
 	]);
 }
 
+function endTurnStream(): string {
+	return sse([
+		["message_start", {
+			type: "message_start",
+			message: {
+				id: "msg_e2e_done",
+				type: "message",
+				role: "assistant",
+				model: "om-e2e",
+				content: [],
+				stop_reason: null,
+				stop_sequence: null,
+				usage: { input_tokens: 20, output_tokens: 0 },
+			},
+		}],
+		["content_block_start", {
+			type: "content_block_start",
+			index: 0,
+			content_block: { type: "text", text: "" },
+		}],
+		["content_block_delta", {
+			type: "content_block_delta",
+			index: 0,
+			delta: { type: "text_delta", text: "Observation pass complete." },
+		}],
+		["content_block_stop", { type: "content_block_stop", index: 0 }],
+		["message_delta", {
+			type: "message_delta",
+			delta: { stop_reason: "end_turn", stop_sequence: null },
+			usage: { output_tokens: 5 },
+		}],
+		["message_stop", { type: "message_stop" }],
+	]);
+}
+
 async function startMockAnthropic(requests: RecordedRequest[]): Promise<{ server: Server; baseUrl: string }> {
 	const server = createServer((req, res) => {
 		const chunks: Buffer[] = [];
@@ -69,14 +104,16 @@ async function startMockAnthropic(requests: RecordedRequest[]): Promise<{ server
 			const raw = Buffer.concat(chunks).toString("utf8");
 			requests.push({ headers: req.headers as Record<string, string | undefined>, body: raw ? JSON.parse(raw) : undefined });
 			res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
-			res.end(toolUseStream({
-				observations: [{
-					timestamp: "2026-05-02 10:30",
-					content: "User authenticated with an OAuth provider and asked for memory consolidation.",
-					relevance: "high",
-					sourceEntryIds: ["raw-1"],
-				}],
-			}));
+			res.end(requests.length === 1
+				? toolUseStream({
+					observations: [{
+						timestamp: "2026-05-02 10:30",
+						content: "User authenticated with an OAuth provider and asked for memory consolidation.",
+						relevance: "high",
+						sourceEntryIds: ["raw-1"],
+					}],
+				})
+				: endTurnStream());
 		});
 	});
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -146,7 +183,7 @@ describe("OAuth provider end-to-end consolidation", () => {
 
 		const runtime = new Runtime();
 		runtime.configLoaded = true;
-		runtime.config = { ...DEFAULTS, observeAfterTokens: 1, reflectAfterTokens: 1_000_000, agentMaxTurns: 1 };
+		runtime.config = { ...DEFAULTS, observeAfterTokens: 1, reflectAfterTokens: 1_000_000, agentMaxTurns: 2 };
 
 		registerConsolidationTrigger(pi as any, runtime);
 
@@ -160,10 +197,12 @@ describe("OAuth provider end-to-end consolidation", () => {
 		});
 		await runtime.consolidationPromise;
 
-		// The observer really called the provider, authenticating with the OAuth header.
-		expect(requests).toHaveLength(1);
-		expect(requests[0].headers.authorization).toBe(OAUTH_TOKEN);
-		expect(requests[0].headers["x-api-key"]).toBeUndefined();
+		// Both observer turns really called the provider with the same headers-only OAuth auth.
+		expect(requests).toHaveLength(2);
+		for (const request of requests) {
+			expect(request.headers.authorization).toBe(OAUTH_TOKEN);
+			expect(request.headers["x-api-key"]).toBeUndefined();
+		}
 
 		// The observation reached the session ledger; nothing was skipped.
 		const recorded = appended.filter((entry) => entry.customType === OM_OBSERVATIONS_RECORDED);
@@ -177,9 +216,9 @@ describe("OAuth provider end-to-end consolidation", () => {
 			"",
 			"── OAuth consolidation transcript ─────────────────────────────",
 			`resolved auth        : apiKey=<none> headers.Authorization=${OAUTH_TOKEN}`,
-			`provider request     : POST ${baseUrl}/v1/messages`,
-			`request authorization: ${requests[0].headers.authorization}`,
-			`request x-api-key    : ${requests[0].headers["x-api-key"] ?? "<none>"}`,
+			`provider requests    : 2 × POST ${baseUrl}/v1/messages`,
+			`request authorization: ${requests.map((request) => request.headers.authorization).join(" | ")}`,
+			`request x-api-key    : ${requests.map((request) => request.headers["x-api-key"] ?? "<none>").join(" | ")}`,
 			`ledger entry         : ${recorded[0].customType} coversUpToId=${recorded[0].data.coversUpToId}`,
 			`observation          : ${recorded[0].data.observations[0].content}`,
 			`user notices         : ${notices.join(" | ")}`,

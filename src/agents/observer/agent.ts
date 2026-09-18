@@ -295,7 +295,7 @@ export async function runObserverWithOutcome(args: RunObserverArgs): Promise<Obs
 			return {
 				content: [{
 					type: "text",
-					text: `Validated ${count} source entry ID${count === 1 ? "" : "s"} against the current chunk. Record only the validated IDs for this batch.`,
+					text: `Validated ${count} source entry ID${count === 1 ? "" : "s"} against the current chunk. The recorder independently checks the actual current-chunk IDs; they may differ from this preflight.`,
 				}],
 				details: { valid: true, submittedCount: params.sourceEntryIds.length, canonicalCount: count },
 			};

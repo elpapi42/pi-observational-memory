@@ -103,6 +103,9 @@ describe("observer source citation preflight", () => {
 			status: "complete",
 			observations: [{ sourceEntryIds: [secondSourceId] }],
 		});
+		expect(run.toolFeedback[0]?.text).toContain("recorder independently checks the actual current-chunk IDs");
+		expect(run.toolFeedback[0]?.text).toContain("may differ from this preflight");
+		expect(run.toolFeedback[0]?.text).not.toContain("Record only the validated IDs");
 	});
 
 	it("rejects an actual citation outside the current chunk after valid preflight", async () => {
