@@ -63,7 +63,7 @@ const RELEVANCE_DROP_RANK: Record<Observation["relevance"], number> = {
 };
 
 const DropObservationsSchema = Type.Object({
-	ids: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+	ids: Type.Array(Type.String({ minLength: 2 }), { minItems: 1 }),
 	reason: Type.Optional(Type.String()),
 });
 
@@ -244,6 +244,7 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 	const thinkingLevel = args.thinkingLevel ?? "low";
 	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
 	let turnCount = 0;
+	let turnLimitReached = false;
 	const config: AgentLoopConfig = {
 		model,
 		apiKey,
@@ -253,7 +254,13 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
 		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
-		...(effectiveMaxTurns !== undefined ? { shouldStopAfterTurn: () => ++turnCount >= effectiveMaxTurns } : {}),
+		...(effectiveMaxTurns !== undefined ? {
+			shouldStopAfterTurn: () => {
+				turnCount++;
+				turnLimitReached = turnCount >= effectiveMaxTurns;
+				return turnLimitReached;
+			},
+		} : {}),
 	};
 
 	const loop = args.agentLoop ?? agentLoop;
@@ -264,11 +271,38 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 		signal,
 		resolveWorkerStreamSimple(model, args.modelRegistry, args.streamSimple),
 	);
+	let firstTerminalFailure: { stopReason: string; errorMessage?: string } | undefined;
+	let toolExecutionFailure = false;
+	let latestTerminalStopReason: string | undefined;
 	for await (const event of stream) {
 		// Tool execution collects candidate ids.
 		logAgentStreamError("dropper", event);
+		const agentEvent = event as {
+			type?: string;
+			isError?: boolean;
+			message?: { role?: string; stopReason?: string; errorMessage?: string };
+		};
+		const message = agentEvent.message;
+		if (message?.role === "assistant" && typeof message.stopReason === "string") {
+			latestTerminalStopReason = message.stopReason;
+			if (
+				!firstTerminalFailure &&
+				(message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length")
+			) {
+				firstTerminalFailure = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+			}
+		}
+		if (agentEvent.type === "tool_execution_end" && agentEvent.isError) toolExecutionFailure = true;
 	}
 	await stream.result();
+	if (firstTerminalFailure) {
+		throw new Error(`dropper stream ended with stopReason "${firstTerminalFailure.stopReason}"${firstTerminalFailure.errorMessage ? `: ${firstTerminalFailure.errorMessage}` : ""}`);
+	}
+	if (signal?.aborted) throw new Error('dropper stream ended with stopReason "aborted"');
+	if (turnLimitReached && latestTerminalStopReason === "toolUse") {
+		throw new Error("dropper exhausted its turn/output allowance");
+	}
+	if (toolExecutionFailure) throw new Error("dropper tool execution failed; no candidates were published");
 	const droppedIds = selectDropCandidates(proposedDropIds, observations, maxDropsAllowed, reflections);
 	const reason = droppedIds.length > 0
 		? "selected_nonempty"

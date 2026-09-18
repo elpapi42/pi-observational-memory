@@ -20,6 +20,9 @@ import {
 	OM_OBSERVATIONS_RECORDED,
 	OM_REFLECTIONS_RECORDED,
 } from "../src/session-ledger/index.js";
+import { scriptedDropperStream } from "./fixtures/dropper-source-validation-stream.js";
+import { scriptedObserverStream } from "./fixtures/observer-source-validation-stream.js";
+import { scriptedReflectorStream } from "./fixtures/reflector-source-validation-stream.js";
 import {
 	observation,
 	observationsDroppedEntry,
@@ -507,6 +510,76 @@ describe("V3 consolidation trigger", () => {
 		expect(mockAgents.runReflector).not.toHaveBeenCalled();
 	});
 
+
+	it("does not publish an observer's accepted output after its native recorder schema failure", async () => {
+		const actual = await vi.importActual<typeof import("../src/agents/observer/agent.js")>("../src/agents/observer/agent.js");
+		const controlled = scriptedObserverStream([
+			{ toolName: "record_observations", arguments: { observations: [{ timestamp: "2026-09-18 10:00", content: "Accepted before failure.", relevance: "high", sourceEntryIds: ["raw-1"] }] } },
+			{ toolName: "record_observations", arguments: { observations: [{ timestamp: "2026-09-18 10:00", content: "", relevance: "high", sourceEntryIds: ["raw-1"] }] } },
+			{ stopReason: "stop" },
+		]);
+		mockAgents.runObserver.mockImplementationOnce((args) => actual.runObserver({ ...args, streamSimple: controlled.streamSimple as any }));
+		const { fire, runLaunchedWork, pi, runtime } = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], reflectAfterTokens: 999 });
+
+		fire();
+		await runLaunchedWork();
+
+		expect(controlled.calls()).toBe(3);
+		expect(runtime.lastObserverError).toContain("record_observations tool execution failed");
+		expect(pi.appendEntry).not.toHaveBeenCalled();
+		expect(runtime.observerEmptyBackoff).toBeUndefined();
+		expect(mockAgents.runReflector).not.toHaveBeenCalled();
+		expect(mockAgents.runDropper).not.toHaveBeenCalled();
+	});
+
+	it("does not publish reflections or run dropper after a reflector recorder schema failure", async () => {
+		const actual = await vi.importActual<typeof import("../src/agents/reflector/agent.js")>("../src/agents/reflector/agent.js");
+		const controlled = scriptedReflectorStream([
+			{ toolName: "record_reflections", arguments: { reflections: [{ content: "Accepted before failure.", supportingObservationIds: ["aaaaaaaaaaaa"] }] } },
+			{ toolName: "record_reflections", arguments: { reflections: [] } },
+			{ stopReason: "stop" },
+		]);
+		mockAgents.runReflector.mockImplementationOnce((args) => actual.runReflector({ ...args, streamSimple: controlled.streamSimple as any }));
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+		];
+		const { fire, runLaunchedWork, pi, runtime } = setup({ entries, observeAfterTokens: 999, observationsPoolMaxTokens: 10 });
+
+		fire();
+		await runLaunchedWork();
+
+		expect(controlled.calls()).toBe(3);
+		expect(runtime.lastReflectorError).toContain("record_reflections tool execution failed");
+		expect(pi.appendEntry).not.toHaveBeenCalled();
+		expect(mockAgents.runDropper).not.toHaveBeenCalled();
+	});
+
+	it("does not publish drops after a dropper native schema failure", async () => {
+		const actual = await vi.importActual<typeof import("../src/agents/dropper/agent.js")>("../src/agents/dropper/agent.js");
+		const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
+		const controlled = scriptedDropperStream([
+			{ toolName: "drop_observations", arguments: { ids: ["aaaaaaaaaaaa"] } },
+			{ toolName: "drop_observations", arguments: { ids: [7] } },
+			{ stopReason: "stop" },
+		]);
+		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
+		mockAgents.runDropper.mockImplementationOnce((args) => actual.runDropper({ ...args, streamSimple: controlled.streamSimple as any }));
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+		];
+		const { fire, runLaunchedWork, pi, runtime } = setup({ entries, observeAfterTokens: 999, observationsPoolMaxTokens: 10 });
+
+		fire();
+		await runLaunchedWork();
+
+		expect(controlled.calls()).toBe(3);
+		expect(runtime.lastDropperError).toContain("dropper tool execution failed");
+		expect(pi.appendEntry).toHaveBeenCalledTimes(1);
+		expect(pi.appendEntry).toHaveBeenCalledWith(OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" });
+		expect(pi.appendEntry).not.toHaveBeenCalledWith(OM_OBSERVATIONS_DROPPED, expect.anything());
+	});
 
 	it("model resolution failure skips appending and notifies once", async () => {
 		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];

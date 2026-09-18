@@ -1,0 +1,13 @@
+# Worker validation and publication guarantees
+
+The observer, reflector, and dropper use Pi's native agent loops. A worker can produce accepted candidates early in a pass and then encounter a terminal stream failure, a tool execution failure, or an exhausted turn allowance. Those candidates are not safe to publish: later feedback can show that the invocation did not complete coherently.
+
+Each worker therefore collects candidates, validates its worker-specific contract, records the final outcome, and only then returns publishable output. The consolidation pipeline appends a ledger entry only after the corresponding worker resolves successfully. This makes publication atomic per worker: a failed observer appends neither observations nor observation coverage; a failed reflector leaves already-recorded observations intact but appends no reflections and does not run the dropper; a failed dropper leaves successful reflections intact but appends no drop entry.
+
+Observer and reflector validation checks membership, not semantic truth. A valid source-entry or supporting-observation ID shows that the cited item is in the current input. It does not establish that the source supports the observation or that an observation supports the reflection. The recorder still validates the submitted record, and a worker may directly record valid output when no preflight is needed. A successful preflight may also precede a different valid citation because membership is not semantic fidelity.
+
+Worker outcomes distinguish deliberate empty work from failure. Terminal errors, aborts, cancellation signals, output-length termination, a capped final tool-use turn, recorder failures, and unfinished observer or reflector validation reject that worker's output. A successful final plain-text stop at the cap remains valid. The turn allowance must leave room for any preflight, recording, and that final stop. If it does not, the pass now fails rather than publishing partial results.
+
+The dropper intentionally has the narrower policy. It retains its existing ID filtering, critical-observation eligibility, ordering, coverage ranking, and drop cap. It refuses all candidates after its first terminal failure or any native tool-execution error, but it has no dropper preflight and does not alter the production scheduler or drop policy.
+
+These guarantees are verified against the locked Pi 0.81.0 development worker behavior with controlled native streams. They do not establish installed-runtime compatibility or a minimum supported host version.
