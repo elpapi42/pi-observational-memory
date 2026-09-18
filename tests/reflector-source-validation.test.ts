@@ -1,3 +1,4 @@
+import { agentLoop } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -211,6 +212,94 @@ describe("reflector supporting-observation citation preflight", () => {
 		const empty = runSteps([{ stopReason: "stop" }]);
 		await expect(direct.result).resolves.toHaveLength(1);
 		await expect(empty.result).resolves.toBeUndefined();
+	});
+
+	it.each(["error", "aborted"] as const)("refuses accepted partial output after terminal %s", async (stopReason) => {
+		const run = runSteps([
+			{ toolName: "record_reflections", arguments: recordArguments([actualObservationId]) },
+			{ stopReason, errorMessage: `synthetic ${stopReason}` },
+		]);
+
+		await expect(run.result).rejects.toMatchObject({
+			name: "ReflectorStreamError",
+			stopReason,
+		});
+		expect(run.toolFeedback).toContainEqual(expect.objectContaining({
+			toolName: "record_reflections",
+			isError: false,
+			details: expect.objectContaining({ added: 1, total: 1 }),
+		}));
+	});
+
+	it("accepts a final stop at the configured turn cap", async () => {
+		const run = runSteps([
+			{ toolName: "record_reflections", arguments: recordArguments([actualObservationId]) },
+			{ stopReason: "stop" },
+		], { maxTurns: 2 });
+
+		await expect(run.result).resolves.toHaveLength(1);
+		expect(run.calls()).toBe(2);
+	});
+
+	it("refuses accepted partial output when the supplied signal aborts", async () => {
+		const controller = new AbortController();
+		const controlled = scriptedReflectorStream([
+			{ toolName: "record_reflections", arguments: recordArguments([actualObservationId]) },
+			{ stopReason: "stop" },
+		]);
+		const abortAfterRecord: typeof agentLoop = (prompts, context, config, signal, streamSimple) => agentLoop(
+			prompts,
+			context,
+			{
+				...config,
+				afterToolCall: async (event) => {
+					const feedback = await config.afterToolCall?.(event);
+					if (event.toolCall.name === "record_reflections" && !event.isError) controller.abort();
+					return feedback;
+				},
+			},
+			signal,
+			streamSimple,
+		);
+		const result = runReflector({
+			model: { api: "controlled-test", provider: "controlled", id: "reflector" } as any,
+			apiKey: "test",
+			reflections: [],
+			observations: [observation(actualObservationId)],
+			signal: controller.signal,
+			agentLoop: abortAfterRecord,
+			streamSimple: controlled.streamSimple as any,
+		});
+
+		await expect(result).rejects.toMatchObject({ name: "ReflectorStreamError", stopReason: "aborted" });
+		expect(controlled.toolFeedback).toContainEqual(expect.objectContaining({
+			toolName: "record_reflections",
+			isError: false,
+			details: expect.objectContaining({ added: 1, total: 1 }),
+		}));
+	});
+
+	it.each([
+		["construction", (error: Error) => () => { throw error; }],
+		["iteration", (error: Error) => () => ({
+			async *[Symbol.asyncIterator]() { throw error; },
+			result: async () => ({}),
+		})],
+		["result", (error: Error) => () => ({
+			async *[Symbol.asyncIterator]() {},
+			result: async () => { throw error; },
+		})],
+	] as const)("preserves %s loop exception identity", async (_phase, createLoop) => {
+		const expected = new Error("unchanged loop exception");
+		const result = runReflector({
+			model: {} as any,
+			apiKey: "test",
+			reflections: [],
+			observations: [observation(actualObservationId)],
+			agentLoop: createLoop(expected) as any,
+		});
+
+		await expect(result).rejects.toBe(expected);
 	});
 
 	it.each([
