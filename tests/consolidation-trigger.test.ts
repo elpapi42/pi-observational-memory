@@ -560,7 +560,7 @@ describe("V3 consolidation trigger", () => {
 		const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
 		const controlled = scriptedDropperStream([
 			{ toolName: "drop_observations", arguments: { ids: ["aaaaaaaaaaaa"] } },
-			{ toolName: "drop_observations", arguments: { ids: [7] } },
+			{ toolName: "drop_observations", arguments: { ids: [] } },
 			{ stopReason: "stop" },
 		]);
 		mockAgents.runReflector.mockResolvedValueOnce([newRef]);

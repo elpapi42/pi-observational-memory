@@ -41,7 +41,7 @@ function terminal(stopReason: "stop" | "toolUse" | "error" | "aborted" | "length
 it("rejects an invocation after a later native drop-tool schema failure", async () => {
 	const controlled = scriptedDropperStream([
 		{ toolName: "drop_observations", arguments: { ids: ["aaaaaaaaaaaa"] } },
-		{ toolName: "drop_observations", arguments: { ids: [7] } },
+		{ toolName: "drop_observations", arguments: { ids: [] } },
 		{ stopReason: "stop" },
 	]);
 	await expect(runDropper({
@@ -348,6 +348,23 @@ describe("V3 dropper agent", () => {
 		});
 
 		await expect(runDropper({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
+	});
+
+	it("keeps a one-character unknown id filterable beside an eligible id in the native loop", async () => {
+		const controlled = scriptedDropperStream([
+			{ toolName: "drop_observations", arguments: { ids: ["aaaaaaaaaaaa", "x"] } },
+			{ stopReason: "stop" },
+		]);
+
+		await expect(runDropper({
+			model: { api: "controlled-test", provider: "controlled", id: "dropper" } as any,
+			apiKey: "test",
+			targetTokens: 1,
+			observations: [observation("aaaaaaaaaaaa", { content: "Old supported note. ".repeat(40) })],
+			reflections: [reflection("bbbbbbbbbbbb", ["aaaaaaaaaaaa"])],
+			streamSimple: controlled.streamSimple as any,
+		})).resolves.toEqual(["aaaaaaaaaaaa"]);
+		expect(controlled.calls()).toBe(2);
 	});
 
 	it("dedupes repeated tool calls and enforces one run-level cap", async () => {

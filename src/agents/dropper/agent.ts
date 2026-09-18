@@ -63,7 +63,7 @@ const RELEVANCE_DROP_RANK: Record<Observation["relevance"], number> = {
 };
 
 const DropObservationsSchema = Type.Object({
-	ids: Type.Array(Type.String({ minLength: 2 }), { minItems: 1 }),
+	ids: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
 	reason: Type.Optional(Type.String()),
 });
 
