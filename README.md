@@ -448,7 +448,7 @@ V3 equivalent:
 * [`docs/concepts.md`](docs/concepts.md) — vocabulary and V3 mental model.
 * [`docs/how-it-works.md`](docs/how-it-works.md) — lifecycle, memory shapes, projections, and recall flow.
 * [`docs/configuration.md`](docs/configuration.md) — all V3 settings and migration notes.
-* [`docs/worker-validation.md`](docs/worker-validation.md) — worker validation and publication guarantees.
+* [`docs/worker-validation.md`](docs/worker-validation.md): worker validation and publication guarantees.
 
 ---
 

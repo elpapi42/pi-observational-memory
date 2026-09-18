@@ -343,6 +343,16 @@ describe("observer source citation preflight", () => {
 		});
 	});
 
+	it.each([
+		["aborted", "aborted"],
+		["length", "turn-exhausted"],
+	] as const)("preserves %s terminal diagnostics from the controlled stream", async (stopReason, status) => {
+		const diagnostic = `observer ${stopReason} diagnostic`;
+		const run = runSteps([{ stopReason, errorMessage: diagnostic }]);
+
+		await expect(run.outcome).resolves.toMatchObject({ status, stopReason, error: diagnostic });
+	});
+
 	it("does not let a valid recording cure a failed preflight without revalidation", async () => {
 		const run = runSteps([
 			{ toolName: "validate_source_entry_ids", arguments: { sourceEntryIds: [typoSourceId] } },

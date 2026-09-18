@@ -170,6 +170,24 @@ describe("reflector supporting-observation citation preflight", () => {
 		await expect(run.result).rejects.toBeInstanceOf(ReflectorRecordingContractError);
 	});
 
+	it("keeps failed preflight unresolved after a valid recording without revalidation", async () => {
+		const run = runSteps([
+			{ toolName: "validate_supporting_observation_ids", arguments: { supportingObservationIds: [typoObservationId] } },
+			{ toolName: "record_reflections", arguments: recordArguments([actualObservationId]) },
+			{ stopReason: "stop" },
+		]);
+
+		await expect(run.result).rejects.toMatchObject({
+			name: "ReflectorRecordingContractError",
+			reason: "validation-unfinished",
+		});
+		expect(run.toolFeedback).toContainEqual(expect.objectContaining({
+			toolName: "record_reflections",
+			isError: false,
+			details: expect.objectContaining({ added: 1 }),
+		}));
+	});
+
 	it("fails when an invalid validation is corrected but not consumed", async () => {
 		const run = runSteps([
 			{ toolName: "validate_supporting_observation_ids", arguments: { supportingObservationIds: [typoObservationId] } },
@@ -312,6 +330,17 @@ describe("reflector supporting-observation citation preflight", () => {
 			{ stopReason, errorMessage },
 		]);
 		await expect(run.result).rejects.toBeInstanceOf(ReflectorStreamError);
+	});
+
+	it.each(["aborted", "length"] as const)("preserves %s terminal diagnostics from the controlled stream", async (stopReason) => {
+		const diagnostic = `reflector ${stopReason} diagnostic`;
+		const run = runSteps([{ stopReason, errorMessage: diagnostic }]);
+
+		await expect(run.result).rejects.toMatchObject({
+			name: "ReflectorStreamError",
+			stopReason,
+			message: expect.stringContaining(diagnostic),
+		});
 	});
 
 	it("bounds and sanitizes retained provider error text", async () => {

@@ -61,6 +61,7 @@ export function scriptedObserverStream(steps: ObserverStreamStep[]) {
 		const stream = createAssistantMessageEventStream();
 		queueMicrotask(() => {
 			const output = assistant(model);
+			output.errorMessage = step.errorMessage;
 			stream.push({ type: "start", partial: output } as any);
 			if ("toolName" in step) {
 				const toolCall = {
@@ -74,11 +75,9 @@ export function scriptedObserverStream(steps: ObserverStreamStep[]) {
 				stream.push({ type: "toolcall_delta", contentIndex: 0, delta: JSON.stringify(step.arguments), partial: output } as any);
 				stream.push({ type: "toolcall_end", contentIndex: 0, toolCall, partial: output } as any);
 				output.stopReason = step.stopReason ?? "toolUse";
-				output.errorMessage = step.errorMessage;
 				stream.push({ type: "done", reason: output.stopReason, message: output } as any);
 			} else if (step.stopReason === "error") {
 				output.stopReason = "error";
-				output.errorMessage = step.errorMessage;
 				stream.push({ type: "done", reason: "error", message: output } as any);
 			} else {
 				const text = { type: "text", text: "Observation pass complete." };
