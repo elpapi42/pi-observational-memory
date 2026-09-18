@@ -73,6 +73,11 @@ function joinOrEmpty(items: string[]): string {
 	return items.length ? items.join("\n") : "(none yet)";
 }
 
+function boundedTerminalErrorMessage(errorMessage: string | undefined): string | undefined {
+	if (!errorMessage) return undefined;
+	return errorMessage.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 512);
+}
+
 function relevanceCounts(observations: readonly Observation[]): Record<Observation["relevance"], number> {
 	return observations.reduce<Record<Observation["relevance"], number>>((counts, observation) => {
 		counts[observation.relevance]++;
@@ -289,7 +294,7 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 				!firstTerminalFailure &&
 				(message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length")
 			) {
-				firstTerminalFailure = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+				firstTerminalFailure = { stopReason: message.stopReason, errorMessage: boundedTerminalErrorMessage(message.errorMessage) };
 			}
 		}
 		if (agentEvent.type === "tool_execution_end" && agentEvent.isError) toolExecutionFailure = true;

@@ -73,6 +73,21 @@ describe("runDropper failed-pass safeguards", () => {
 		})).rejects.toThrow(`stopReason "${stopReason}"`);
 	});
 
+	it("bounds and sanitizes a retained provider terminal diagnostic", async () => {
+		const diagnostic = `useful\nprovider\tmessage\u0000${"x".repeat(600)}`;
+		const error = await runDropper({
+			...args,
+			agentLoop: injectedAgentLoop([terminal("error", diagnostic)], acceptCandidate),
+		}).catch((error: unknown) => error);
+
+		expect(error).toBeInstanceOf(Error);
+		expect(error.message).toContain('stopReason "error"');
+		const retainedDiagnostic = error.message.split(': ').at(-1)!;
+		expect(retainedDiagnostic).toContain("useful provider message ");
+		expect(retainedDiagnostic).not.toMatch(/[\u0000-\u001f\u007f]/);
+		expect(retainedDiagnostic).toHaveLength(512);
+	});
+
 	it("rejects accepted candidates when the signal is aborted", async () => {
 		const controller = new AbortController();
 		controller.abort();
