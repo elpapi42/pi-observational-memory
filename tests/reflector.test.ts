@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	normalizeSupportingObservationIds,
 	observationToReflectorLine,
+	ReflectorRecordingContractError,
 	runReflector,
 	summarizeSupportIdCounts,
 } from "../src/agents/reflector/agent.js";
@@ -234,7 +235,7 @@ describe("V3 reflector agent", () => {
 			});
 		});
 
-		await expect(runReflector({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
+		await expect(runReflector({ ...baseArgs, agentLoop: loop })).rejects.toBeInstanceOf(ReflectorRecordingContractError);
 	});
 
 	it("dedupes proposals and skips existing reflection ids", async () => {
