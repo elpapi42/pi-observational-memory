@@ -133,14 +133,17 @@ describe("runObserver", () => {
 		expect(observations?.[0].id).toMatch(/^[a-f0-9]{12}$/);
 	});
 
-	it("rejects invented source ids and returns no observations", async () => {
+	it("rejects invented source ids as a recording-contract failure", async () => {
 		const loop = fakeAgentLoop(async (_prompts, context) => {
 			await context.tools[0].execute("tool-1", {
 				observations: [{ timestamp: "2026-05-02 10:30", content: "Bad source", relevance: "medium", sourceEntryIds: ["missing"] }],
 			});
 		});
 
-		await expect(runObserver({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
+		await expect(runObserver({ ...baseArgs, agentLoop: loop })).rejects.toMatchObject({
+			name: "ObserverStreamError",
+			stopReason: "recording_failed",
+		});
 	});
 
 	it("dedupes deterministic ids", async () => {
@@ -174,17 +177,17 @@ describe("runObserver", () => {
 		}
 	});
 
-	it("keeps partial observations when the stream errors after recording", async () => {
+	it("refuses partial observations when the stream errors after recording", async () => {
 		const loop = fakeAgentLoop(async (_prompts, context) => {
 			await context.tools[0].execute("tool-1", {
-				observations: [{ timestamp: "2026-05-02 10:30", content: "Kept despite later error", relevance: "high", sourceEntryIds: ["entry-a"] }],
+				observations: [{ timestamp: "2026-05-02 10:30", content: "Incomplete after later error", relevance: "high", sourceEntryIds: ["entry-a"] }],
 			});
 		}, [assistantEndEvent("error", "gateway timeout")]);
 
-		const observations = await runObserver({ ...baseArgs, agentLoop: loop });
-
-		expect(observations).toHaveLength(1);
-		expect(observations?.[0].content).toBe("Kept despite later error");
+		await expect(runObserver({ ...baseArgs, agentLoop: loop })).rejects.toMatchObject({
+			name: "ObserverStreamError",
+			stopReason: "error",
+		});
 	});
 
 	it("uses maxTurns as an observer turn cap", async () => {

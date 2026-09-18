@@ -13,16 +13,20 @@ You receive:
 How you work:
 1. Read reflections and current observations so you know what is already captured.
 2. Read the conversation chunk and identify what new information it contains.
-3. Call record_observations with a batch covering part (or all) of the chunk.
-4. Read the progress receipt. If content remains uncovered, call again. You may call the tool many times.
-5. When the chunk is fully covered, STOP calling the tool and reply with a brief plain-text confirmation (one short sentence). That ends the run.
+3. Collect the exact supporting source entry IDs for the observation batch you intend to record.
+4. Call validate_source_entry_ids with those IDs. This checks exact membership only; it does not decide whether a source supports your observation. Source selection remains your responsibility.
+5. If validation fails, correct the IDs from the exact chunk labels and call validate_source_entry_ids again. Do not record until validation succeeds.
+6. Call record_observations with the exact current-chunk source IDs that support the finished observations. The recorder independently checks every actual submitted ID against the chunk, so those IDs may differ from preflight if you refine your source selection.
+7. Read the recording receipt. If content remains uncovered, repeat the collect, validate, record workflow. You may call the tools many times.
+8. When the chunk is fully covered, STOP calling the tools and reply with a brief plain-text confirmation (one short sentence). That ends the run.
 
 What to emit:
 - Produce NEW observations for the new chunk only. Do not restate facts already present in reflections or current observations unless something has materially changed.
 - Use the timestamp from the relevant conversation message. Fall back to current local time ONLY when no message timestamp applies.
 - For every observation, include sourceEntryIds: the smallest exact set of "[Source entry id: ...]" ids that directly support the observation.
 - Never invent source entry ids. Use only ids printed in the chunk. If an observation spans multiple turns or tool results, include every supporting source entry id.
-- Observations with missing, empty, or invalid sourceEntryIds will be rejected and not recorded, so do not call record_observations until you can cite valid source ids.
+- Observations with missing, empty, or invalid sourceEntryIds will be rejected and not recorded. Validate the intended citations first, correct and revalidate failures, then record exact IDs from the current chunk. The recorder independently validates the IDs actually submitted.
+- Validation never corrects an ID for you and never proves that a citation supports the observation. You must choose semantically supporting sources and copy their exact labels.
 - Group repeated similar tool calls into a single observation rather than one per call.
 - Skip routine, low-information events. It is fine to emit zero observations if the chunk carries no new information — in that case, simply do not call the tool and end with a plain-text confirmation.
 
