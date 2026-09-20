@@ -9,6 +9,7 @@ import {
 } from "../src/agents/dropper/agent.js";
 import { AGENT_LOOP_MAX_TOKENS } from "../src/model-budget.js";
 import { observation, reflection } from "./fixtures/session.js";
+import { scriptedDropperStream } from "./fixtures/dropper-source-validation-stream.js";
 
 function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void): any {
 	return ((prompts: any[], context: any, config: any) => ({
@@ -19,6 +20,123 @@ function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => P
 		},
 	})) as any;
 }
+
+function injectedAgentLoop(
+	events: any[],
+	handler: (context: any, config: any) => Promise<void> | void = () => {},
+): any {
+	return ((_prompts: any[], context: any, config: any) => ({
+		async *[Symbol.asyncIterator]() {
+			await handler(context, config);
+			for (const event of events) yield event;
+		},
+		result: async () => ({}),
+	})) as any;
+}
+
+function terminal(stopReason: "stop" | "toolUse" | "error" | "aborted" | "length", errorMessage?: string) {
+	return { type: "message_end", message: { role: "assistant", content: [], stopReason, errorMessage } };
+}
+
+it("rejects an invocation after a later native drop-tool schema failure", async () => {
+	const controlled = scriptedDropperStream([
+		{ toolName: "drop_observations", arguments: { ids: ["aaaaaaaaaaaa"] } },
+		{ toolName: "drop_observations", arguments: { ids: [] } },
+		{ stopReason: "stop" },
+	]);
+	await expect(runDropper({
+		model: { api: "controlled-test", provider: "controlled", id: "dropper" } as any,
+		apiKey: "test", targetTokens: 1,
+		observations: [observation("aaaaaaaaaaaa", { content: "Old supported note. ".repeat(40) })],
+		reflections: [reflection("bbbbbbbbbbbb", ["aaaaaaaaaaaa"])],
+		streamSimple: controlled.streamSimple as any,
+	})).rejects.toThrow("dropper tool execution failed");
+	expect(controlled.calls()).toBe(3);
+});
+
+describe("runDropper failed-pass safeguards", () => {
+	const args = {
+		model: {} as any,
+		apiKey: "test",
+		targetTokens: 1,
+		observations: [observation("aaaaaaaaaaaa", { content: "Old supported note. ".repeat(40) })],
+		reflections: [reflection("bbbbbbbbbbbb", ["aaaaaaaaaaaa"])],
+	};
+	const acceptCandidate = async (context: any) => {
+		await context.tools[0].execute("tool-1", { ids: ["aaaaaaaaaaaa"] });
+	};
+
+	it.each(["error", "aborted", "length"] as const)("rejects accepted candidates after terminal %s", async (stopReason) => {
+		await expect(runDropper({
+			...args,
+			agentLoop: injectedAgentLoop([terminal(stopReason, "upstream failure")], acceptCandidate),
+		})).rejects.toThrow(`stopReason "${stopReason}"`);
+	});
+
+	it("bounds and sanitizes a retained provider terminal diagnostic", async () => {
+		const diagnostic = `useful\nprovider\tmessage\u0000${"x".repeat(600)}`;
+		const error = await runDropper({
+			...args,
+			agentLoop: injectedAgentLoop([terminal("error", diagnostic)], acceptCandidate),
+		}).catch((error: unknown) => error);
+
+		expect(error).toBeInstanceOf(Error);
+		expect(error.message).toContain('stopReason "error"');
+		const retainedDiagnostic = error.message.split(': ').at(-1)!;
+		expect(retainedDiagnostic).toContain("useful provider message ");
+		expect(retainedDiagnostic).not.toMatch(/[\u0000-\u001f\u007f]/);
+		expect(retainedDiagnostic).toHaveLength(512);
+	});
+
+	it("rejects accepted candidates when the signal is aborted", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		await expect(runDropper({
+			...args,
+			signal: controller.signal,
+			agentLoop: injectedAgentLoop([terminal("stop")], acceptCandidate),
+		})).rejects.toThrow('stopReason "aborted"');
+	});
+
+	it("rejects accepted candidates when the final capped turn is a tool use", async () => {
+		await expect(runDropper({
+			...args,
+			maxTurns: 1,
+			agentLoop: injectedAgentLoop([terminal("toolUse")], async (context, config) => {
+				await acceptCandidate(context);
+				config.shouldStopAfterTurn();
+			}),
+		})).rejects.toThrow("dropper exhausted its turn/output allowance");
+	});
+
+	it("accepts candidates when the final capped turn stops successfully", async () => {
+		await expect(runDropper({
+			...args,
+			maxTurns: 1,
+			agentLoop: injectedAgentLoop([terminal("stop")], async (context, config) => {
+				await acceptCandidate(context);
+				config.shouldStopAfterTurn();
+			}),
+		})).resolves.toEqual(["aaaaaaaaaaaa"]);
+	});
+
+	it("keeps the first terminal failure when a later terminal message succeeds", async () => {
+		await expect(runDropper({
+			...args,
+			agentLoop: injectedAgentLoop([terminal("error", "first failure"), terminal("stop")], acceptCandidate),
+		})).rejects.toThrow('stopReason "error": first failure');
+	});
+
+	it("rejects accepted candidates after a drop-tool execution error", async () => {
+		await expect(runDropper({
+			...args,
+			agentLoop: injectedAgentLoop([
+				{ type: "tool_execution_end", isError: true },
+				terminal("stop"),
+			], acceptCandidate),
+		})).rejects.toThrow("dropper tool execution failed");
+	});
+});
 
 describe("runDropper maxTokens clamping", () => {
 	const args = {
@@ -245,6 +363,23 @@ describe("V3 dropper agent", () => {
 		});
 
 		await expect(runDropper({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
+	});
+
+	it("keeps a one-character unknown id filterable beside an eligible id in the native loop", async () => {
+		const controlled = scriptedDropperStream([
+			{ toolName: "drop_observations", arguments: { ids: ["aaaaaaaaaaaa", "x"] } },
+			{ stopReason: "stop" },
+		]);
+
+		await expect(runDropper({
+			model: { api: "controlled-test", provider: "controlled", id: "dropper" } as any,
+			apiKey: "test",
+			targetTokens: 1,
+			observations: [observation("aaaaaaaaaaaa", { content: "Old supported note. ".repeat(40) })],
+			reflections: [reflection("bbbbbbbbbbbb", ["aaaaaaaaaaaa"])],
+			streamSimple: controlled.streamSimple as any,
+		})).resolves.toEqual(["aaaaaaaaaaaa"]);
+		expect(controlled.calls()).toBe(2);
 	});
 
 	it("dedupes repeated tool calls and enforces one run-level cap", async () => {

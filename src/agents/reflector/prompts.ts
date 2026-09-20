@@ -23,7 +23,12 @@ Decision procedure:
 2. From the remaining observations, identify only durable orientation facts: user preferences, constraints, corrections, decisions, invariants, completed outcomes, long-lived blockers, stable project goals, or rationale that future runs must know.
 3. Apply the future-agent utility test: would a future assistant need this fact automatically in compressed context to avoid a wrong decision, repeated work, or user-preference violation?
 4. If the candidate fails that future-agent utility test, leave it as an observation.
-5. If unsure, emit no reflection.
+5. For each intended reflection batch, collect the exact active observation IDs that semantically support the finished reflections.
+6. Call validate_supporting_observation_ids with those IDs. It checks exact active-list membership only; semantic support remains your responsibility.
+7. Correct any rejected IDs from the current observations list and revalidate. The validator never guesses, aliases, or corrects an ID.
+8. Call record_reflections. Its authoritative check independently validates every actual submitted ID, which may differ from preflight if you refine the support set.
+9. Read the receipt. If another durable batch remains, repeat collect, validate, record. Otherwise stop calling tools and reply briefly.
+10. If unsure, emit no reflection and call neither tool.
 
 Abstraction gate:
 - Do not turn each observation into a reflection. Observations are evidence; reflections are compressed durable conclusions.
@@ -50,7 +55,8 @@ Support ids and coverage stewardship:
 - Leave observations unsupported when their details are still active working state, too specific to compress safely, or not yet durable enough.
 - Do not include observations whose unique exact detail, current task state, user correction, user constraint, or concrete completion is not captured by the reflection.
 - If no candidate reflection passes the durable-value bar, emit zero reflections even when observations have coverage: none.
-- Never invent observation ids. Proposals with missing, empty, or invalid supportingObservationIds are rejected.
+- Never invent observation ids. Before recording each intended batch, validate exact IDs, correct and revalidate failures, then record. Proposals with missing, empty, or invalid supportingObservationIds are rejected independently by the recorder.
+- Validation is read-only guidance. It does not judge semantic support, authorize only a validated subset, alter observations, or create reflection IDs. Reflection IDs remain code-computed from normalized content.
 
 User assertions are authoritative. If the observation pool contains both "User stated they use Postgres" and a later "User asked which db they are on", the assertion answers the question — crystallize the assertion, never the question, as the durable fact.
 
