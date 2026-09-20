@@ -28,7 +28,7 @@ describe("resolveWorkerStreamSimple", () => {
 		const model = {} as any;
 		const context = {} as any;
 		resolved(model, context);
-		expect(customStream).toHaveBeenCalledWith(model, context, undefined);
+		expect(customStream).toHaveBeenCalledWith(model, context);
 	});
 
 	it("calls a class-based registry streamSimple with its receiver", () => {
@@ -58,12 +58,40 @@ describe("resolveWorkerStreamSimple", () => {
 			if (id === "other") return { api: "cursor-sdk", streamSimple: foreignStream };
 			return undefined;
 		});
+		const model = {} as any;
+		const context = {} as any;
 
-		expect(resolveWorkerStreamSimple(customApiModel, {
+		const resolved = resolveWorkerStreamSimple(customApiModel, {
 			getRegisteredProviderIds: () => ["other", "cursor"],
 			getRegisteredProviderConfig,
-		})).toBe(cursorStream);
+		});
+		resolved(model, context);
+
 		expect(getRegisteredProviderConfig).toHaveBeenCalledWith("cursor");
+		expect(cursorStream).toHaveBeenCalledWith(model, context);
+		expect(foreignStream).not.toHaveBeenCalled();
+	});
+
+	it("calls a class-based provider streamSimple with its receiver", () => {
+		const runtimeStream = vi.fn() as unknown as WorkerStreamSimple;
+		class ProviderConfigDouble {
+			api = "cursor-sdk";
+			runtime = { streamSimple: runtimeStream };
+
+			streamSimple(model: any, context: any, options?: any) {
+				return this.runtime.streamSimple(model, context, options);
+			}
+		}
+
+		const config = new ProviderConfigDouble();
+		const model = {} as any;
+		const context = {} as any;
+		const resolved = resolveWorkerStreamSimple(customApiModel, {
+			getRegisteredProviderConfig: () => config,
+		});
+
+		resolved(model, context);
+		expect(runtimeStream).toHaveBeenCalledWith(model, context, undefined);
 	});
 
 	it("falls back to compat when only a foreign provider has the same API", () => {
@@ -108,7 +136,7 @@ describe("resolveWorkerStreamSimple", () => {
 });
 
 describe("runObserver composed stream dispatch", () => {
-	it("passes the composed handler into agentLoop instead of compat streamSimple", async () => {
+	it("passes a bound composed handler into agentLoop instead of compat streamSimple", async () => {
 		const composed = vi.fn() as unknown as WorkerStreamSimple;
 		let received: unknown;
 		const loop = ((prompts: any[], context: any, config: any, _signal: unknown, streamFn: unknown) => {
@@ -135,6 +163,10 @@ describe("runObserver composed stream dispatch", () => {
 			},
 		});
 
-		expect(received).toBe(composed);
+		const model = {} as any;
+		const context = {} as any;
+		expect(received).toBeTypeOf("function");
+		(received as WorkerStreamSimple)(model, context);
+		expect(composed).toHaveBeenCalledWith(model, context);
 	});
 });

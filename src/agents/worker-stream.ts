@@ -40,14 +40,14 @@ export function resolveWorkerStreamSimple(
 
 	const registryStream = modelRegistry?.streamSimple;
 	if (typeof registryStream === "function") {
-		return (nextModel, context, options) => registryStream.call(modelRegistry, nextModel, context, options);
+		return registryStream.bind(modelRegistry);
 	}
 
 	try {
 		const config = modelRegistry?.getRegisteredProviderConfig?.(model.provider);
 		const composed = config?.streamSimple;
 		if (config?.api === model.api && typeof composed === "function") {
-			return composed;
+			return composed.bind(config);
 		}
 	} catch {
 		// Incomplete host/test doubles still use the built-in compat dispatcher.
