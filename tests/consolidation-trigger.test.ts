@@ -21,9 +21,11 @@ import {
 	OM_REFLECTIONS_RECORDED,
 } from "../src/session-ledger/index.js";
 import {
+	compactionEntry,
 	observation,
 	observationsDroppedEntry,
 	observationsRecordedEntry,
+	rawMessage,
 	reflection,
 	reflectionsRecordedEntry,
 	textCustomMessage,
@@ -180,6 +182,46 @@ describe("V3 consolidation trigger", () => {
 		locked.fireTurnEnd();
 
 		expect(locked.runtime.launchConsolidationTask).not.toHaveBeenCalled();
+	});
+
+	it("launches on a due raw backlog even when provider growth since the last compaction is below the threshold", () => {
+		// Coverage stops before the latest compaction, so the provider delta is
+		// measured from the post-compaction baseline (1000 -> 1000 = 0 growth)
+		// while the uncovered raw backlog is far above observeAfterTokens.
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaaaaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+			textCustomMessage("raw-2", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+			compactionEntry("cmp-1", { firstKeptEntryId: "assistant-1" }),
+			rawMessage("assistant-1", "done", {
+				message: { role: "assistant", content: "done", stopReason: "end_turn", usage: { totalTokens: 1000 } },
+			}),
+			textCustomMessage("raw-3", "cccc"),
+		];
+		const { fireTurnEnd, runtime, ctx } = setup({ entries, observeAfterTokens: 5, reflectAfterTokens: 1000 });
+		(ctx as any).getContextUsage = () => ({ tokens: 1000, contextWindow: 65536 });
+
+		fireTurnEnd();
+
+		expect(runtime.launchConsolidationTask).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not launch when both the raw backlog and provider growth are below the threshold", () => {
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+			compactionEntry("cmp-1", { firstKeptEntryId: "assistant-1" }),
+			rawMessage("assistant-1", "done", {
+				message: { role: "assistant", content: "done", stopReason: "end_turn", usage: { totalTokens: 1000 } },
+			}),
+			textCustomMessage("raw-2", "bbbb"),
+		];
+		const { fireTurnEnd, runtime, ctx } = setup({ entries, observeAfterTokens: 5, reflectAfterTokens: 1000 });
+		(ctx as any).getContextUsage = () => ({ tokens: 1002, contextWindow: 65536 });
+
+		fireTurnEnd();
+
+		expect(runtime.launchConsolidationTask).not.toHaveBeenCalled();
 	});
 
 	it("launches from agent_start when work is due", () => {

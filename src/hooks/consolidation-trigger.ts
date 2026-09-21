@@ -94,14 +94,28 @@ function stageDue(
 	rawEstimateFn: (entries: Entry[]) => number,
 	threshold: number,
 ): boolean {
+	// The raw estimate counts every uncovered source entry, including entries a
+	// compaction has already removed from context. When coverage lags behind
+	// the latest compaction, the provider delta only measures growth since that
+	// compaction and would starve the stage forever (a small window that Pi
+	// compacts every few thousand tokens never accumulates a threshold's worth
+	// of growth), so a due raw backlog always counts.
+	if (rawEstimateFn(entries) >= threshold) return true;
 	if (currentTokens !== undefined) {
 		const real = realTokensSinceAnchor(entries, customType, currentTokens);
 		if (real !== undefined) return real >= threshold;
 	}
 	// Real delta unmeasurable (no usage baseline, or accounting basis changed) or
-	// old pi host without getContextUsage — fall back to the raw estimate, which
-	// self-limits after coverage and cannot over-fire or starve.
-	return rawEstimateFn(entries) >= threshold;
+	// old pi host without getContextUsage — the raw estimate above already
+	// decided, and it cannot over-fire or starve.
+	return false;
+}
+
+/** Stage progress: the larger of the raw uncovered backlog and the provider-reported growth. */
+function stageTokens(entries: Entry[], customType: V3MemoryCustomType, currentTokens: number | undefined, rawEstimateFn: (entries: Entry[]) => number): number {
+	const raw = rawEstimateFn(entries);
+	const real = currentTokens !== undefined ? realTokensSinceAnchor(entries, customType, currentTokens) : undefined;
+	return real !== undefined ? Math.max(raw, real) : raw;
 }
 
 function anyStageDue(entries: Entry[], runtime: Runtime, currentTokens: number | undefined): boolean {
@@ -241,9 +255,7 @@ async function runObserverStage(
 	resolveModel: (stage: "observer") => Promise<ResolvedModel | undefined>,
 ): Promise<StageOutcome> {
 	const entries = ctx.sessionManager.getBranch() as Entry[];
-	const currentTokens = realContextTokens(ctx);
-	const real = currentTokens !== undefined ? realTokensSinceAnchor(entries, OM_OBSERVATIONS_RECORDED, currentTokens) : undefined;
-	const tokens = real !== undefined ? real : rawTokensSinceObservationCoverage(entries); // fallback: no usage baseline / basis change
+	const tokens = stageTokens(entries, OM_OBSERVATIONS_RECORDED, realContextTokens(ctx), rawTokensSinceObservationCoverage);
 	if (tokens < runtime.config.observeAfterTokens) return "continue";
 
 	const sessionMetadata = debugSessionMetadata(ctx);
@@ -382,9 +394,7 @@ async function runReflectorStage(
 	resolveModel: (stage: "reflector") => Promise<ResolvedModel | undefined>,
 ): Promise<ReflectorStageResult> {
 	const entries = ctx.sessionManager.getBranch() as Entry[];
-	const currentTokens = realContextTokens(ctx);
-	const real = currentTokens !== undefined ? realTokensSinceAnchor(entries, OM_REFLECTIONS_RECORDED, currentTokens) : undefined;
-	const reflectionTokens = real !== undefined ? real : rawTokensSinceReflectionCoverage(entries); // fallback: no usage baseline / basis change
+	const reflectionTokens = stageTokens(entries, OM_REFLECTIONS_RECORDED, realContextTokens(ctx), rawTokensSinceReflectionCoverage);
 	if (reflectionTokens < runtime.config.reflectAfterTokens) return { outcome: "continue", sameRunReflections: [] };
 
 	const observationCoverageId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED);

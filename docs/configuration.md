@@ -81,6 +81,8 @@ Default: `10000`.
 
 The observer runs from Pi's `turn_end` hook. It counts raw/source tokens after the latest `om.observations.recorded.data.coversUpToId` marker. When the count reaches `observeAfterTokens`, the observer receives source entries after that marker and may append a non-empty `om.observations.recorded` ledger entry.
 
+When Pi reports provider context usage, the observer is also due once the real context has grown by `observeAfterTokens` since the coverage marker (or since the latest compaction, when coverage is behind it). Either measure reaching the threshold launches the observer: the provider delta catches content the character heuristic undercounts, and the raw backlog keeps an observer that fell behind several compactions from starving on a small context window that Pi compacts every few thousand tokens.
+
 Lower values create smaller chunks and more frequent model calls. Higher values reduce model-call frequency but let unobserved raw conversation accumulate longer. If the observer deliberately emits no observations, no ledger entry is written; the same range remains uncovered, and the observer retries after another `observeAfterTokens` of source tokens accumulate.
 
 ## `observerChunkMaxTokens`
@@ -119,7 +121,7 @@ Default: derived — `floor(contextWindow * 0.5)` of the active session model, o
 
 Pi picks the retention boundary (`firstKeptEntryId`) from its own `keepRecentTokens` budget without knowing how far the observer has progressed. When the observer is behind that boundary, every source entry between the observation frontier and Pi's cut would be discarded with no observation describing it. In `session_before_compact` the hook therefore checks for such a gap and, when it finds one:
 
-1. Moves the retention boundary back to the start of the turn that contains the first unobserved entry, so those entries stay in context until the observer reaches them. All recorded observations are folded into the summary; a retained entry that already has an observation is redundant, never lost.
+1. Moves the retention boundary back to the nearest valid cut point at or before the first unobserved entry (that entry itself, or the assistant message whose tool result it is), so those entries stay in context until the observer reaches them. All recorded observations are folded into the summary; a retained entry that already has an observation is redundant, never lost.
 2. Checks that the estimated source tokens kept this way stay within `compactionMaxRetainedTokens`. If they would exceed it, or if the moved boundary would free nothing, or if the compaction is Pi's context-overflow recovery, the hook declines ownership instead and Pi's native summarizer summarizes the pre-cut context.
 
 Set this explicitly when the session model advertises a context window that is much larger than the range it can attend to, or when Pi's `reserveTokens` leaves less than half the window for retained context.

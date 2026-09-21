@@ -112,15 +112,17 @@ describe("compaction hook when the observer is behind Pi's cut", () => {
 		expect(ctx.ui.notify).not.toHaveBeenCalled();
 	});
 
-	it("moves the retention boundary back to the turn containing the first unobserved entry", async () => {
+	it("moves the retention boundary back to the nearest valid cut point before the first unobserved entry", async () => {
 		const { run, ctx } = setup({ entries: laggingBranch() });
 
 		const result = await run("u2") as any;
 
-		expect(result.compaction.firstKeptEntryId).toBe("u1");
+		// t1 is a tool result, so the cut lands on the assistant message that
+		// issued it; a1 stays with its result.
+		expect(result.compaction.firstKeptEntryId).toBe("a1");
 		expect(result.compaction.tokensBefore).toBe(123);
 		// Every recorded observation is folded, including the one whose coverage
-		// marker (a1) now sits inside the retained tail.
+		// marker (a1) is now the first retained entry.
 		expect(result.compaction.details.observations.map((obs: any) => obs.id)).toEqual([
 			"aaaaaaaaaaaa",
 			"bbbbbbbbbbbb",
@@ -152,7 +154,7 @@ describe("compaction hook when the observer is behind Pi's cut", () => {
 		expect(await tooSmall.run("u2")).toBeUndefined();
 
 		const roomy = setup({ entries: laggingBranch(), model: { contextWindow: 4_000 } });
-		expect(((await roomy.run("u2")) as any).compaction.firstKeptEntryId).toBe("u1");
+		expect(((await roomy.run("u2")) as any).compaction.firstKeptEntryId).toBe("a1");
 	});
 
 	it("delegates during overflow recovery instead of retaining more context", async () => {
@@ -164,22 +166,48 @@ describe("compaction hook when the observer is behind Pi's cut", () => {
 		expect(ctx.ui.notify.mock.calls[0][0]).toContain("overflow recovery");
 	});
 
-	it("delegates when the unobserved entries belong to the first compactable turn", async () => {
-		// Coverage stops at a0; the next turn (u1...) is the only turn Pi would
-		// fold, so moving the cut back to u1 would free nothing.
+	it("cuts inside a single long turn at the assistant message after the observation frontier", async () => {
+		// One user turn followed by a long tool loop; the observer covered the
+		// first two tool calls only. Pi proposes to keep from a3.
+		const entries = [
+			userMessage("u0"),
+			assistantMessage("a0"),
+			toolResultMessage("t0"),
+			assistantMessage("a1"),
+			toolResultMessage("t1"),
+			assistantMessage("a2"),
+			toolResultMessage("t2"),
+			assistantMessage("a3"),
+			toolResultMessage("t3"),
+			coverage("om-t1", "t1", "aaaaaaaaaaaa"),
+		];
+		const { run } = setup({ entries });
+
+		const result = await run("a3") as any;
+
+		expect(result.compaction.firstKeptEntryId).toBe("a2");
+		expect(result.compaction.details.observations.map((obs: any) => obs.id)).toEqual(["aaaaaaaaaaaa"]);
+	});
+
+	it("delegates when the observation frontier is still before the compaction range", async () => {
+		// Coverage stops at a0, but the previous compaction already cut at a1's
+		// turn: nothing inside the current range is observed, so moving the cut
+		// back would free nothing.
 		const entries = [
 			userMessage("u0"),
 			assistantMessage("a0"),
 			userMessage("u1"),
 			assistantMessage("a1"),
 			toolResultMessage("t1"),
-			userMessage("u2"),
+			assistantMessage("a2"),
+			toolResultMessage("t2"),
+			assistantMessage("a3"),
 			coverage("om-a0", "a0", "aaaaaaaaaaaa"),
-			compactionEntry("cmp-0", { firstKeptEntryId: "u1" }),
+			compactionEntry("cmp-0", { firstKeptEntryId: "a1" }),
 		];
 		const { run, ctx } = setup({ entries });
 
-		const result = await run("u2");
+		const result = await run("a3");
 
 		expect(result).toBeUndefined();
 		expect(ctx.ui.notify.mock.calls[0][0]).toContain("nothing observed can be compacted");
@@ -228,7 +256,7 @@ describe("resolveCompactionCut", () => {
 		expect(resolution.kind).toBe("cut");
 		expect(resolution.gap).toMatchObject({ firstIndex: 4, lastIndex: 5, entryCount: 2 });
 		if (resolution.kind === "cut") {
-			expect(resolution.cut).toEqual({ firstKeptEntryId: "u1", foldThroughEntryId: "a1" });
+			expect(resolution.cut).toEqual({ firstKeptEntryId: "a1", foldThroughEntryId: "a1" });
 		}
 	});
 });
