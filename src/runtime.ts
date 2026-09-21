@@ -102,6 +102,8 @@ export class Runtime {
 	consolidationInFlight = false;
 	consolidationPromise: Promise<void> | null = null;
 	consolidationPhase: ConsolidationPhase | undefined;
+	/** Aborts the in-flight consolidation run's model calls (see `consolidateWhenIdle`). */
+	consolidationAbortController: AbortController | undefined;
 	compactInFlight = false;
 	compactHookInFlight = false;
 	resolveFailureNotified = false;
@@ -289,13 +291,24 @@ export class Runtime {
 		this.lastObserverError = undefined;
 		this.lastReflectorError = undefined;
 		this.lastDropperError = undefined;
+		const controller = new AbortController();
+		this.consolidationAbortController = controller;
 		const promise = this.launchTrackedTask(ctx, "consolidation", work, () => {
 			this.consolidationInFlight = false;
 			this.consolidationPhase = undefined;
+			if (this.consolidationAbortController === controller) this.consolidationAbortController = undefined;
 			if (this.consolidationPromise === promise) this.consolidationPromise = null;
 		});
 		this.consolidationPromise = promise;
 		return promise;
+	}
+
+	/** Abort the in-flight consolidation run, if any. Returns true when one was running. */
+	abortConsolidation(): boolean {
+		const controller = this.consolidationAbortController;
+		if (!controller || !this.consolidationInFlight) return false;
+		controller.abort();
+		return true;
 	}
 
 	recordConsolidationStageError(ctx: LaunchCtx, phase: ConsolidationPhase, error: unknown): string {

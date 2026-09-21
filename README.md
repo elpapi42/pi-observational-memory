@@ -287,6 +287,7 @@ on the `Next compaction` line regardless of mode.
 | `agentMaxTurns`             | `16`          | Shared turn cap for background memory-agent loops.                                                |
 | `agentMaxTokens`            | `32000`       | Maximum output tokens requested for memory-agent loops (observer/reflector/dropper), clamped to the model's own `maxTokens` when available. Lower it for local servers with a modest context window, e.g. `8192`. |
 | `model`                     | session model | Optional memory-worker model override: `{ provider, id, thinking }`.                              |
+| `consolidateWhenIdle`       | `false`       | Run memory workers only while the agent is idle and abort them when a new run starts. Use when the session model and the memory model share one context budget (e.g. one local llama.cpp server). |
 | `showWorkerNotifications`   | `true`        | Shows routine observer, reflector, and dropper progress notifications. Warnings and errors are unaffected. |
 | `passive`                   | `false`       | Disables proactive background observation, reflection, maintenance, and auto-compaction triggers. |
 | `debugLog`                  | `false`       | Writes opt-in per-session extension debug events to Pi's agent directory.                         |

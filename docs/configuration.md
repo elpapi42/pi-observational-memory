@@ -67,6 +67,7 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `model.provider` | string | unset | Provider name in Pi's model registry. Required when `model` is set. |
 | `model.id` | string | unset | Model id in Pi's model registry. Required when `model` is set. |
 | `model.thinking` | enum | unset; workers fall back to `low` | Optional reasoning/thinking level for memory workers. |
+| `consolidateWhenIdle` | boolean | `false` | Run memory workers only while the agent is idle (launch from `agent_settled`, abort when a new agent run starts). For hosts where the session model and the memory model share one context budget. |
 | `showWorkerNotifications` | boolean | `true` | Shows routine observer, reflector, and dropper progress notifications. |
 | `passive` | boolean | `false` | Disables proactive background memory and auto-compaction triggers. |
 | `debugLog` | boolean | `false` | Writes best-effort per-session extension debug events to Pi's agent directory. |
@@ -185,6 +186,20 @@ Set `model` when you want the observer, reflector, and dropper to use a cheaper 
 `provider` and `id` must both be non-empty strings. `thinking` is optional. If the configured model cannot be resolved, the runtime attempts to fall back to the current session model and notifies once. Memory workers accept either an API key or OAuth-style auth headers (e.g. `Authorization: Bearer …`), so OAuth-authenticated providers work without an API key. If no usable model or credentials are available, the relevant background worker skips/fails safely rather than inventing memory.
 
 Workers stream through Pi's composed provider runtime, not `@earendil-works/pi-ai/compat` alone. Session models whose `api` id comes from `pi.registerProvider` (`cursor-sdk`, CLIProxyAPI, commandcode, and other custom APIs) work without a second built-in provider. `model` remains optional: set it only when you want cheaper/faster workers than the coding agent. Leaving it unset is the Cursor-only setup.
+
+## `consolidateWhenIdle`
+
+Default: `false`.
+
+By default the observer, reflector, and dropper launch from Pi's `agent_start` and `turn_end` hooks, so they run concurrently with the session's own model calls. That is fine when the memory model has its own capacity. It breaks down when both share one context budget, such as a single local llama.cpp server whose slots draw from one KV pool: a worker request carrying the whole memory plus its output reservation, arriving while the session's request is in flight, exceeds the pool and one side fails with a context-size error — sometimes the session's turn.
+
+With `consolidateWhenIdle: true`:
+
+- Workers launch only from `agent_settled`, after the agent has finished a run and Pi is idle, so their requests never overlap the session's.
+- When a new agent run starts while a worker is still running, the run is aborted. Coverage markers are appended only on success, so an aborted run leaves the ledger untouched and retries after the next settled event.
+- Proactive compaction is evaluated after the idle run finishes, so it is not starved by memory work sharing the same settled event.
+
+The trade-off is that during a long autonomous tool loop the observer does not advance; the compaction hook still protects unobserved context by retaining it or delegating to Pi's native summarizer (see [`compactionMaxRetainedTokens`](#compactionmaxretainedtokens)). Memory catches up while you type.
 
 ## `showWorkerNotifications`
 

@@ -3,10 +3,21 @@ import { resolveCompactAfterTokens } from "../config.js";
 import { observedTokensSinceLastCompaction, type Entry } from "../session-ledger/index.js";
 import type { Runtime } from "../runtime.js";
 
+type CompactionTriggerCtx = Parameters<Parameters<ExtensionAPI["on"]>[1]>[1];
+
 export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): void {
 	// Pi emits agent_settled only after retries, automatic compaction, and queued
 	// continuation have finished, so retry policy stays owned by Pi.
-	pi.on("agent_settled", (_event, ctx) => {
+	pi.on("agent_settled", (_event, ctx) => maybeTriggerCompaction(runtime, ctx));
+}
+
+/**
+ * Trigger proactive compaction when the observed-source threshold is reached
+ * and Pi is idle. Also called after an idle-mode consolidation run finishes, so
+ * compaction is not starved by memory work that ran on the same settled event.
+ */
+export function maybeTriggerCompaction(runtime: Runtime, ctx: CompactionTriggerCtx): void {
+	{
 		runtime.ensureConfig(ctx.cwd);
 		if (runtime.config.passive === true) return;
 		if (runtime.compactInFlight) return;
@@ -76,5 +87,5 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 				if (hasUI) ui?.notify(`Observational memory: compact threw: ${msg}`, "error");
 			}
 		}, 0);
-	});
+	}
 }

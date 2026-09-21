@@ -62,6 +62,15 @@ export interface Config {
 	 */
 	agentMaxTokens: number;
 	model?: ConfiguredModel;
+	/**
+	 * Run memory workers (observer, reflector, dropper) only while the agent is
+	 * idle: launch them from `agent_settled` instead of `agent_start`/`turn_end`,
+	 * and abort an in-flight run when a new agent run starts. For hosts where
+	 * the session model and the memory model share one context budget (a single
+	 * local llama.cpp server), this keeps worker requests from colliding with
+	 * the session's own requests.
+	 */
+	consolidateWhenIdle: boolean;
 	showWorkerNotifications: boolean;
 	passive: boolean;
 	debugLog: boolean;
@@ -77,6 +86,7 @@ export const DEFAULTS: Config = {
 	observationsPoolTargetTokens: 10_000,
 	agentMaxTurns: 16,
 	agentMaxTokens: 32_000,
+	consolidateWhenIdle: false,
 	showWorkerNotifications: true,
 	passive: false,
 	debugLog: false,
@@ -249,6 +259,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	}
 	const ratio = validRatioOrUndefined(value.compactAfterTokensRatio);
 	if (ratio !== undefined) normalized.compactAfterTokensRatio = ratio;
+	if (typeof value.consolidateWhenIdle === "boolean") normalized.consolidateWhenIdle = value.consolidateWhenIdle;
 	if (typeof value.showWorkerNotifications === "boolean") normalized.showWorkerNotifications = value.showWorkerNotifications;
 	if (typeof value.passive === "boolean") normalized.passive = value.passive;
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
