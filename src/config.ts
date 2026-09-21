@@ -42,6 +42,14 @@ export interface Config {
 	compactAfterTokens: number;
 	compactAfterTokensMode: CompactAfterTokensMode;
 	compactAfterTokensRatio: number;
+	/**
+	 * Maximum estimated source tokens the compaction hook may keep in context
+	 * when it moves Pi's retention boundary back to the observer frontier so
+	 * that unobserved entries are not discarded. Unset (default) derives the
+	 * budget from the active session model's context window; see
+	 * {@link resolveCompactionMaxRetainedTokens}.
+	 */
+	compactionMaxRetainedTokens?: number;
 	observationsPoolMaxTokens: number;
 	observationsPoolTargetTokens: number;
 	agentMaxTurns: number;
@@ -91,6 +99,37 @@ export function resolveCompactAfterTokens(config: Config, contextWindow: number 
 		return Math.max(1, Math.floor(contextWindow * config.compactAfterTokensRatio));
 	}
 	return config.compactAfterTokens;
+}
+
+/** Retained-tail budget used when `compactionMaxRetainedTokens` is unset and the context window is unknown. */
+export const COMPACTION_RETAINED_FALLBACK_MAX_TOKENS = 60_000;
+
+/**
+ * Fraction of the session model's context window the compaction hook may keep
+ * when it retains unobserved source entries past Pi's proposed cut. Half the
+ * window leaves room for the rendered memory summary, system prompt, tool
+ * schemas, and the next response even when the ~4 chars/token estimate
+ * undercounts real tokens.
+ */
+export const COMPACTION_RETAINED_CONTEXT_RATIO = 0.5;
+
+/**
+ * Resolve how many estimated source tokens the compaction hook may retain when
+ * observation coverage lags behind Pi's proposed retention boundary.
+ *
+ * An explicit `compactionMaxRetainedTokens` always wins. Otherwise the budget
+ * is `floor(contextWindow * COMPACTION_RETAINED_CONTEXT_RATIO)` for the active
+ * session model, falling back to {@link COMPACTION_RETAINED_FALLBACK_MAX_TOKENS}
+ * when the window is unknown.
+ */
+export function resolveCompactionMaxRetainedTokens(config: Config, contextWindow: number | undefined): number {
+	if (config.compactionMaxRetainedTokens !== undefined && config.compactionMaxRetainedTokens > 0) {
+		return config.compactionMaxRetainedTokens;
+	}
+	if (typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0) {
+		return Math.max(1, Math.floor(contextWindow * COMPACTION_RETAINED_CONTEXT_RATIO));
+	}
+	return COMPACTION_RETAINED_FALLBACK_MAX_TOKENS;
 }
 
 export const THINKING_LEVEL_VALUES: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -195,6 +234,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"reflectAfterTokens",
 		"observerChunkMaxTokens",
 		"compactAfterTokens",
+		"compactionMaxRetainedTokens",
 		"observationsPoolMaxTokens",
 		"observationsPoolTargetTokens",
 		"agentMaxTurns",

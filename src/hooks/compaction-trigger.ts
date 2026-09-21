@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolveCompactAfterTokens } from "../config.js";
-import { rawTokensSinceLastCompaction, type Entry } from "../session-ledger/index.js";
+import { observedTokensSinceLastCompaction, type Entry } from "../session-ledger/index.js";
 import type { Runtime } from "../runtime.js";
 
 export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): void {
@@ -13,7 +13,10 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 
 		const entries = ctx.sessionManager?.getBranch?.() as Entry[] | undefined;
 		if (!entries) return;
-		const progress = rawTokensSinceLastCompaction(entries);
+		// Count only source tokens the observer has already covered: compacting
+		// past the observer frontier would discard entries no memory describes,
+		// and the compaction hook would have to keep them anyway.
+		const progress = observedTokensSinceLastCompaction(entries);
 		const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : undefined;
 		const threshold = resolveCompactAfterTokens(runtime.config, contextWindow);
 		if (progress < threshold) return;
@@ -24,7 +27,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 		const ui = ctx.ui;
 
 		if (hasUI) ui?.notify(
-			`Observational memory: compaction threshold reached (~${progress.toLocaleString()} estimated source tokens); triggering compaction`,
+			`Observational memory: compaction threshold reached (~${progress.toLocaleString()} observed source tokens); triggering compaction`,
 			"info",
 		);
 
@@ -44,7 +47,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					runtime.compactInFlight = false;
 					return;
 				}
-				const currentProgress = rawTokensSinceLastCompaction(currentEntries);
+				const currentProgress = observedTokensSinceLastCompaction(currentEntries);
 				if (currentProgress < threshold) {
 					runtime.compactInFlight = false;
 					if (hasUI) ui?.notify(

@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { registerCompactionTrigger } from "../src/hooks/compaction-trigger.js";
-import { compactionEntry, rawMessage, textCustomMessage, type TestEntry } from "./fixtures/session.js";
+import {
+	compactionEntry,
+	observation,
+	observationsRecordedEntry,
+	rawMessage,
+	textCustomMessage,
+	type TestEntry,
+} from "./fixtures/session.js";
 
 function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensMode?: "calibrated" | "ratio"; compactAfterTokensRatio?: number; passive?: boolean; compactInFlight?: boolean } = {}) {
 	let handler: ((event: unknown, ctx: unknown) => void) | undefined;
@@ -47,8 +54,20 @@ function fakeCtx(branches: TestEntry[][], overrides: Record<string, unknown> = {
 	};
 }
 
-const dueBranch = [textCustomMessage("raw-1", "aaaaaaaaaaaa")]; // 3 tokens
-const belowBranch = [textCustomMessage("raw-1", "aaaa")]; // 1 token
+const SOURCE_TYPES = new Set(["message", "custom_message", "branch_summary"]);
+
+/** Append an observation coverage marker so the whole branch counts as observed. */
+function covered(branch: TestEntry[], coversUpToId?: string): TestEntry[] {
+	const target = coversUpToId ?? [...branch].reverse().find((entry) => SOURCE_TYPES.has(entry.type))?.id;
+	if (!target) throw new Error("branch has no source entry to cover");
+	return [
+		...branch,
+		observationsRecordedEntry(`om-cov-${target}`, { observations: [observation("aaaaaaaaaaaa")], coversUpToId: target }),
+	];
+}
+
+const dueBranch = covered([textCustomMessage("raw-1", "aaaaaaaaaaaa")]); // 3 tokens, observed
+const belowBranch = covered([textCustomMessage("raw-1", "aaaa")]); // 1 token, observed
 
 describe("V3 compaction trigger", () => {
 	beforeEach(() => {
@@ -80,7 +99,7 @@ describe("V3 compaction trigger", () => {
 
 		expect(ctx.compact).toHaveBeenCalledTimes(1);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Observational memory: compaction threshold reached (~3 estimated source tokens); triggering compaction",
+			"Observational memory: compaction threshold reached (~3 observed source tokens); triggering compaction",
 			"info",
 		);
 	});
@@ -150,12 +169,12 @@ describe("V3 compaction trigger", () => {
 
 	it("counts raw tokens since the latest Pi compaction using V3 progress helpers", async () => {
 		const { handler } = captureHandler({ compactAfterTokens: 3 });
-		const branch = [
+		const branch = covered([
 			textCustomMessage("raw-1", "aaaaaaaaaaaa"),
 			compactionEntry("cmp-1", { firstKeptEntryId: "raw-2" }),
 			textCustomMessage("raw-2", "aaaa"),
 			textCustomMessage("raw-3", "bbbbbbbb"),
-		];
+		]);
 		const ctx = fakeCtx([branch]);
 
 		handler(agentSettled(), ctx);
@@ -166,7 +185,7 @@ describe("V3 compaction trigger", () => {
 
 	it("does not compact when provider context and anchored growth exceed the threshold but raw progress does not", async () => {
 		const { handler, runtime } = captureHandler({ compactAfterTokens: 130000 });
-		const branch = [
+		const branch = covered([
 			compactionEntry("cmp-1", { firstKeptEntryId: "baseline" }),
 			rawMessage("baseline", "baseline", {
 				message: {
@@ -177,7 +196,7 @@ describe("V3 compaction trigger", () => {
 				},
 			}),
 			textCustomMessage("raw-1", "a".repeat(302_248)), // 75,562 tokens plus the 2-token baseline message
-		];
+		]);
 		const ctx = fakeCtx([branch], {
 			getContextUsage: vi.fn(() => ({ tokens: 135636, contextWindow: 200000 })),
 		});
@@ -191,13 +210,13 @@ describe("V3 compaction trigger", () => {
 
 	it("uses raw progress when provider growth is lower than the raw threshold", async () => {
 		const { handler } = captureHandler({ compactAfterTokens: 3 });
-		const branch = [
+		const branch = covered([
 			compactionEntry("cmp-1", { firstKeptEntryId: "raw-1" }),
 			rawMessage("assistant-1", "done", {
 				message: { role: "assistant", content: "done", stopReason: "end_turn", usage: { totalTokens: 100 } },
 			}),
 			textCustomMessage("raw-1", "aaaaaaaaaaaa"),
-		];
+		]);
 		const ctx = fakeCtx([branch], {
 			getContextUsage: vi.fn(() => ({ tokens: 101, contextWindow: 200000 })),
 		});
@@ -210,12 +229,12 @@ describe("V3 compaction trigger", () => {
 
 	it("uses raw progress from the first kept entry through the current branch", async () => {
 		const { handler } = captureHandler({ compactAfterTokens: 3 });
-		const branch = [
+		const branch = covered([
 			textCustomMessage("old", "bbbbbbbbbbbb"),
 			compactionEntry("cmp-1", { firstKeptEntryId: "kept" }),
 			textCustomMessage("kept", "aaaaaaaa"),
 			textCustomMessage("new", "bbbbbbbbbbbb"),
-		];
+		]);
 		const ctx = fakeCtx([branch], {
 			getContextUsage: vi.fn(() => ({ tokens: 1, contextWindow: 200000 })),
 		});
@@ -265,13 +284,13 @@ describe("V3 compaction trigger", () => {
 
 	it("compacts when raw progress equals the threshold", async () => {
 		const { handler } = captureHandler({ compactAfterTokens: 3 });
-		const branch = [
+		const branch = covered([
 			compactionEntry("cmp-1", { firstKeptEntryId: "raw-1" }),
 			rawMessage("assistant-1", "done", {
 				message: { role: "assistant", content: "done", stopReason: "end_turn", usage: { totalTokens: 100 } },
 			}),
 			textCustomMessage("raw-1", "aaaaaaaaaaaa"),
-		];
+		]);
 		const ctx = fakeCtx([branch], {
 			getContextUsage: vi.fn(() => ({ tokens: 101, contextWindow: 200000 })),
 		});
@@ -284,7 +303,7 @@ describe("V3 compaction trigger", () => {
 
 	it("uses raw progress when provider usage is unknown or has no baseline", async () => {
 		const { handler } = captureHandler({ compactAfterTokens: 3 });
-		const branch = [compactionEntry("cmp-1"), textCustomMessage("raw-1", "aaaa")];
+		const branch = covered([compactionEntry("cmp-1"), textCustomMessage("raw-1", "aaaa")]);
 		const ctx = fakeCtx([branch], {
 			getContextUsage: vi.fn(() => ({ tokens: null, contextWindow: 200000 })),
 		});
@@ -310,14 +329,14 @@ describe("V3 compaction trigger", () => {
 
 	it("falls back to raw progress after a model change", async () => {
 		const { handler } = captureHandler({ compactAfterTokens: 3 });
-		const branch = [
+		const branch = covered([
 			compactionEntry("cmp-1"),
 			rawMessage("assistant-1", "done", {
 				message: { role: "assistant", content: "done", stopReason: "end_turn", usage: { totalTokens: 60000 } },
 			}),
 			{ type: "model_change", id: "model-1", timestamp: "2026-05-02T10:00:00.000Z" },
 			textCustomMessage("raw-1", "aaaa"),
-		];
+		]);
 		const ctx = fakeCtx([branch], {
 			getContextUsage: vi.fn(() => ({ tokens: 190000, contextWindow: 200000 })),
 		});
@@ -326,6 +345,63 @@ describe("V3 compaction trigger", () => {
 		await vi.runAllTimersAsync();
 
 		expect(ctx.compact).not.toHaveBeenCalled();
+	});
+
+	it("does not compact when observation coverage has not reached the threshold", async () => {
+		const { handler, runtime } = captureHandler({ compactAfterTokens: 3 });
+		// 4 raw tokens in total, but only the first entry (1 token) is observed.
+		const branch = covered([
+			textCustomMessage("raw-1", "aaaa"),
+			textCustomMessage("raw-2", "aaaaaaaaaaaa"),
+		], "raw-1");
+		const ctx = fakeCtx([branch]);
+
+		handler(agentSettled(), ctx);
+		await vi.runAllTimersAsync();
+
+		expect(ctx.compact).not.toHaveBeenCalled();
+		expect(runtime.compactInFlight).toBe(false);
+	});
+
+	it("does not compact without any observation coverage", async () => {
+		const { handler, runtime } = captureHandler({ compactAfterTokens: 3 });
+		const ctx = fakeCtx([[textCustomMessage("raw-1", "aaaaaaaaaaaa")]]);
+
+		handler(agentSettled(), ctx);
+		await vi.runAllTimersAsync();
+
+		expect(ctx.compact).not.toHaveBeenCalled();
+		expect(runtime.compactInFlight).toBe(false);
+	});
+
+	it("ignores observation coverage that precedes the latest compaction boundary", async () => {
+		const { handler } = captureHandler({ compactAfterTokens: 3 });
+		const branch = [
+			textCustomMessage("raw-0", "aaaaaaaaaaaa"),
+			observationsRecordedEntry("om-cov-raw-0", { observations: [observation("aaaaaaaaaaaa")], coversUpToId: "raw-0" }),
+			compactionEntry("cmp-1", { firstKeptEntryId: "raw-1" }),
+			textCustomMessage("raw-1", "aaaaaaaaaaaa"),
+		];
+		const ctx = fakeCtx([branch]);
+
+		handler(agentSettled(), ctx);
+		await vi.runAllTimersAsync();
+
+		expect(ctx.compact).not.toHaveBeenCalled();
+	});
+
+	it("compacts once coverage catches up with the retained tail", async () => {
+		const { handler } = captureHandler({ compactAfterTokens: 3 });
+		const branch = covered([
+			textCustomMessage("raw-1", "aaaa"),
+			textCustomMessage("raw-2", "aaaaaaaaaaaa"),
+		]);
+		const ctx = fakeCtx([branch]);
+
+		handler(agentSettled(), ctx);
+		await vi.runAllTimersAsync();
+
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
 	});
 
 	describe("ratio mode", () => {
