@@ -213,6 +213,33 @@ describe("compaction hook when the observer is behind Pi's cut", () => {
 		expect(ctx.ui.notify.mock.calls[0][0]).toContain("nothing observed can be compacted");
 	});
 
+	it("delegates when the range starts on a metadata entry and the frontier is before the range", async () => {
+		// Pi may place the retention boundary on a zero-token ledger entry that
+		// precedes the first kept message. Cutting one entry later would free
+		// nothing and re-trigger Pi's threshold immediately.
+		const entries = [
+			userMessage("u0"),
+			assistantMessage("a0"),
+			toolResultMessage("t0"),
+			coverage("om-t0", "t0", "aaaaaaaaaaaa"),
+			assistantMessage("a1"),
+			toolResultMessage("t1"),
+			coverage("om-marker", "t0", "bbbbbbbbbbbb"),
+			compactionEntry("cmp-0", { firstKeptEntryId: "om-marker" }),
+			assistantMessage("a2"),
+			toolResultMessage("t2"),
+			assistantMessage("a3"),
+			toolResultMessage("t3"),
+			assistantMessage("a4"),
+		];
+		const { run, ctx } = setup({ entries });
+
+		const result = await run("a4");
+
+		expect(result).toBeUndefined();
+		expect(ctx.ui.notify.mock.calls[0][0]).toContain("nothing observed can be compacted");
+	});
+
 	it("delegates when nothing has been observed at all", async () => {
 		const entries = [userMessage("u0"), assistantMessage("a0"), userMessage("u1")];
 		const { run, ctx } = setup({ entries });

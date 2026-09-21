@@ -14,6 +14,7 @@ import {
 	buildCompactionProjection,
 	compactionRangeStartIndex,
 	entryIndexForId,
+	latestCoverageIndex,
 	latestCoverageMarkerId,
 	rawTokensAfterIndex,
 	renderSummary,
@@ -99,9 +100,19 @@ export function resolveCompactionCut(
 	const coverageMarkerId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED);
 	if (!coverageMarkerId) return { kind: "delegate", reason: "no observation coverage", gap };
 
+	// Only source the observer has covered inside the current compaction range
+	// can be folded. Compare source tokens, not indices: Pi's retention
+	// boundary may sit on a metadata entry (memory ledger rows carry no context
+	// tokens), and cutting one entry past it would free nothing while writing a
+	// new compaction entry every time Pi's threshold fires.
 	const rangeStart = compactionRangeStartIndex(entries);
+	const coverageIndex = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
+	if (coverageIndex < rangeStart) return { kind: "delegate", reason: "nothing observed can be compacted", gap };
+
 	const safeCutIndex = findCutPointAtOrBefore(entries, gap.firstIndex, rangeStart);
 	if (safeCutIndex <= rangeStart) return { kind: "delegate", reason: "nothing observed can be compacted", gap };
+	const freedTokens = rawTokensAfterIndex(entries, rangeStart - 1) - rawTokensAfterIndex(entries, safeCutIndex - 1);
+	if (freedTokens <= 0) return { kind: "delegate", reason: "nothing observed can be compacted", gap };
 
 	const retainedTokens = rawTokensAfterIndex(entries, safeCutIndex - 1);
 	if (retainedTokens > options.maxRetainedTokens) {
