@@ -148,6 +148,20 @@ describe("compaction hook when the observer is behind Pi's cut", () => {
 		expect(message).toContain("delegating to Pi's native summarizer");
 	});
 
+	it("delegates when the retained tail plus the rendered memory summary exceed the budget", async () => {
+		// The retained source alone (~14 tokens) fits a 100-token budget, but the
+		// rendered summary adds a few hundred tokens of instructions and lines.
+		const { run, ctx } = setup({ entries: laggingBranch(), compactionMaxRetainedTokens: 100 });
+
+		const result = await run("u2");
+
+		expect(result).toBeUndefined();
+		const [message, level] = ctx.ui.notify.mock.calls[0];
+		expect(level).toBe("warning");
+		expect(message).toContain("plus a ~");
+		expect(message).toContain("memory summary exceeds the ~100-token budget");
+	});
+
 	it("derives the retained-tail budget from the session model's context window", async () => {
 		// Half of a 4-token window is 2; the retained tail is larger than that.
 		const tooSmall = setup({ entries: laggingBranch(), model: { contextWindow: 4 } });

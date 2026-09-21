@@ -7,6 +7,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import { resolveCompactionMaxRetainedTokens } from "../config.js";
+import { estimateStringTokens } from "../tokens.js";
 import { debugLog, withDebugLogContext, type DebugLogContext } from "../debug-log.js";
 import type { Runtime } from "../runtime.js";
 import {
@@ -64,7 +65,7 @@ export type CompactionCut = {
 };
 
 export type CompactionCutResolution =
-	| { kind: "cut"; cut: CompactionCut; gap?: UnobservedSourceSpan }
+	| { kind: "cut"; cut: CompactionCut; gap?: UnobservedSourceSpan; retainedTokens?: number }
 	| { kind: "delegate"; reason: string; gap: UnobservedSourceSpan };
 
 /**
@@ -127,6 +128,7 @@ export function resolveCompactionCut(
 		kind: "cut",
 		cut: { firstKeptEntryId: entries[safeCutIndex].id, foldThroughEntryId: coverageMarkerId },
 		gap,
+		retainedTokens,
 	};
 }
 
@@ -158,10 +160,37 @@ async function handleCompaction(event: SessionBeforeCompactEvent, ctx: Extension
 	const { firstKeptEntryId, tokensBefore } = preparation;
 	const entries = branchEntries as Entry[];
 	const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : undefined;
-	const resolution = resolveCompactionCut(entries, firstKeptEntryId, {
-		maxRetainedTokens: resolveCompactionMaxRetainedTokens(runtime.config, contextWindow),
+	const maxRetainedTokens = resolveCompactionMaxRetainedTokens(runtime.config, contextWindow);
+	let resolution = resolveCompactionCut(entries, firstKeptEntryId, {
+		maxRetainedTokens,
 		reason: (event as { reason?: string }).reason,
 	});
+
+	let projection: ReturnType<typeof buildCompactionProjection> | undefined;
+	let summary = "";
+	if (resolution.kind === "cut") {
+		projection = buildCompactionProjection(
+			entries,
+			resolution.cut.foldThroughEntryId,
+			{ observationsPoolMaxTokens: observationsPoolMaxTokens(runtime) },
+		);
+		summary = renderSummary(projection.reflections, projection.observations);
+
+		// A moved cut keeps the unobserved tail AND adds the rendered memory on
+		// top of it. Both must fit the budget, or Pi's threshold fires again
+		// right after this compaction and the next hook call can only delegate.
+		if (resolution.gap && resolution.retainedTokens !== undefined) {
+			const summaryTokens = estimateStringTokens(summary);
+			const afterTokens = resolution.retainedTokens + summaryTokens;
+			if (afterTokens > maxRetainedTokens) {
+				resolution = {
+					kind: "delegate",
+					gap: resolution.gap,
+					reason: `retaining ~${resolution.retainedTokens.toLocaleString()} tokens plus a ~${summaryTokens.toLocaleString()}-token memory summary exceeds the ~${maxRetainedTokens.toLocaleString()}-token budget`,
+				};
+			}
+		}
+	}
 
 	if (resolution.gap) {
 		debugLog("compaction.observer_behind", {
@@ -170,7 +199,13 @@ async function handleCompaction(event: SessionBeforeCompactEvent, ctx: Extension
 			unobservedTokens: resolution.gap.tokens,
 			outcome: resolution.kind,
 			...(resolution.kind === "cut"
-				? { firstKeptEntryId: resolution.cut.firstKeptEntryId, foldThroughEntryId: resolution.cut.foldThroughEntryId }
+				? {
+					firstKeptEntryId: resolution.cut.firstKeptEntryId,
+					foldThroughEntryId: resolution.cut.foldThroughEntryId,
+					retainedTokens: resolution.retainedTokens,
+					summaryTokens: estimateStringTokens(summary),
+					maxRetainedTokens,
+				}
 				: { reason: resolution.reason }),
 		});
 	}
@@ -186,13 +221,7 @@ async function handleCompaction(event: SessionBeforeCompactEvent, ctx: Extension
 		return undefined;
 	}
 
-	const projection = buildCompactionProjection(
-		entries,
-		resolution.cut.foldThroughEntryId,
-		{ observationsPoolMaxTokens: observationsPoolMaxTokens(runtime) },
-	);
-	const summary = renderSummary(projection.reflections, projection.observations);
-	if (summary.length === 0) {
+	if (!projection || summary.length === 0) {
 		// Decline ownership so Pi's native summarizer preserves the pre-cut context.
 		return undefined;
 	}
