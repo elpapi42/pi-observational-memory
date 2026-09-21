@@ -23,7 +23,7 @@ import {
 	observationToSummaryLine,
 	realTokensSinceAnchor,
 	rawTokensSinceObservationCoverage,
-	rawTokensSinceReflectionCoverage,
+	observedTokensSinceReflectionCoverage,
 	reflectionToSummaryLine,
 	type Entry,
 	type Observation,
@@ -94,8 +94,8 @@ function stageDue(
 	rawEstimateFn: (entries: Entry[]) => number,
 	threshold: number,
 ): boolean {
-	// The raw estimate counts every uncovered source entry, including entries a
-	// compaction has already removed from context. When coverage lags behind
+	// The raw estimate counts every source entry this stage has not covered yet,
+	// including entries a compaction has already removed from context. When coverage lags behind
 	// the latest compaction, the provider delta only measures growth since that
 	// compaction and would starve the stage forever (a small window that Pi
 	// compacts every few thousand tokens never accumulates a threshold's worth
@@ -120,7 +120,7 @@ function stageTokens(entries: Entry[], customType: V3MemoryCustomType, currentTo
 
 function anyStageDue(entries: Entry[], runtime: Runtime, currentTokens: number | undefined): boolean {
 	return stageDue(entries, runtime, currentTokens, OM_OBSERVATIONS_RECORDED, rawTokensSinceObservationCoverage, runtime.config.observeAfterTokens)
-		|| stageDue(entries, runtime, currentTokens, OM_REFLECTIONS_RECORDED, rawTokensSinceReflectionCoverage, runtime.config.reflectAfterTokens);
+		|| stageDue(entries, runtime, currentTokens, OM_REFLECTIONS_RECORDED, observedTokensSinceReflectionCoverage, runtime.config.reflectAfterTokens);
 }
 
 function shouldNotifyWorker(runtime: Runtime, ctx: ConsolidationCtx): boolean {
@@ -394,7 +394,7 @@ async function runReflectorStage(
 	resolveModel: (stage: "reflector") => Promise<ResolvedModel | undefined>,
 ): Promise<ReflectorStageResult> {
 	const entries = ctx.sessionManager.getBranch() as Entry[];
-	const reflectionTokens = stageTokens(entries, OM_REFLECTIONS_RECORDED, realContextTokens(ctx), rawTokensSinceReflectionCoverage);
+	const reflectionTokens = stageTokens(entries, OM_REFLECTIONS_RECORDED, realContextTokens(ctx), observedTokensSinceReflectionCoverage);
 	if (reflectionTokens < runtime.config.reflectAfterTokens) return { outcome: "continue", sameRunReflections: [] };
 
 	const observationCoverageId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED);

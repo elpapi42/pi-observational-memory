@@ -119,7 +119,7 @@ describe("V3 /om:status", () => {
 		expect(output).toContain("Next observation:");
 		expect(output).toContain("/ 10 tokens");
 		expect(output).toContain("Next reflection:");
-		expect(output).toContain("/ 20 tokens");
+		expect(output).toContain("/ 20 observed tokens");
 		expect(output).toContain("Next compaction:");
 		expect(output).toContain("/ 30 observed source tokens");
 		expect(output).toContain("Visible observation pool: ~5 / 40 tokens (13%)");

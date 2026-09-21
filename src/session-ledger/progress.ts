@@ -106,6 +106,25 @@ export function rawTokensSinceReflectionCoverage(entries: Entry[]): number {
 	return rawTokensSinceCoverage(entries, OM_REFLECTIONS_RECORDED);
 }
 
+/**
+ * Estimated source tokens the observer has covered since the latest reflection
+ * coverage marker: the material new reflections could draw on. Unlike
+ * {@link rawTokensSinceReflectionCoverage} it excludes source the observer has
+ * not reached yet, so a large unobserved backlog does not make the reflector
+ * due after every small observer chunk.
+ */
+export function observedTokensSinceReflectionCoverage(entries: Entry[]): number {
+	const reflectionIndex = latestCoverageIndex(entries, OM_REFLECTIONS_RECORDED);
+	const observationIndex = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
+	if (observationIndex <= reflectionIndex) return 0;
+
+	let total = 0;
+	for (let i = reflectionIndex + 1; i <= observationIndex; i++) {
+		if (isSourceEntry(entries[i])) total += estimateEntryTokens(entries[i]);
+	}
+	return total;
+}
+
 export function rawTokensSinceDropCoverage(entries: Entry[]): number {
 	return rawTokensSinceCoverage(entries, OM_OBSERVATIONS_DROPPED);
 }

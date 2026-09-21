@@ -97,7 +97,7 @@ Set an explicit value when a provider exposes a context window that differs from
 
 Default: `20000`.
 
-The reflector uses this raw/source-token threshold. Reflector progress is counted after the latest `om.reflections.recorded.data.coversUpToId` marker.
+The reflector uses this source-token threshold. Reflector progress counts source entries between the latest `om.reflections.recorded.data.coversUpToId` marker and the latest observation coverage marker — material the observer has already turned into observations. Source the observer has not reached yet does not count, so an observer draining a large backlog in small chunks does not trigger a reflector (and dropper) pass after every chunk. When Pi reports provider context usage, real context growth of `reflectAfterTokens` since the marker also makes the reflector due.
 
 The dropper no longer uses `reflectAfterTokens` as its own launch threshold. Dropper work is gated by successful reflection: after the reflector records non-empty reflections in a consolidation pass, the dropper may run if the folded active observation ledger is over `observationsPoolTargetTokens`. It can see same-turn new reflections before deciding what to prune.
 

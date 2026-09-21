@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	compactionRangeStartIndex,
 	observedTokensSinceLastCompaction,
+	observedTokensSinceReflectionCoverage,
 	rawTokensSinceLastCompaction,
 	unobservedSourceSpanBefore,
 } from "../src/session-ledger/index.js";
@@ -126,5 +127,50 @@ describe("unobserved source span before a cut", () => {
 		];
 
 		expect(unobservedSourceSpanBefore(compacted, 3)).toEqual({ firstIndex: 2, lastIndex: 2, entryCount: 1, tokens: 1 });
+	});
+});
+
+describe("observed tokens since reflection coverage", () => {
+	function reflections(id: string, coversUpToId: string) {
+		return reflectionsRecordedEntry(id, { reflections: [reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"])], coversUpToId });
+	}
+
+	it("is zero without observation coverage", () => {
+		expect(observedTokensSinceReflectionCoverage([textCustomMessage("raw-1", "aaaaaaaaaaaa")])).toBe(0);
+	});
+
+	it("counts everything observed before any reflection", () => {
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaaaaaa"), // 3
+			textCustomMessage("raw-2", "aaaaaaaa"), // 2, unobserved
+			coverage("om-1", "raw-1"),
+		];
+
+		expect(observedTokensSinceReflectionCoverage(entries)).toBe(3);
+	});
+
+	it("counts only source between the reflection marker and the observation frontier", () => {
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaaaaaa"), // 3
+			coverage("om-1", "raw-1"),
+			reflections("om-ref", "raw-1"),
+			textCustomMessage("raw-2", "aaaaaaaa"), // 2
+			textCustomMessage("raw-3", "aaaa"), // 1
+			coverage("om-2", "raw-2"),
+			textCustomMessage("raw-4", "aaaaaaaaaaaaaaaa"), // 4, unobserved backlog
+		];
+
+		expect(observedTokensSinceReflectionCoverage(entries)).toBe(2);
+	});
+
+	it("is zero when reflection coverage has caught up with observation coverage", () => {
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaaaaaa"),
+			coverage("om-1", "raw-1"),
+			reflections("om-ref", "raw-1"),
+			textCustomMessage("raw-2", "aaaaaaaaaaaaaaaaaaaaaaaa"),
+		];
+
+		expect(observedTokensSinceReflectionCoverage(entries)).toBe(0);
 	});
 });

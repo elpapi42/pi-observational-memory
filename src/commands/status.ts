@@ -9,7 +9,7 @@ import {
 	observedTokensSinceLastCompaction,
 	rawTokensSinceLastCompaction,
 	rawTokensSinceObservationCoverage,
-	rawTokensSinceReflectionCoverage,
+	observedTokensSinceReflectionCoverage,
 	visibleProjection,
 	type Entry,
 } from "../session-ledger/index.js";
@@ -61,7 +61,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				[addedSuffix(drift.reflectionsOnlyInFull.length)],
 			);
 			const obsProgress = rawTokensSinceObservationCoverage(entries);
-			const reflectionProgress = rawTokensSinceReflectionCoverage(entries);
+			const reflectionProgress = observedTokensSinceReflectionCoverage(entries);
 			const compactionProgress = observedTokensSinceLastCompaction(entries);
 			const unobservedSinceCompaction = Math.max(0, rawTokensSinceLastCompaction(entries) - compactionProgress);
 			const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : undefined;
@@ -83,7 +83,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				"",
 				"── Activity ──",
 				`Next observation: ~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} tokens (${pct(obsProgress, runtime.config.observeAfterTokens)}%)`,
-				`Next reflection:  ~${reflectionProgress.toLocaleString()} / ${runtime.config.reflectAfterTokens.toLocaleString()} tokens (${pct(reflectionProgress, runtime.config.reflectAfterTokens)}%)`,
+				`Next reflection:  ~${reflectionProgress.toLocaleString()} / ${runtime.config.reflectAfterTokens.toLocaleString()} observed tokens (${pct(reflectionProgress, runtime.config.reflectAfterTokens)}%)`,
 				`Next compaction:  ~${compactionProgress.toLocaleString()} / ${compactThreshold.toLocaleString()} observed source tokens (${pct(compactionProgress, compactThreshold)}%)`,
 				`Observer backlog: ~${unobservedSinceCompaction.toLocaleString()} unobserved source tokens since the compaction boundary`,
 				`Visible observation pool: ~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} tokens (${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%)`,
