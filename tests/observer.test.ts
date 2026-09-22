@@ -119,6 +119,34 @@ describe("runObserver", () => {
 		expect(systemPrompt).not.toContain("pruner");
 	});
 
+	it("keeps prior memory before per-run time in the observer prompt", async () => {
+		let userText = "";
+		const priorReflection = "Reflection prefix value";
+		const priorObservation = "Observation prefix value";
+		const loop = fakeAgentLoop((prompts) => {
+			userText = prompts[0].content[0].text;
+		});
+
+		await runObserver({
+			...baseArgs,
+			priorReflections: [priorReflection],
+			priorObservations: [priorObservation],
+			agentLoop: loop,
+		});
+
+		const reflectionsIndex = userText.indexOf("CURRENT REFLECTIONS:");
+		const observationsIndex = userText.indexOf("CURRENT OBSERVATIONS:");
+		const timeIndex = userText.indexOf("Current local time:");
+		const chunkIndex = userText.indexOf("NEW CONVERSATION CHUNK:");
+		const prefixBeforeTime = userText.slice(0, timeIndex);
+		expect(reflectionsIndex).toBeGreaterThanOrEqual(0);
+		expect(reflectionsIndex).toBeLessThan(observationsIndex);
+		expect(observationsIndex).toBeLessThan(timeIndex);
+		expect(timeIndex).toBeLessThan(chunkIndex);
+		expect(prefixBeforeTime).toContain(priorReflection);
+		expect(prefixBeforeTime).toContain(priorObservation);
+	});
+
 	it("records V3 observations with source ids and code-computed tokenCount", async () => {
 		const content = "User asked for a memory update.";
 		const loop = fakeAgentLoop(async (_prompts, context) => {
