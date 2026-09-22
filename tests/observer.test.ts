@@ -69,6 +69,14 @@ describe("runObserver maxTokens clamping", () => {
 
 		expect(config().maxTokens).toBe(AGENT_LOOP_MAX_TOKENS);
 	});
+
+	it("forwards sessionId to the agent loop config", async () => {
+		const { loop, config } = captureLoopConfig();
+
+		await runObserver({ ...args, model: {} as any, sessionId: "session-abc", agentLoop: loop });
+
+		expect(config().sessionId).toBe("session-abc");
+	});
 });
 
 describe("OBSERVATION_TIMESTAMP_PATTERN", () => {

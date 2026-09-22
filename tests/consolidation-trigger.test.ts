@@ -229,6 +229,22 @@ describe("V3 consolidation trigger", () => {
 		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [obs], coversUpToId: "raw-1" });
 	});
 
+	it("forwards the scheduling session id to every memory worker", async () => {
+		const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
+		mockAgents.runObserver.mockResolvedValueOnce([obsA]);
+		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
+		mockAgents.runDropper.mockResolvedValueOnce(["aaaaaaaaaaaa"]);
+		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+		const { fire, runLaunchedWork } = setup({ entries, sessionId: "session-abc", observationsPoolTargetTokens: 5 });
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-abc" }));
+		expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-abc" }));
+		expect(mockAgents.runDropper).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-abc" }));
+	});
+
 	it("forwards OAuth-shaped auth (headers, no apiKey) to the observer agent", async () => {
 		const obs = observation("cccccccccccc", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
 		mockAgents.runObserver.mockResolvedValueOnce([obs]);

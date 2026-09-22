@@ -24,6 +24,7 @@ interface RunReflectorArgs {
 	apiKey?: string;
 	headers?: Record<string, string>;
 	env?: Record<string, string>;
+	sessionId?: string;
 	reflections: Reflection[];
 	observations: Observation[];
 	signal?: AbortSignal;
@@ -182,6 +183,7 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 		apiKey,
 		headers,
 		env,
+		sessionId: args.sessionId,
 		maxTokens: boundedMaxTokens(model, args.maxOutputTokens ?? AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",

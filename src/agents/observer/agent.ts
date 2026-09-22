@@ -16,6 +16,7 @@ interface RunObserverArgs {
 	apiKey?: string;
 	headers?: Record<string, string>;
 	env?: Record<string, string>;
+	sessionId?: string;
 	priorReflections: string[];
 	priorObservations: string[];
 	chunk: string;
@@ -199,6 +200,7 @@ ${conversation}`;
 		apiKey,
 		headers,
 		env,
+		sessionId: args.sessionId,
 		maxTokens: boundedMaxTokens(model, args.maxOutputTokens ?? AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
