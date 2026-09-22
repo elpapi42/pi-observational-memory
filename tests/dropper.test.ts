@@ -80,6 +80,14 @@ describe("runDropper maxTokens clamping", () => {
 
 		expect(config().sessionId).toBe("session-abc");
 	});
+
+	it("forwards cacheRetention to the agent loop config", async () => {
+		const { loop, config } = captureLoopConfig();
+
+		await runDropper({ ...args, model: {} as any, cacheRetention: "long", agentLoop: loop });
+
+		expect(config().cacheRetention).toBe("long");
+	});
 });
 
 describe("V3 dropper agent", () => {
