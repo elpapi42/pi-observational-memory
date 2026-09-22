@@ -53,7 +53,6 @@ export interface Config {
 	 * main session and the default 32K response budget can overflow the slot.
 	 */
 	agentMaxTokens: number;
-	/** Provider-neutral prompt-cache retention preference for memory workers. */
 	cacheRetention?: CacheRetention;
 	model?: ConfiguredModel;
 	showWorkerNotifications: boolean;
@@ -97,7 +96,6 @@ export function resolveCompactAfterTokens(config: Config, contextWindow: number 
 
 export const THINKING_LEVEL_VALUES: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
-/** Provider-neutral prompt-cache retention values accepted by memory worker settings. */
 export const CACHE_RETENTION_VALUES: readonly CacheRetention[] = ["none", "short", "long"] as const;
 
 /** Observer chunk cap used when no config is set and the model's context window is unknown. */
