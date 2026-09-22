@@ -21,6 +21,11 @@ function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => P
 	})) as any;
 }
 
+interface CapturedToolResult {
+	terminate?: boolean;
+	details: Record<string, number>;
+}
+
 describe("runReflector maxTokens clamping", () => {
 	const args = {
 		apiKey: "test",
@@ -112,6 +117,7 @@ describe("V3 reflector agent", () => {
 		expect(systemPrompt).toContain("avoid a wrong decision, repeated work, or user-preference violation");
 		expect(systemPrompt).toContain("If the candidate fails that future-agent utility test, leave it as an observation");
 		expect(systemPrompt).toContain("If unsure, emit no reflection");
+		expect(systemPrompt).toContain("Set complete=true only when the full active observation set has been reviewed and no further reflections remain. Set complete=false when another batch or correction is needed.");
 		expect(systemPrompt).toContain("High and critical observations deserve careful review, not automatic reflection");
 		expect(systemPrompt).toContain("Do not turn each observation into a reflection");
 		expect(systemPrompt).toContain("Observations are evidence; reflections are compressed durable conclusions");
@@ -224,6 +230,7 @@ describe("V3 reflector agent", () => {
 		const loop = fakeAgentLoop(async (_prompts, context) => {
 			await context.tools[0].execute("tool-1", {
 				reflections: [{ content, supportingObservationIds: ["bbbbbbbbbbbb", "aaaaaaaaaaaa"] }],
+				complete: true,
 			});
 		});
 
@@ -232,17 +239,50 @@ describe("V3 reflector agent", () => {
 		expect(result).toEqual([{ id: hashId(content), content, supportingObservationIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"], tokenCount: estimateStringTokens(content) }]);
 	});
 
-	it("rejects invented support ids and multiline content", async () => {
+	it("terminates after a complete valid reflection batch", async () => {
+		let toolResult: CapturedToolResult | undefined;
+		const content = "User prefers source-backed memory.";
 		const loop = fakeAgentLoop(async (_prompts, context) => {
-			await context.tools[0].execute("tool-1", {
+			toolResult = await context.tools[0].execute("tool-1", {
+				reflections: [{ content, supportingObservationIds: ["aaaaaaaaaaaa"] }],
+				complete: true,
+			});
+		});
+
+		await runReflector({ ...baseArgs, agentLoop: loop });
+
+		expect(toolResult?.terminate).toBe(true);
+	});
+
+	it("keeps an incomplete valid reflection batch open", async () => {
+		let toolResult: CapturedToolResult | undefined;
+		const loop = fakeAgentLoop(async (_prompts, context) => {
+			toolResult = await context.tools[0].execute("tool-1", {
+				reflections: [{ content: "User prefers source-backed memory.", supportingObservationIds: ["aaaaaaaaaaaa"] }],
+				complete: false,
+			});
+		});
+
+		await runReflector({ ...baseArgs, agentLoop: loop });
+
+		expect(toolResult?.terminate).toBe(false);
+	});
+
+	it("rejects invented support ids and multiline content", async () => {
+		let toolResult: CapturedToolResult | undefined;
+		const loop = fakeAgentLoop(async (_prompts, context) => {
+			toolResult = await context.tools[0].execute("tool-1", {
 				reflections: [
 					{ content: "Bad support", supportingObservationIds: ["missing"] },
 					{ content: "Two\nlines", supportingObservationIds: ["aaaaaaaaaaaa"] },
 				],
+				complete: true,
 			});
 		});
 
 		await expect(runReflector({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
+		expect(toolResult?.terminate).toBe(false);
+		expect(toolResult?.details).toMatchObject({ added: 0, rejected: 2 });
 	});
 
 	it("dedupes proposals and skips existing reflection ids", async () => {
@@ -255,6 +295,7 @@ describe("V3 reflector agent", () => {
 					{ content: "New durable fact.", supportingObservationIds: ["aaaaaaaaaaaa"] },
 					{ content: "New durable fact.", supportingObservationIds: ["bbbbbbbbbbbb"] },
 				],
+				complete: true,
 			});
 		});
 

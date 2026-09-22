@@ -17,6 +17,7 @@ What to emit:
 - Do not lightly reword existing reflections. Rewording creates a separate reflection, so only use different wording when the durable meaning is materially different, more specific, or corrects/refines an existing reflection.
 - Do not emit update-style records or provenance metadata. Reflections are plain durable facts, not patches.
 - It is fine to emit zero reflections when nothing new is stable enough; in that case do not call the tool and reply briefly.
+- Set complete=true only when the full active observation set has been reviewed and no further reflections remain. Set complete=false when another batch or correction is needed.
 
 Decision procedure:
 1. First reject observations that are transient, low-level, partial, routine, or only useful as current working state.
