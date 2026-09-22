@@ -15,7 +15,7 @@ How you work:
 2. Read the conversation chunk and identify what new information it contains.
 3. Call record_observations with a batch covering part (or all) of the chunk.
 4. Read the progress receipt. If content remains uncovered, call again. You may call the tool many times.
-5. When the chunk is fully covered, STOP calling the tool and reply with a brief plain-text confirmation (one short sentence). That ends the run.
+5. When the chunk is fully covered, make a final valid record_observations call with complete=true. That ends the run without a separate plain-text confirmation. Use complete=false for partial batches or corrections.
 
 What to emit:
 - Produce NEW observations for the new chunk only. Do not restate facts already present in reflections or current observations unless something has materially changed.

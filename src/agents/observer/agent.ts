@@ -64,6 +64,9 @@ const RecordObservationsSchema = Type.Object({
 		}),
 		{ description: "Batch of new observations. May be empty only if the tool is not called at all." },
 	),
+	complete: Type.Boolean({
+		description: "Whether this batch completes chunk coverage. Set false when more observations or corrections remain.",
+	}),
 });
 
 type RecordObservationsArgs = Static<typeof RecordObservationsSchema>;
@@ -116,8 +119,8 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 		label: "Record observations",
 		description:
 			"Record a batch of new observations distilled from the conversation chunk. " +
-			"Call this multiple times as you work through the chunk. Stop calling when coverage is complete, " +
-			"then emit a short plain-text confirmation to end the run.",
+			"complete=true ends fully valid chunk coverage; use complete=false when more observations or corrections remain. " +
+			"Incomplete or rejected work stays open.",
 		parameters: RecordObservationsSchema,
 		execute: async (_id, params: RecordObservationsArgs) => {
 			let added = 0;
@@ -158,8 +161,12 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 				(duplicates > 0 ? `(${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped).` : ".") +
 				rejectedPart +
 				` Total so far this run: ${accumulated.size}. ` +
-				`Continue if the chunk still has uncovered content; otherwise stop calling the tool and emit a short plain-text confirmation.`;
-			return { content: [{ type: "text", text: ack }], details: { added, duplicates, rejected, total: accumulated.size } };
+				`Continue with complete=false while content remains or corrections are needed; use complete=true on the final valid batch.`;
+			return {
+				content: [{ type: "text", text: ack }],
+				details: { added, duplicates, rejected, total: accumulated.size },
+				terminate: params.complete && rejected === 0,
+			};
 		},
 	};
 
@@ -173,7 +180,7 @@ ${joinOrEmpty(priorObservations)}
 
 Current local time: ${now}
 
-Compress the following new conversation chunk into observations by calling record_observations one or more times. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
+Compress the following new conversation chunk into observations by calling record_observations one or more times. Use complete=false for partial batches or corrections, and use complete=true only on the final valid batch after the chunk is fully covered. If no observations are warranted, do not call the tool and reply with a short plain-text confirmation. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies.
 
 NEW CONVERSATION CHUNK:
 ${conversation}`;

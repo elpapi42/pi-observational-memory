@@ -15,6 +15,11 @@ function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => P
 	})) as any;
 }
 
+interface CapturedToolResult {
+	terminate?: boolean;
+	details: Record<string, number>;
+}
+
 function assistantEndEvent(stopReason: string, errorMessage?: string): any {
 	return { type: "message_end", message: { role: "assistant", stopReason, errorMessage } };
 }
@@ -113,6 +118,11 @@ describe("runObserver", () => {
 		expect(systemPrompt).toContain("Frame state changes as supersession");
 		expect(systemPrompt).toContain("sourceEntryIds");
 		expect(systemPrompt).toContain("zero observations");
+		expect(systemPrompt).toContain("final valid record_observations call with complete=true");
+		expect(systemPrompt).toContain("without a separate plain-text confirmation");
+		expect(systemPrompt).toContain("Use complete=false for partial batches or corrections");
+		expect(systemPrompt).toContain("simply do not call the tool and end with a plain-text confirmation");
+		expect(systemPrompt).not.toContain("STOP calling the tool and reply with a brief plain-text confirmation");
 		expect(systemPrompt).toContain("The dropper will drop these first");
 		expect(systemPrompt).toContain("highest-resistance, load-bearing observations");
 		expect(systemPrompt).not.toContain("will NEVER be dropped");
@@ -145,19 +155,24 @@ describe("runObserver", () => {
 		expect(timeIndex).toBeLessThan(chunkIndex);
 		expect(prefixBeforeTime).toContain(priorReflection);
 		expect(prefixBeforeTime).toContain(priorObservation);
+		expect(userText).toContain("Use complete=false for partial batches or corrections, and use complete=true only on the final valid batch after the chunk is fully covered.");
+		expect(userText).toContain("If no observations are warranted, do not call the tool and reply with a short plain-text confirmation.");
 	});
 
 	it("records V3 observations with source ids and code-computed tokenCount", async () => {
 		const content = "User asked for a memory update.";
+		let toolResult: CapturedToolResult | undefined;
 		const loop = fakeAgentLoop(async (_prompts, context) => {
-			await context.tools[0].execute("tool-1", {
+			toolResult = await context.tools[0].execute("tool-1", {
 				observations: [{ timestamp: "2026-05-02 10:30", content, relevance: "high", sourceEntryIds: ["entry-a"] }],
+				complete: true,
 			});
 		});
 
 		const observations = await runObserver({ ...baseArgs, agentLoop: loop });
 
 		expect(observations).toHaveLength(1);
+		expect(toolResult?.terminate).toBe(true);
 		expect(observations?.[0]).toMatchObject({
 			content,
 			timestamp: "2026-05-02 10:30",
@@ -169,14 +184,33 @@ describe("runObserver", () => {
 		expect(observations?.[0].id).toMatch(/^[a-f0-9]{12}$/);
 	});
 
-	it("rejects invented source ids and returns no observations", async () => {
+	it("keeps an incomplete valid observation batch open", async () => {
+		let toolResult: CapturedToolResult | undefined;
 		const loop = fakeAgentLoop(async (_prompts, context) => {
-			await context.tools[0].execute("tool-1", {
+			toolResult = await context.tools[0].execute("tool-1", {
+				observations: [{ timestamp: "2026-05-02 10:30", content: "Partial observation", relevance: "medium", sourceEntryIds: ["entry-a"] }],
+				complete: false,
+			});
+		});
+
+		const observations = await runObserver({ ...baseArgs, agentLoop: loop });
+
+		expect(observations?.map((observation) => observation.content)).toEqual(["Partial observation"]);
+		expect(toolResult?.terminate).toBe(false);
+	});
+
+	it("rejects invented source ids and keeps the batch open", async () => {
+		let toolResult: CapturedToolResult | undefined;
+		const loop = fakeAgentLoop(async (_prompts, context) => {
+			toolResult = await context.tools[0].execute("tool-1", {
 				observations: [{ timestamp: "2026-05-02 10:30", content: "Bad source", relevance: "medium", sourceEntryIds: ["missing"] }],
+				complete: true,
 			});
 		});
 
 		await expect(runObserver({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
+		expect(toolResult?.terminate).toBe(false);
+		expect(toolResult?.details).toMatchObject({ added: 0, rejected: 1 });
 	});
 
 	it("dedupes deterministic ids", async () => {
@@ -186,6 +220,7 @@ describe("runObserver", () => {
 					{ timestamp: "2026-05-02 10:30", content: "Same content", relevance: "medium", sourceEntryIds: ["entry-a"] },
 					{ timestamp: "2026-05-02 10:31", content: "Same content", relevance: "high", sourceEntryIds: ["entry-a"] },
 				],
+				complete: true,
 			});
 		});
 
@@ -193,6 +228,25 @@ describe("runObserver", () => {
 
 		expect(observations).toHaveLength(1);
 		expect(observations?.[0].content).toBe("Same content");
+	});
+
+	it("keeps multi-batch observation coverage open until the final valid batch", async () => {
+		const toolResults: CapturedToolResult[] = [];
+		const loop = fakeAgentLoop(async (_prompts, context) => {
+			toolResults.push(await context.tools[0].execute("tool-1", {
+				observations: [{ timestamp: "2026-05-02 10:30", content: "First observation", relevance: "medium", sourceEntryIds: ["entry-a"] }],
+				complete: false,
+			}));
+			toolResults.push(await context.tools[0].execute("tool-2", {
+				observations: [{ timestamp: "2026-05-02 10:31", content: "Second observation", relevance: "high", sourceEntryIds: ["entry-a"] }],
+				complete: true,
+			}));
+		});
+
+		const observations = await runObserver({ ...baseArgs, agentLoop: loop });
+
+		expect(observations?.map((observation) => observation.content)).toEqual(["First observation", "Second observation"]);
+		expect(toolResults.map((result) => result.terminate)).toEqual([false, true]);
 	});
 
 	it("returns undefined when no tool call records observations", async () => {
@@ -214,6 +268,7 @@ describe("runObserver", () => {
 		const loop = fakeAgentLoop(async (_prompts, context) => {
 			await context.tools[0].execute("tool-1", {
 				observations: [{ timestamp: "2026-05-02 10:30", content: "Kept despite later error", relevance: "high", sourceEntryIds: ["entry-a"] }],
+				complete: true,
 			});
 		}, [assistantEndEvent("error", "gateway timeout")]);
 
