@@ -115,8 +115,11 @@ export async function catchUpObserver(args: CatchUpArgs): Promise<CatchUpResult>
 		result.chunksRecorded++;
 		debugLog("compaction.catch_up.recorded", { chunkIndex, count: observations!.length, coversUpToId });
 
-		const covered = new Set(sourceEntryIds);
-		remaining = remaining.filter((entry) => !covered.has(entry.id));
+		// Coverage is positional: everything at or before the marker counts as
+		// covered, including entries the serializer skipped for lack of
+		// renderable content (e.g. an aborted assistant message).
+		const coveredIndex = entries.findIndex((entry) => entry.id === coversUpToId);
+		remaining = remaining.filter((entry) => entries.indexOf(entry) > coveredIndex);
 		branch = (ctx.sessionManager?.getBranch?.() as Entry[] | undefined) ?? branch;
 	}
 

@@ -178,6 +178,20 @@ describe("compaction hook synchronous catch-up", () => {
 		expect(result.compaction.firstKeptEntryId).toBe("a2");
 	});
 
+	it("treats entries the serializer skips as covered once the marker passes them", async () => {
+		const gapObs = observation("cccccccccccc", { sourceEntryIds: ["a2"], tokenCount: 12 });
+		mockAgents.runObserver.mockResolvedValueOnce([gapObs]);
+		// An assistant message with no content renders nothing and is never part
+		// of a chunk; it must not count as a leftover after coverage passes it.
+		const entries = laggingBranch();
+		entries.splice(5, 0, rawMessage("empty", "", { message: { role: "assistant", content: [], stopReason: "aborted" } }));
+		const { run } = setup({ entries, maxChunks: 1 });
+
+		const result = await run("u2") as any;
+
+		expect(result.compaction.firstKeptEntryId).toBe("u2");
+	});
+
 	it("does nothing when disabled", async () => {
 		const { run, runtime } = setup({ entries: laggingBranch(), maxChunks: 0 });
 
