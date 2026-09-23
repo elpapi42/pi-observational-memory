@@ -9,7 +9,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 	getAgentDir: () => mock.agentDir,
 }));
 
-import { DEFAULTS, loadConfig, readEnvConfig, resolveCompactAfterTokens } from "../src/config.js";
+import { CACHE_RETENTION_VALUES, DEFAULTS, loadConfig, readEnvConfig, resolveCompactAfterTokens } from "../src/config.js";
 
 function writeJson(path: string, value: unknown) {
 	mkdirSync(join(path, ".."), { recursive: true });
@@ -50,6 +50,24 @@ describe("V3 config", () => {
 			debugLog: false,
 		});
 		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
+	});
+
+	it("normalizes valid cache retention values", () => {
+		for (const cacheRetention of CACHE_RETENTION_VALUES) {
+			writeJson(join(cwd, ".pi", "settings.json"), {
+				"observational-memory": { cacheRetention },
+			});
+			expect(loadConfig(cwd, {}).cacheRetention).toBe(cacheRetention);
+		}
+	});
+
+	it("ignores invalid cache retention and leaves the default unset", () => {
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": { cacheRetention: "forever" },
+		});
+
+		expect(DEFAULTS.cacheRetention).toBeUndefined();
+		expect(loadConfig(cwd, {}).cacheRetention).toBeUndefined();
 	});
 
 	it("merges global, project, and env V3 settings in order", () => {

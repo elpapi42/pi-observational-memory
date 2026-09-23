@@ -36,6 +36,7 @@ The extension loads config once for its runtime. After changing settings, restar
     "observationsPoolMaxTokens": 20000,
     "observationsPoolTargetTokens": 10000,
     "agentMaxTurns": 16,
+    "cacheRetention": "long",
     "model": {
       "provider": "openrouter",
       "id": "google/gemma-4-31b-it",
@@ -61,6 +62,7 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `observationsPoolMaxTokens` | positive integer | `20000` | Normal compaction-projection observation-token pressure that makes compaction do a full fold. |
 | `observationsPoolTargetTokens` | positive integer below max | half of `observationsPoolMaxTokens` | Folded active observation target used by post-reflection dropper maintenance. |
 | `agentMaxTurns` | positive integer | `16` | Shared nested-agent turn cap for observer, reflector, and dropper. |
+| `cacheRetention` | `none \| short \| long` | Pi default (`short`) | Provider-neutral prompt-cache retention preference for all memory workers. |
 | `agentMaxTokens` | positive integer | `32000` | Maximum output tokens requested for memory-agent loops. Clamped to the model's own `maxTokens` when available. Lower it for local servers with a modest context window. |
 | `model` | object | unset | Optional model override for observer, reflector, and dropper. |
 | `model.provider` | string | unset | Provider name in Pi's model registry. Required when `model` is set. |
@@ -139,6 +141,18 @@ Default: `16`.
 This is the shared nested-agent turn cap for the observer, reflector, and dropper. A turn is one assistant/model response cycle inside Pi's agent loop. The cap is not a token budget and not a literal tool-call counter.
 
 Use lower values to bound background memory-worker cost. Too low can reduce observation coverage or reflection/drop quality.
+
+## `cacheRetention`
+
+Default: unset, preserving Pi's `short` default.
+
+This is a provider-neutral prompt-cache retention preference passed to all memory workers:
+
+- `none` disables caching/session cache keys where supported.
+- `short` preserves Pi's default short retention.
+- `long` requests extended retention where supported.
+
+Adapters may ignore unsupported values. Prompt-cache write/read pricing differs, so `long` is opt-in rather than the extension default.
 
 ## `agentMaxTokens`
 

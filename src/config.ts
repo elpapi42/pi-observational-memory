@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { CacheRetention, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export interface ConfiguredModel {
@@ -53,6 +53,7 @@ export interface Config {
 	 * main session and the default 32K response budget can overflow the slot.
 	 */
 	agentMaxTokens: number;
+	cacheRetention?: CacheRetention;
 	model?: ConfiguredModel;
 	showWorkerNotifications: boolean;
 	passive: boolean;
@@ -94,6 +95,8 @@ export function resolveCompactAfterTokens(config: Config, contextWindow: number 
 }
 
 export const THINKING_LEVEL_VALUES: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+export const CACHE_RETENTION_VALUES: readonly CacheRetention[] = ["none", "short", "long"] as const;
 
 /** Observer chunk cap used when no config is set and the model's context window is unknown. */
 export const OBSERVER_CHUNK_FALLBACK_MAX_TOKENS = 60_000;
@@ -157,6 +160,10 @@ function isThinkingLevel(value: unknown): value is ModelThinkingLevel {
 	return typeof value === "string" && (THINKING_LEVEL_VALUES as readonly string[]).includes(value);
 }
 
+function isCacheRetention(value: unknown): value is CacheRetention {
+	return typeof value === "string" && (CACHE_RETENTION_VALUES as readonly string[]).includes(value);
+}
+
 function isCompactAfterTokensMode(value: unknown): value is CompactAfterTokensMode {
 	return typeof value === "string" && (COMPACT_AFTER_TOKENS_MODE_VALUES as readonly string[]).includes(value);
 }
@@ -207,6 +214,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	if (isCompactAfterTokensMode(value.compactAfterTokensMode)) {
 		normalized.compactAfterTokensMode = value.compactAfterTokensMode;
 	}
+	if (isCacheRetention(value.cacheRetention)) normalized.cacheRetention = value.cacheRetention;
 	const ratio = validRatioOrUndefined(value.compactAfterTokensRatio);
 	if (ratio !== undefined) normalized.compactAfterTokensRatio = ratio;
 	if (typeof value.showWorkerNotifications === "boolean") normalized.showWorkerNotifications = value.showWorkerNotifications;

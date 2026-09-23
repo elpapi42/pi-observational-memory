@@ -1,5 +1,5 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
-import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { CacheRetention, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { hashId } from "../../ids.js";
@@ -16,6 +16,8 @@ interface RunObserverArgs {
 	apiKey?: string;
 	headers?: Record<string, string>;
 	env?: Record<string, string>;
+	sessionId?: string;
+	cacheRetention?: CacheRetention;
 	priorReflections: string[];
 	priorObservations: string[];
 	chunk: string;
@@ -63,6 +65,9 @@ const RecordObservationsSchema = Type.Object({
 		}),
 		{ description: "Batch of new observations. May be empty only if the tool is not called at all." },
 	),
+	complete: Type.Boolean({
+		description: "Whether this batch completes chunk coverage. Set false when more observations or corrections remain.",
+	}),
 });
 
 type RecordObservationsArgs = Static<typeof RecordObservationsSchema>;
@@ -115,8 +120,8 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 		label: "Record observations",
 		description:
 			"Record a batch of new observations distilled from the conversation chunk. " +
-			"Call this multiple times as you work through the chunk. Stop calling when coverage is complete, " +
-			"then emit a short plain-text confirmation to end the run.",
+			"complete=true ends fully valid chunk coverage; use complete=false when more observations or corrections remain. " +
+			"Incomplete or rejected work stays open.",
 		parameters: RecordObservationsSchema,
 		execute: async (_id, params: RecordObservationsArgs) => {
 			let added = 0;
@@ -157,21 +162,26 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 				(duplicates > 0 ? `(${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped).` : ".") +
 				rejectedPart +
 				` Total so far this run: ${accumulated.size}. ` +
-				`Continue if the chunk still has uncovered content; otherwise stop calling the tool and emit a short plain-text confirmation.`;
-			return { content: [{ type: "text", text: ack }], details: { added, duplicates, rejected, total: accumulated.size } };
+				`Continue with complete=false while content remains or corrections are needed; use complete=true on the final valid batch.`;
+			return {
+				content: [{ type: "text", text: ack }],
+				details: { added, duplicates, rejected, total: accumulated.size },
+				terminate: params.complete && rejected === 0,
+			};
 		},
 	};
 
 	const now = nowTimestamp();
-	const userText = `Current local time: ${now}
-
-CURRENT REFLECTIONS:
+	// Keep append-stable memory before per-run values so prefix caches can reuse it across observer runs.
+	const userText = `CURRENT REFLECTIONS:
 ${joinOrEmpty(priorReflections)}
 
 CURRENT OBSERVATIONS:
 ${joinOrEmpty(priorObservations)}
 
-Compress the following new conversation chunk into observations by calling record_observations one or more times. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
+Current local time: ${now}
+
+Compress the following new conversation chunk into observations by calling record_observations one or more times. Use complete=false for partial batches or corrections, and use complete=true only on the final valid batch after the chunk is fully covered. If no observations are warranted, do not call the tool and reply with a short plain-text confirmation. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies.
 
 NEW CONVERSATION CHUNK:
 ${conversation}`;
@@ -199,6 +209,8 @@ ${conversation}`;
 		apiKey,
 		headers,
 		env,
+		sessionId: args.sessionId,
+		cacheRetention: args.cacheRetention,
 		maxTokens: boundedMaxTokens(model, args.maxOutputTokens ?? AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",

@@ -1,5 +1,5 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
-import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { CacheRetention, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
@@ -42,6 +42,8 @@ interface RunDropperArgs {
 	apiKey?: string;
 	headers?: Record<string, string>;
 	env?: Record<string, string>;
+	sessionId?: string;
+	cacheRetention?: CacheRetention;
 	reflections: Reflection[];
 	observations: Observation[];
 	targetTokens: number;
@@ -249,6 +251,8 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 		apiKey,
 		headers,
 		env,
+		sessionId: args.sessionId,
+		cacheRetention: args.cacheRetention,
 		maxTokens: boundedMaxTokens(model, args.maxOutputTokens ?? AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",

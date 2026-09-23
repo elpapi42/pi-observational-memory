@@ -1,5 +1,5 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
-import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { CacheRetention, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
@@ -24,6 +24,8 @@ interface RunReflectorArgs {
 	apiKey?: string;
 	headers?: Record<string, string>;
 	env?: Record<string, string>;
+	sessionId?: string;
+	cacheRetention?: CacheRetention;
 	reflections: Reflection[];
 	observations: Observation[];
 	signal?: AbortSignal;
@@ -44,6 +46,9 @@ const RecordReflectionsSchema = Type.Object({
 		}),
 		{ minItems: 1 },
 	),
+	complete: Type.Boolean({
+		description: "Whether this batch completes reflection review. Set false when more reflections or corrections remain.",
+	}),
 });
 
 type RecordReflectionsArgs = Static<typeof RecordReflectionsSchema>;
@@ -132,7 +137,10 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 	const recordReflections: AgentTool<typeof RecordReflectionsSchema> = {
 		name: "record_reflections",
 		label: "Record reflections",
-		description: "Record new durable reflections with supporting observation ids.",
+		description:
+			"Record a batch of new durable reflections with supporting observation ids. " +
+			"complete=true ends a fully valid reflection review; set complete=false when more reflections or corrections remain. " +
+			"Incomplete or rejected work stays open.",
 		parameters: RecordReflectionsSchema,
 		execute: async (_id, params: RecordReflectionsArgs) => {
 			toolCallCount++;
@@ -166,6 +174,7 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 			return {
 				content: [{ type: "text", text: `Recorded ${added} reflection${added === 1 ? "" : "s"}; ${duplicates} duplicate${duplicates === 1 ? "" : "s"}; ${rejected} rejected. Total this run: ${accumulated.size}.` }],
 				details: { added, duplicates, rejected, total: accumulated.size },
+				terminate: params.complete && rejected === 0,
 			};
 		},
 	};
@@ -182,6 +191,8 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 		apiKey,
 		headers,
 		env,
+		sessionId: args.sessionId,
+		cacheRetention: args.cacheRetention,
 		maxTokens: boundedMaxTokens(model, args.maxOutputTokens ?? AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
