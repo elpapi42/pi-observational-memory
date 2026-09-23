@@ -38,10 +38,13 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 				firstKeptEntryId,
 				{ observationsPoolMaxTokens: observationsPoolMaxTokens(runtime) },
 			);
-			const summary = renderSummary(projection.reflections, projection.observations);
+			let summary = renderSummary(projection.reflections, projection.observations);
 			if (summary.length === 0) {
 				// Decline ownership so Pi's native summarizer preserves the pre-cut context.
 				return;
+			}
+			if (event.customInstructions) {
+				summary = `${summary}\n\n---\n${event.customInstructions}`;
 			}
 
 			return {
