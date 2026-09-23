@@ -67,9 +67,10 @@ describe("budgeted summary rendering", () => {
 		expect(rendered.text).not.toContain("omitted");
 	});
 
-	it("keeps reflections first and the newest observations that fit", () => {
-		// Instructions ~250 tokens, each line ~40 tokens: 3 reflections (~120)
-		// plus 2 of 4 observations fit a 500-token budget.
+	it("keeps all reflections and the newest observations that fit when reflections are small", () => {
+		// Fixed overhead ~275 tokens, each line ~38 tokens. Budget 500 leaves
+		// ~225: observations reserve half (2 lines), reflections take the rest
+		// (3 lines fit), observations reclaim nothing more.
 		const rendered = renderSummaryWithBudget(reflections, observations, { maxTokens: 500 });
 
 		expect(rendered.reflections).toHaveLength(3);
@@ -81,13 +82,25 @@ describe("budgeted summary rendering", () => {
 		expect(rendered.text).not.toContain("[a1aaaaaaaaaa]");
 	});
 
-	it("drops the oldest reflections when reflections alone exceed the budget", () => {
-		const rendered = renderSummaryWithBudget(reflections, observations, { maxTokens: 350 });
+	it("guarantees observations at least half the budget when reflections are verbose", () => {
+		const verbose = ["e1", "e2", "e3", "e4", "e5", "e6"].map((id, i) => reflection(id.padEnd(12, "e"), ["aaaaaaaaaaaa"], { content: `Reflection ${i + 1} ${"r".repeat(400)}` }));
+		// ~225 tokens of lines: observations get >= 112 (2 lines), reflections the rest (1 line of ~105).
+		const rendered = renderSummaryWithBudget(verbose, observations, { maxTokens: 500 });
 
-		expect(rendered.reflections.length).toBeLessThan(3);
-		expect(rendered.reflections.at(-1)?.id).toBe("e3eeeeeeeeee");
-		expect(rendered.observations).toHaveLength(0);
+		expect(rendered.observations.length).toBeGreaterThanOrEqual(2);
+		expect(rendered.observations.at(-1)?.id).toBe("a4aaaaaaaaaa");
+		expect(rendered.reflections.length).toBeGreaterThanOrEqual(1);
+		expect(rendered.reflections.at(-1)?.id).toBe("e6eeeeeeeeee");
+		expect(rendered.omittedReflections).toBeGreaterThan(0);
 		expect(rendered.text).toContain("older reflection");
+	});
+
+	it("lets reflections use budget observations leave unused", () => {
+		const oneObservation = observations.slice(0, 1);
+		const rendered = renderSummaryWithBudget(reflections, oneObservation, { maxTokens: 500 });
+
+		expect(rendered.observations).toHaveLength(1);
+		expect(rendered.reflections).toHaveLength(3);
 	});
 
 	it("ignores a non-positive budget", () => {

@@ -67,7 +67,7 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `model.provider` | string | unset | Provider name in Pi's model registry. Required when `model` is set. |
 | `model.id` | string | unset | Model id in Pi's model registry. Required when `model` is set. |
 | `model.thinking` | enum | unset; workers fall back to `low` | Optional reasoning/thinking level for memory workers. |
-| `compactionSummaryMaxTokens` | positive integer | derived | Estimated token budget for the memory summary the compaction hook renders. Unset: one eighth of the session model's context window, or `8000` when unknown. Reflections are kept first, then the newest observations that fit. |
+| `compactionSummaryMaxTokens` | positive integer | derived | Estimated token budget for the memory summary the compaction hook renders. Unset: one eighth of the session model's context window, or `8000` when unknown. Observations get at least half (newest first); reflections take the rest. |
 | `compactionCatchUpMaxChunks` | non-negative integer | `2` | Observer chunks the compaction hook may run synchronously to cover source entries the background observer has not reached before Pi's cut. `0` disables. |
 | `consolidateWhenIdle` | boolean | `false` | Run memory workers only while the agent is idle (launch from `agent_settled`, abort when a new agent run starts). For hosts where the session model and the memory model share one context budget. |
 | `showWorkerNotifications` | boolean | `true` | Shows routine observer, reflector, and dropper progress notifications. |
@@ -193,7 +193,7 @@ Workers stream through Pi's composed provider runtime, not `@earendil-works/pi-a
 
 Default: derived — `floor(contextWindow / 8)` of the active session model, or `8000` when the context window is unknown.
 
-The rendered memory summary replaces the compacted range in context, so its size decides how much room is left before Pi's next compaction. Without a budget it grows with the ledger: on a long session it reached 17k tokens on a 64k window, more than the context it replaced. The hook now keeps all reflections first (newest first when reflections alone exceed the budget), then the newest observations that still fit, and ends the summary with a line stating how many older records were omitted. Omitted records stay in the session ledger, count toward the full memory in `/om:status`, and are shown by `/om:view full`.
+The rendered memory summary replaces the compacted range in context, so its size decides how much room is left before Pi's next compaction. Without a budget it grows with the ledger: on a long session it reached 17k tokens on a 64k window, more than the context it replaced. The hook reserves at least half of the budget for the newest observations (the chronological record), gives reflections the rest (newest first), lets each side reclaim what the other leaves unused, and ends the summary with a line stating how many older records were omitted. Omitted records stay in the session ledger, count toward the full memory in `/om:status`, and are shown by `/om:view full`.
 
 ## `compactionCatchUpMaxChunks`
 

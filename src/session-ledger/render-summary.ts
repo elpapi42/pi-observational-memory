@@ -19,13 +19,17 @@ export function reflectionToSummaryLine(reflection: Reflection): string {
 
 export type RenderSummaryOptions = {
 	/**
-	 * Estimated token budget for the rendered summary. Reflections are kept
-	 * first (newest first when they alone exceed the budget), then the newest
-	 * observations that still fit. Omitted records stay in the session ledger
-	 * and remain visible through `/om:view full`.
+	 * Estimated token budget for the rendered summary. Observations are
+	 * guaranteed at least half of it (newest first); reflections take the rest
+	 * (newest first), and whatever either side leaves unused goes to the other.
+	 * Omitted records stay in the session ledger and remain visible through
+	 * `/om:view full`.
 	 */
 	maxTokens?: number;
 };
+
+/** Share of the summary budget reserved for observations before reflections are allocated. */
+export const SUMMARY_OBSERVATIONS_MIN_SHARE = 0.5;
 
 export type RenderedSummary = {
 	text: string;
@@ -68,9 +72,13 @@ export function renderSummaryWithBudget(
 	if (maxTokens !== undefined && Number.isFinite(maxTokens) && maxTokens > 0) {
 		const fixed = estimateTokens(CONTEXT_USAGE_INSTRUCTIONS) + estimateTokens("## Reflections\n## Observations\n\n\n\n") + 40;
 		const budget = Math.max(0, maxTokens - fixed);
-		const picked = selectWithinBudget(reflections, reflectionToSummaryLine, budget);
-		keptReflections = picked.kept;
-		keptObservations = selectWithinBudget(observations, observationToSummaryLine, budget - picked.tokens).kept;
+		// Observations are the chronological record and must not be crowded out
+		// by verbose reflections: reserve them a share first, give reflections
+		// the remainder, then let observations reclaim whatever reflections left.
+		const reserved = selectWithinBudget(observations, observationToSummaryLine, Math.floor(budget * SUMMARY_OBSERVATIONS_MIN_SHARE));
+		const pickedReflections = selectWithinBudget(reflections, reflectionToSummaryLine, budget - reserved.tokens);
+		keptReflections = pickedReflections.kept;
+		keptObservations = selectWithinBudget(observations, observationToSummaryLine, budget - pickedReflections.tokens).kept;
 	}
 
 	const omittedReflections = reflections.length - keptReflections.length;
