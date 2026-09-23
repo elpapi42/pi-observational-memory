@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { renderSummary } from "../src/session-ledger/index.js";
+import { renderSummary, renderSummaryWithBudget } from "../src/session-ledger/index.js";
 import { observation, reflection } from "./fixtures/session.js";
 
 describe("session-ledger V3 summary rendering", () => {
@@ -51,5 +51,46 @@ describe("session-ledger V3 summary rendering", () => {
 		expect(summary).not.toContain("entry-tool");
 		expect(summary).not.toContain("legacy");
 		expect(summary).not.toContain("[object Object]");
+	});
+});
+
+describe("budgeted summary rendering", () => {
+	const reflections = ["e1", "e2", "e3"].map((id, i) => reflection(id.padEnd(12, "e"), ["aaaaaaaaaaaa"], { content: `Reflection ${i + 1} ${"r".repeat(120)}` }));
+	const observations = ["a1", "a2", "a3", "a4"].map((id, i) => observation(id.padEnd(12, "a"), { content: `Observation ${i + 1} ${"o".repeat(120)}` }));
+
+	it("renders everything when no budget is given", () => {
+		const rendered = renderSummaryWithBudget(reflections, observations);
+
+		expect(rendered.reflections).toHaveLength(3);
+		expect(rendered.observations).toHaveLength(4);
+		expect(rendered.omittedObservations).toBe(0);
+		expect(rendered.text).not.toContain("omitted");
+	});
+
+	it("keeps reflections first and the newest observations that fit", () => {
+		// Instructions ~250 tokens, each line ~40 tokens: 3 reflections (~120)
+		// plus 2 of 4 observations fit a 500-token budget.
+		const rendered = renderSummaryWithBudget(reflections, observations, { maxTokens: 500 });
+
+		expect(rendered.reflections).toHaveLength(3);
+		expect(rendered.observations.map((obs) => obs.id)).toEqual(["a3aaaaaaaaaa", "a4aaaaaaaaaa"]);
+		expect(rendered.omittedReflections).toBe(0);
+		expect(rendered.omittedObservations).toBe(2);
+		expect(rendered.text).toContain("(2 older observations omitted to fit the summary budget");
+		expect(rendered.text).toContain("[a4aaaaaaaaaa]");
+		expect(rendered.text).not.toContain("[a1aaaaaaaaaa]");
+	});
+
+	it("drops the oldest reflections when reflections alone exceed the budget", () => {
+		const rendered = renderSummaryWithBudget(reflections, observations, { maxTokens: 350 });
+
+		expect(rendered.reflections.length).toBeLessThan(3);
+		expect(rendered.reflections.at(-1)?.id).toBe("e3eeeeeeeeee");
+		expect(rendered.observations).toHaveLength(0);
+		expect(rendered.text).toContain("older reflection");
+	});
+
+	it("ignores a non-positive budget", () => {
+		expect(renderSummary(reflections, observations, { maxTokens: 0 })).toBe(renderSummary(reflections, observations));
 	});
 });

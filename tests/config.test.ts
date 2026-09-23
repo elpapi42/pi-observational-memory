@@ -45,6 +45,7 @@ describe("V3 config", () => {
 			observationsPoolTargetTokens: 10000,
 			agentMaxTurns: 16,
 			agentMaxTokens: 32000,
+			compactionCatchUpMaxChunks: 2,
 			consolidateWhenIdle: false,
 			showWorkerNotifications: true,
 			passive: false,

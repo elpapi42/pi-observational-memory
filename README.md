@@ -287,6 +287,8 @@ on the `Next compaction` line regardless of mode.
 | `agentMaxTurns`             | `16`          | Shared turn cap for background memory-agent loops.                                                |
 | `agentMaxTokens`            | `32000`       | Maximum output tokens requested for memory-agent loops (observer/reflector/dropper), clamped to the model's own `maxTokens` when available. Lower it for local servers with a modest context window, e.g. `8192`. |
 | `model`                     | session model | Optional memory-worker model override: `{ provider, id, thinking }`.                              |
+| `compactionSummaryMaxTokens` | derived      | Token budget for the rendered memory summary (reflections first, then newest observations). Unset: one eighth of the session model's context window, or `8000`. |
+| `compactionCatchUpMaxChunks` | `2`          | Observer chunks the compaction hook runs synchronously to cover unobserved source before Pi's cut, so it can own the compaction instead of delegating. `0` disables. |
 | `consolidateWhenIdle`       | `false`       | Run memory workers only while the agent is idle and abort them when a new run starts. Use when the session model and the memory model share one context budget (e.g. one local llama.cpp server). |
 | `showWorkerNotifications`   | `true`        | Shows routine observer, reflector, and dropper progress notifications. Warnings and errors are unaffected. |
 | `passive`                   | `false`       | Disables proactive background observation, reflection, maintenance, and auto-compaction triggers. |
@@ -371,6 +373,7 @@ Current behavior:
 * **Observation-centered memory.** The extension records useful session observations while you work.
 * **Durable reflections.** The extension distills stable facts that help the agent stay oriented over time.
 * **Fast compaction.** When prepared V3 memory exists, `session_before_compact` renders it without calling a model or waiting for background workers. An empty V3 projection delegates to Pi's native summarizer instead of replacing prior context with an empty summary.
+* **Bounded summaries, fewer native compactions.** The rendered memory summary respects `compactionSummaryMaxTokens`, and when the observer is behind the hook observes the gap synchronously (`compactionCatchUpMaxChunks`) so most compactions stay model-light and structured instead of falling back to Pi's growing prose summary.
 * **No unobserved context is discarded.** Proactive compaction counts only source tokens the observer has covered, and the compaction hook keeps entries the observer has not reached yet in context (within `compactionMaxRetainedTokens`) or delegates to Pi's native summarizer, instead of dropping them with no memory record.
 * **Background memory work.** Observation and reflection work run from `turn_end` when their token clocks are due; dropper work runs only after successful reflection and prunes the folded active observation ledger toward `observationsPoolTargetTokens`.
 * **Source-backed recall.** Observations and reflections can be traced back through the `recall` tool.

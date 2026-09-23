@@ -17,15 +17,86 @@ export function reflectionToSummaryLine(reflection: Reflection): string {
 	return `[${reflection.id}] ${reflection.content}`;
 }
 
-export function renderSummary(reflections: Reflection[], observations: Observation[]): string {
-	if (reflections.length === 0 && observations.length === 0) return "";
+export type RenderSummaryOptions = {
+	/**
+	 * Estimated token budget for the rendered summary. Reflections are kept
+	 * first (newest first when they alone exceed the budget), then the newest
+	 * observations that still fit. Omitted records stay in the session ledger
+	 * and remain visible through `/om:view full`.
+	 */
+	maxTokens?: number;
+};
 
+export type RenderedSummary = {
+	text: string;
+	reflections: Reflection[];
+	observations: Observation[];
+	omittedReflections: number;
+	omittedObservations: number;
+};
+
+function estimateTokens(text: string): number {
+	return Math.ceil(text.length / 4);
+}
+
+/** Newest-first selection of records whose rendered lines fit `budget`, returned in original order. */
+function selectWithinBudget<T>(records: T[], line: (record: T) => string, budget: number): { kept: T[]; tokens: number } {
+	const keptIndexes: number[] = [];
+	let tokens = 0;
+	for (let i = records.length - 1; i >= 0; i--) {
+		const cost = estimateTokens(line(records[i])) + 1;
+		if (tokens + cost > budget) break;
+		tokens += cost;
+		keptIndexes.push(i);
+	}
+	keptIndexes.reverse();
+	return { kept: keptIndexes.map((i) => records[i]), tokens };
+}
+
+export function renderSummaryWithBudget(
+	reflections: Reflection[],
+	observations: Observation[],
+	options: RenderSummaryOptions = {},
+): RenderedSummary {
+	if (reflections.length === 0 && observations.length === 0) {
+		return { text: "", reflections: [], observations: [], omittedReflections: 0, omittedObservations: 0 };
+	}
+
+	let keptReflections = reflections;
+	let keptObservations = observations;
+	const maxTokens = options.maxTokens;
+	if (maxTokens !== undefined && Number.isFinite(maxTokens) && maxTokens > 0) {
+		const fixed = estimateTokens(CONTEXT_USAGE_INSTRUCTIONS) + estimateTokens("## Reflections\n## Observations\n\n\n\n") + 40;
+		const budget = Math.max(0, maxTokens - fixed);
+		const picked = selectWithinBudget(reflections, reflectionToSummaryLine, budget);
+		keptReflections = picked.kept;
+		keptObservations = selectWithinBudget(observations, observationToSummaryLine, budget - picked.tokens).kept;
+	}
+
+	const omittedReflections = reflections.length - keptReflections.length;
+	const omittedObservations = observations.length - keptObservations.length;
 	const parts: string[] = [CONTEXT_USAGE_INSTRUCTIONS];
-	if (reflections.length > 0) {
-		parts.push(`## Reflections\n${reflections.map(reflectionToSummaryLine).join("\n")}`);
+	if (keptReflections.length > 0) {
+		parts.push(`## Reflections\n${keptReflections.map(reflectionToSummaryLine).join("\n")}`);
 	}
-	if (observations.length > 0) {
-		parts.push(`## Observations\n${observations.map(observationToSummaryLine).join("\n")}`);
+	if (keptObservations.length > 0) {
+		parts.push(`## Observations\n${keptObservations.map(observationToSummaryLine).join("\n")}`);
 	}
-	return parts.join("\n\n");
+	if (omittedReflections > 0 || omittedObservations > 0) {
+		const omitted: string[] = [];
+		if (omittedReflections > 0) omitted.push(`${omittedReflections} older reflection${omittedReflections === 1 ? "" : "s"}`);
+		if (omittedObservations > 0) omitted.push(`${omittedObservations} older observation${omittedObservations === 1 ? "" : "s"}`);
+		parts.push(`(${omitted.join(" and ")} omitted to fit the summary budget; they remain in the session memory ledger, see /om:view full.)`);
+	}
+	return {
+		text: parts.join("\n\n"),
+		reflections: keptReflections,
+		observations: keptObservations,
+		omittedReflections,
+		omittedObservations,
+	};
+}
+
+export function renderSummary(reflections: Reflection[], observations: Observation[], options: RenderSummaryOptions = {}): string {
+	return renderSummaryWithBudget(reflections, observations, options).text;
 }

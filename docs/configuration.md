@@ -67,6 +67,8 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `model.provider` | string | unset | Provider name in Pi's model registry. Required when `model` is set. |
 | `model.id` | string | unset | Model id in Pi's model registry. Required when `model` is set. |
 | `model.thinking` | enum | unset; workers fall back to `low` | Optional reasoning/thinking level for memory workers. |
+| `compactionSummaryMaxTokens` | positive integer | derived | Estimated token budget for the memory summary the compaction hook renders. Unset: one eighth of the session model's context window, or `8000` when unknown. Reflections are kept first, then the newest observations that fit. |
+| `compactionCatchUpMaxChunks` | non-negative integer | `2` | Observer chunks the compaction hook may run synchronously to cover source entries the background observer has not reached before Pi's cut. `0` disables. |
 | `consolidateWhenIdle` | boolean | `false` | Run memory workers only while the agent is idle (launch from `agent_settled`, abort when a new agent run starts). For hosts where the session model and the memory model share one context budget. |
 | `showWorkerNotifications` | boolean | `true` | Shows routine observer, reflector, and dropper progress notifications. |
 | `passive` | boolean | `false` | Disables proactive background memory and auto-compaction triggers. |
@@ -186,6 +188,20 @@ Set `model` when you want the observer, reflector, and dropper to use a cheaper 
 `provider` and `id` must both be non-empty strings. `thinking` is optional. If the configured model cannot be resolved, the runtime attempts to fall back to the current session model and notifies once. Memory workers accept either an API key or OAuth-style auth headers (e.g. `Authorization: Bearer …`), so OAuth-authenticated providers work without an API key. If no usable model or credentials are available, the relevant background worker skips/fails safely rather than inventing memory.
 
 Workers stream through Pi's composed provider runtime, not `@earendil-works/pi-ai/compat` alone. Session models whose `api` id comes from `pi.registerProvider` (`cursor-sdk`, CLIProxyAPI, commandcode, and other custom APIs) work without a second built-in provider. `model` remains optional: set it only when you want cheaper/faster workers than the coding agent. Leaving it unset is the Cursor-only setup.
+
+## `compactionSummaryMaxTokens`
+
+Default: derived — `floor(contextWindow / 8)` of the active session model, or `8000` when the context window is unknown.
+
+The rendered memory summary replaces the compacted range in context, so its size decides how much room is left before Pi's next compaction. Without a budget it grows with the ledger: on a long session it reached 17k tokens on a 64k window, more than the context it replaced. The hook now keeps all reflections first (newest first when reflections alone exceed the budget), then the newest observations that still fit, and ends the summary with a line stating how many older records were omitted. Omitted records stay in the session ledger, count toward the full memory in `/om:status`, and are shown by `/om:view full`.
+
+## `compactionCatchUpMaxChunks`
+
+Default: `2`. Set `0` to disable.
+
+When the background observer is behind Pi's proposed cut, the hook used to either retain the unobserved tail or delegate the whole range to Pi's native summarizer. Both cost headroom: retaining keeps raw source in context, and a native summary is prose that Pi rewrites and grows on every compaction (12k tokens after a hundred rounds on a local model) and that can hit the model's output cap. Instead, when observation coverage exists, the hook now observes the gap synchronously, up to this many observer chunks, appending coverage for each recorded chunk, and then re-resolves the cut, usually landing on Pi's proposed boundary with a bounded summary.
+
+This runs inside `session_before_compact`, where Pi waits for the hook and no session request is in flight, so the memory model does not compete with the session even when both share one server. A chunk that records nothing, fails, or is aborted stops the catch-up; the remaining gap is retained or delegated as before, and nothing is appended for a failed chunk. Catch-up is skipped while a background consolidation run is in flight and when the ledger has no observation coverage at all, so an empty memory still delegates to Pi's native summarizer without a model call.
 
 ## `consolidateWhenIdle`
 

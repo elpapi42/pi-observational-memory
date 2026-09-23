@@ -6,10 +6,11 @@ import {
 	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 
-import { resolveCompactionMaxRetainedTokens } from "../config.js";
+import { resolveCompactionMaxRetainedTokens, resolveCompactionSummaryMaxTokens } from "../config.js";
 import { estimateStringTokens } from "../tokens.js";
 import { debugLog, withDebugLogContext, type DebugLogContext } from "../debug-log.js";
 import type { Runtime } from "../runtime.js";
+import { catchUpObserver } from "./compaction-catch-up.js";
 import {
 	OM_OBSERVATIONS_RECORDED,
 	buildCompactionProjection,
@@ -155,16 +156,41 @@ function debugContext(runtime: Runtime, ctx: ExtensionContext): DebugLogContext 
 	};
 }
 
-async function handleCompaction(event: SessionBeforeCompactEvent, ctx: ExtensionContext, runtime: Runtime) {
+async function handleCompaction(pi: ExtensionAPI, event: SessionBeforeCompactEvent, ctx: ExtensionContext, runtime: Runtime) {
 	const { preparation, branchEntries } = event;
 	const { firstKeptEntryId, tokensBefore } = preparation;
-	const entries = branchEntries as Entry[];
+	let entries = branchEntries as Entry[];
 	const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : undefined;
 	const maxRetainedTokens = resolveCompactionMaxRetainedTokens(runtime.config, contextWindow);
-	let resolution = resolveCompactionCut(entries, firstKeptEntryId, {
-		maxRetainedTokens,
-		reason: (event as { reason?: string }).reason,
-	});
+	const summaryMaxTokens = resolveCompactionSummaryMaxTokens(runtime.config, contextWindow);
+	const reason = (event as { reason?: string }).reason;
+	let resolution = resolveCompactionCut(entries, firstKeptEntryId, { maxRetainedTokens, reason });
+
+	// The background observer is behind Pi's cut. Rather than retaining the
+	// tail or handing the whole range to Pi's native summarizer, observe the
+	// gap now: Pi waits for this hook, so the memory model has the server to
+	// itself, and observations are durable where a native summary is not.
+	if (
+		resolution.gap
+		&& runtime.config.compactionCatchUpMaxChunks > 0
+		&& !runtime.consolidationInFlight
+		&& latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED) !== undefined
+	) {
+		const catchUp = await catchUpObserver({
+			pi,
+			runtime,
+			ctx,
+			entries,
+			gap: resolution.gap,
+			maxChunks: runtime.config.compactionCatchUpMaxChunks,
+			signal: event.signal,
+		});
+		debugLog("compaction.catch_up", { ...catchUp, gapEntries: resolution.gap.entryCount, gapTokens: resolution.gap.tokens });
+		if (catchUp.chunksRecorded > 0) {
+			entries = (ctx.sessionManager?.getBranch?.() as Entry[] | undefined) ?? entries;
+			resolution = resolveCompactionCut(entries, firstKeptEntryId, { maxRetainedTokens, reason });
+		}
+	}
 
 	let projection: ReturnType<typeof buildCompactionProjection> | undefined;
 	let summary = "";
@@ -174,7 +200,7 @@ async function handleCompaction(event: SessionBeforeCompactEvent, ctx: Extension
 			resolution.cut.foldThroughEntryId,
 			{ observationsPoolMaxTokens: observationsPoolMaxTokens(runtime) },
 		);
-		summary = renderSummary(projection.reflections, projection.observations);
+		summary = renderSummary(projection.reflections, projection.observations, { maxTokens: summaryMaxTokens });
 
 		// A moved cut keeps the unobserved tail AND adds the rendered memory on
 		// top of it. Both must fit the budget, or Pi's threshold fires again
@@ -258,7 +284,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 		runtime.compactHookInFlight = true;
 		try {
 			runtime.ensureConfig(ctx.cwd);
-			return await withDebugLogContext(debugContext(runtime, ctx), () => handleCompaction(event, ctx, runtime));
+			return await withDebugLogContext(debugContext(runtime, ctx), () => handleCompaction(pi, event, ctx, runtime));
 		} finally {
 			runtime.compactHookInFlight = false;
 		}

@@ -50,6 +50,19 @@ export interface Config {
 	 * {@link resolveCompactionMaxRetainedTokens}.
 	 */
 	compactionMaxRetainedTokens?: number;
+	/**
+	 * Estimated token budget for the memory summary the compaction hook renders.
+	 * Unset (default) derives it from the session model's context window; see
+	 * {@link resolveCompactionSummaryMaxTokens}.
+	 */
+	compactionSummaryMaxTokens?: number;
+	/**
+	 * Maximum observer chunks the compaction hook may run synchronously to cover
+	 * source entries the background observer has not reached before Pi's cut,
+	 * so the hook can own the compaction instead of delegating to Pi's native
+	 * summarizer. 0 disables synchronous catch-up.
+	 */
+	compactionCatchUpMaxChunks: number;
 	observationsPoolMaxTokens: number;
 	observationsPoolTargetTokens: number;
 	agentMaxTurns: number;
@@ -86,6 +99,7 @@ export const DEFAULTS: Config = {
 	observationsPoolTargetTokens: 10_000,
 	agentMaxTurns: 16,
 	agentMaxTokens: 32_000,
+	compactionCatchUpMaxChunks: 2,
 	consolidateWhenIdle: false,
 	showWorkerNotifications: true,
 	passive: false,
@@ -140,6 +154,28 @@ export function resolveCompactionMaxRetainedTokens(config: Config, contextWindow
 		return Math.max(1, Math.floor(contextWindow * COMPACTION_RETAINED_CONTEXT_RATIO));
 	}
 	return COMPACTION_RETAINED_FALLBACK_MAX_TOKENS;
+}
+
+/** Summary budget used when `compactionSummaryMaxTokens` is unset and the context window is unknown. */
+export const COMPACTION_SUMMARY_FALLBACK_MAX_TOKENS = 8_000;
+
+/** Fraction of the session model's context window the rendered memory summary may occupy by default. */
+export const COMPACTION_SUMMARY_CONTEXT_RATIO = 0.125;
+
+/**
+ * Resolve the estimated token budget for the rendered compaction summary. An
+ * explicit `compactionSummaryMaxTokens` wins; otherwise one eighth of the
+ * session model's context window, or {@link COMPACTION_SUMMARY_FALLBACK_MAX_TOKENS}
+ * when the window is unknown.
+ */
+export function resolveCompactionSummaryMaxTokens(config: Config, contextWindow: number | undefined): number {
+	if (config.compactionSummaryMaxTokens !== undefined && config.compactionSummaryMaxTokens > 0) {
+		return config.compactionSummaryMaxTokens;
+	}
+	if (typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0) {
+		return Math.max(1, Math.floor(contextWindow * COMPACTION_SUMMARY_CONTEXT_RATIO));
+	}
+	return COMPACTION_SUMMARY_FALLBACK_MAX_TOKENS;
 }
 
 export const THINKING_LEVEL_VALUES: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -245,6 +281,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"observerChunkMaxTokens",
 		"compactAfterTokens",
 		"compactionMaxRetainedTokens",
+		"compactionSummaryMaxTokens",
 		"observationsPoolMaxTokens",
 		"observationsPoolTargetTokens",
 		"agentMaxTurns",
@@ -253,6 +290,9 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	for (const key of numberKeys) {
 		const normalizedValue = positiveIntegerOrUndefined(value[key]);
 		if (normalizedValue !== undefined) normalized[key] = normalizedValue;
+	}
+	if (Number.isInteger(value.compactionCatchUpMaxChunks) && (value.compactionCatchUpMaxChunks as number) >= 0) {
+		normalized.compactionCatchUpMaxChunks = value.compactionCatchUpMaxChunks as number;
 	}
 	if (isCompactAfterTokensMode(value.compactAfterTokensMode)) {
 		normalized.compactAfterTokensMode = value.compactAfterTokensMode;
