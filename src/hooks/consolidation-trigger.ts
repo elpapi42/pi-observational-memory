@@ -104,6 +104,59 @@ function stageDue(
 	return rawEstimateFn(entries) >= threshold;
 }
 
+const RETRYABLE_STAGE_HINT =
+	/overload|rate.?limit|temporarily|5[0-9]{2}|timed? ?out|quota|too many|busy|try again/i;
+
+/**
+ * True for failures worth re-running a worker stage on a fallback model:
+ * `ObserverStreamError` (the agent already classified the stream as an API
+ * failure via stopReason error/aborted) plus thrown messages matching the
+ * transient-provider hints. Everything else (tool logic errors, policy)
+ * propagates unchanged and is never masked.
+ */
+function isRetryableStageError(error: unknown): boolean {
+	if (error instanceof ObserverStreamError) return true;
+	const msg = error instanceof Error ? error.message : String(error);
+	return RETRYABLE_STAGE_HINT.test(msg);
+}
+
+/**
+ * Run a worker stage against the primary resolved model, then against each
+ * configured `fallbackModels` entry in order until one answers. Resolving a
+ * fallback through `runtime.resolveModel` reuses the exact auth/header/env
+ * path the pipeline already uses, so a fallback model only needs to exist in
+ * Pi's model registry (models.json / settings.json providers).
+ */
+async function withModelFallback<T>(
+	primary: ResolvedModel,
+	runtime: Runtime,
+	ctx: ConsolidationCtx,
+	run: (resolved: ResolvedModel) => Promise<T>,
+): Promise<T> {
+	const alts = (runtime.config.fallbackModels ?? []).map((spec) =>
+		runtime.resolveModel({
+			model: { provider: spec.provider, id: spec.id },
+			modelRegistry: ctx.modelRegistry,
+			hasUI: ctx.hasUI,
+			ui: ctx.ui,
+		}).catch(() => undefined),
+	);
+	const attempts = [
+		primary,
+		...(await Promise.all(alts)).filter((r): r is ResolvedModel => Boolean(r)),
+	];
+	let lastErr: unknown;
+	for (const resolved of attempts) {
+		try {
+			return await run(resolved);
+		} catch (err) {
+			if (!isRetryableStageError(err)) throw err;
+			lastErr = err;
+		}
+	}
+	throw lastErr;
+}
+
 function anyStageDue(entries: Entry[], runtime: Runtime, currentTokens: number | undefined): boolean {
 	return stageDue(entries, runtime, currentTokens, OM_OBSERVATIONS_RECORDED, rawTokensSinceObservationCoverage, runtime.config.observeAfterTokens)
 		|| stageDue(entries, runtime, currentTokens, OM_REFLECTIONS_RECORDED, rawTokensSinceReflectionCoverage, runtime.config.reflectAfterTokens);
@@ -323,20 +376,22 @@ async function runObserverStage(
 
 	let observations: Observation[] | undefined;
 	try {
-		observations = await runObserver({
-			model: resolved.model as any,
-			apiKey: resolved.apiKey,
-			headers: resolved.headers,
-			env: resolved.env,
-			priorReflections,
-			priorObservations,
-			chunk,
-			allowedSourceEntryIds: sourceEntryIds,
-			maxTurns: runtime.config.agentMaxTurns,
-			maxOutputTokens: runtime.config.agentMaxTokens,
-			thinkingLevel: runtime.config.model?.thinking ?? "low",
-			modelRegistry: ctx.modelRegistry,
-		});
+		observations = await withModelFallback(resolved, runtime, ctx, (r) =>
+			runObserver({
+				model: r.model as any,
+				apiKey: r.apiKey,
+				headers: r.headers,
+				env: r.env,
+				priorReflections,
+				priorObservations,
+				chunk,
+				allowedSourceEntryIds: sourceEntryIds,
+				maxTurns: runtime.config.agentMaxTurns,
+				maxOutputTokens: runtime.config.agentMaxTokens,
+				thinkingLevel: runtime.config.model?.thinking ?? "low",
+				modelRegistry: ctx.modelRegistry,
+			}),
+		);
 	} catch (error) {
 		if (error instanceof ObserverStreamError) {
 			// API/stream failure is not a clean empty (#32): surface it as a real
@@ -398,18 +453,20 @@ async function runReflectorStage(
 	if (!resolved) return { outcome: "abort", sameRunReflections: [] };
 
 	const folded = foldLedger(entries);
-	const reflections = await runReflector({
-		model: resolved.model as any,
-		apiKey: resolved.apiKey,
-		headers: resolved.headers,
-		env: resolved.env,
-		reflections: folded.reflections,
-		observations: folded.activeObservations,
-		maxTurns: runtime.config.agentMaxTurns,
-		maxOutputTokens: runtime.config.agentMaxTokens,
-		thinkingLevel: runtime.config.model?.thinking ?? "low",
-		modelRegistry: ctx.modelRegistry,
-	});
+	const reflections = await withModelFallback(resolved, runtime, ctx, (r) =>
+		runReflector({
+			model: r.model as any,
+			apiKey: r.apiKey,
+			headers: r.headers,
+			env: r.env,
+			reflections: folded.reflections,
+			observations: folded.activeObservations,
+			maxTurns: runtime.config.agentMaxTurns,
+			maxOutputTokens: runtime.config.agentMaxTokens,
+			thinkingLevel: runtime.config.model?.thinking ?? "low",
+			modelRegistry: ctx.modelRegistry,
+		}),
+	);
 	if (!reflections) return { outcome: "continue", sameRunReflections: [] };
 
 	const data = buildReflectionsRecordedData(reflections, observationCoverageId);
@@ -473,19 +530,21 @@ async function runDropperStage(
 	if (!resolved) return "abort";
 
 	const reflectionsForDropper = mergeReflections(folded.reflections, sameRunReflections);
-	const droppedIds = await runDropper({
-		model: resolved.model as any,
-		apiKey: resolved.apiKey,
-		headers: resolved.headers,
-		env: resolved.env,
-		reflections: reflectionsForDropper,
-		observations: folded.activeObservations,
-		targetTokens: runtime.config.observationsPoolTargetTokens,
-		maxTurns: runtime.config.agentMaxTurns,
-		maxOutputTokens: runtime.config.agentMaxTokens,
-		thinkingLevel: runtime.config.model?.thinking ?? "low",
-		modelRegistry: ctx.modelRegistry,
-	});
+	const droppedIds = await withModelFallback(resolved, runtime, ctx, (r) =>
+		runDropper({
+			model: r.model as any,
+			apiKey: r.apiKey,
+			headers: r.headers,
+			env: r.env,
+			reflections: reflectionsForDropper,
+			observations: folded.activeObservations,
+			targetTokens: runtime.config.observationsPoolTargetTokens,
+			maxTurns: runtime.config.agentMaxTurns,
+			maxOutputTokens: runtime.config.agentMaxTokens,
+			thinkingLevel: runtime.config.model?.thinking ?? "low",
+			modelRegistry: ctx.modelRegistry,
+		}),
+	);
 	const coversUpToId = earlierCoverageMarkerId(entries, observationCoverageId, sameRunReflectionCoverageId);
 	const data = coversUpToId && droppedIds ? buildObservationsDroppedData(droppedIds, coversUpToId) : undefined;
 	debugLog("dropper.append", {

@@ -220,6 +220,9 @@ A typical config:
       "id": "google/gemma-4-31b-it",
       "thinking": "low"
     },
+    "fallbackModels": [
+      { "provider": "openrouter", "id": "google/gemini-2.5-flash" }
+    ],
     "showWorkerNotifications": true,
     "passive": false,
     "debugLog": false
@@ -286,6 +289,7 @@ on the `Next compaction` line regardless of mode.
 | `agentMaxTurns`             | `16`          | Shared turn cap for background memory-agent loops.                                                |
 | `agentMaxTokens`            | `32000`       | Maximum output tokens requested for memory-agent loops (observer/reflector/dropper), clamped to the model's own `maxTokens` when available. Lower it for local servers with a modest context window, e.g. `8192`. |
 | `model`                     | session model | Optional memory-worker model override: `{ provider, id, thinking }`.                              |
+| `fallbackModels`            | none          | Order-preserved fallback models for transient worker failures: when a stage (observer/reflector/dropper) fails with a retryable provider error (service overloaded, rate limit, `5xx`, timeout), the next entry is tried with the same pipeline. Each entry is `{ provider, id }` (optional `thinking`), resolved through Pi's model registry. Non-retryable errors (tool/policy failures) propagate unchanged. |
 | `showWorkerNotifications`   | `true`        | Shows routine observer, reflector, and dropper progress notifications. Warnings and errors are unaffected. |
 | `passive`                   | `false`       | Disables proactive background observation, reflection, maintenance, and auto-compaction triggers. |
 | `debugLog`                  | `false`       | Writes opt-in per-session extension debug events to Pi's agent directory.                         |

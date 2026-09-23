@@ -54,6 +54,13 @@ export interface Config {
 	 */
 	agentMaxTokens: number;
 	model?: ConfiguredModel;
+	/**
+	 * Alternate models tried in order when a worker stage (observer /
+	 * reflector / dropper) fails with a transient provider error (service
+	 * overloaded, rate limit, 5xx, timeout). First configured fallback that
+	 * resolves and answers wins; non-retryable errors propagate unchanged.
+	 */
+	fallbackModels?: ConfiguredModel[];
 	showWorkerNotifications: boolean;
 	passive: boolean;
 	debugLog: boolean;
@@ -214,6 +221,12 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
 	const model = normalizeModel(value.model);
 	if (model) normalized.model = model;
+	if (Array.isArray(value.fallbackModels)) {
+		const fallbacks = value.fallbackModels
+			.map(normalizeModel)
+			.filter((m): m is ConfiguredModel => m !== undefined);
+		if (fallbacks.length > 0) normalized.fallbackModels = fallbacks;
+	}
 	return normalized;
 }
 
