@@ -326,6 +326,41 @@ describe("Runtime V3 behavior", () => {
 			});
 		});
 
+		it("resolveFallbackModel handles OAuth fallback with expired credentials", async () => {
+			const runtime = new Runtime();
+			const fallback = { provider: "openai-codex", id: "gpt-5-codex" };
+			runtime.config = { ...runtime.config, fallbackModel: fallback };
+			const registry = {
+				find: vi.fn(() => fallback),
+				getApiKeyAndHeaders: vi.fn(async () => ({ ok: false, error: "refresh failed" })),
+				isUsingOAuth: vi.fn((model: unknown) => model === fallback),
+			};
+
+			const result = await runtime.resolveFallbackModel({ model: { provider: "anthropic", id: "haiku" }, modelRegistry: registry, hasUI: false });
+
+			expect(registry.isUsingOAuth).toHaveBeenCalledWith(fallback);
+			expect(result).toEqual({
+				ok: false,
+				reason: 'authentication failed for provider "openai-codex" — OAuth credentials may have expired; run \'/login openai-codex\' to re-authenticate',
+			});
+		});
+
+		it("resolveFallbackModel handles request-time signing fallback (Bedrock/Vertex pattern)", async () => {
+			const runtime = new Runtime();
+			const fallback = { provider: "amazon-bedrock", id: "us.anthropic.claude-sonnet-4-5" };
+			runtime.config = { ...runtime.config, fallbackModel: fallback };
+			const registry = {
+				find: vi.fn(() => fallback),
+				getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: undefined, headers: undefined })),
+				hasConfiguredAuth: vi.fn((model: unknown) => model === fallback),
+			};
+
+			const result = await runtime.resolveFallbackModel({ model: { provider: "anthropic", id: "haiku" }, modelRegistry: registry, hasUI: false });
+
+			expect(registry.hasConfiguredAuth).toHaveBeenCalledWith(fallback);
+			expect(result).toEqual({ ok: true, model: fallback, apiKey: undefined, headers: undefined, env: undefined, baseUrl: undefined });
+		});
+
 		it("resolveFallbackModel applies the same auth rules as the primary path", async () => {
 			const runtime = new Runtime();
 			runtime.config = { ...runtime.config, model: { provider: "anthropic", id: "haiku" }, fallbackModel: { ...FALLBACK } };
