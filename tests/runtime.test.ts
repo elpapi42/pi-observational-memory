@@ -225,4 +225,115 @@ describe("Runtime V3 behavior", () => {
 			baseUrl: "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1"
 		});
 	});
+
+	describe("fallback model", () => {
+		const FALLBACK = { provider: "opencode-go", id: "deepseek-v4.1-flash" };
+
+		function fallbackRegistry(primaryAuth: unknown, fallbackAuth: unknown) {
+			return {
+				find: vi.fn((provider: string, id: string) =>
+					provider === FALLBACK.provider && id === FALLBACK.id ? { ...FALLBACK } : undefined,
+				),
+				getApiKeyAndHeaders: vi.fn(async (model: { provider?: string }) =>
+					model.provider === FALLBACK.provider ? fallbackAuth : primaryAuth,
+				),
+				isUsingOAuth: vi.fn(() => false),
+			};
+		}
+
+		it("resolves the fallback when the primary model has no usable auth", async () => {
+			const runtime = new Runtime();
+			const notify = vi.fn();
+			runtime.config = { ...runtime.config, model: { provider: "anthropic", id: "haiku" }, fallbackModel: { ...FALLBACK } };
+			const registry = fallbackRegistry({ ok: false, error: "expired" }, { ok: true, apiKey: "go-key" });
+
+			const result = await runtime.resolveModel({
+				model: { provider: "session" },
+				modelRegistry: registry,
+				hasUI: true,
+				ui: { notify },
+			});
+
+			expect(result).toMatchObject({ ok: true, model: FALLBACK, apiKey: "go-key", fallbackUsed: true });
+			if (!result.ok) throw new Error("model resolution failed");
+			expect(result.primaryFailure).toContain("no API key or auth headers");
+			expect(notify).toHaveBeenCalledWith(
+				expect.stringContaining("using fallback opencode-go/deepseek-v4.1-flash"),
+				"warning",
+			);
+		});
+
+		it("does not consult the fallback when the primary model resolves", async () => {
+			const runtime = new Runtime();
+			const primary = { provider: "anthropic", id: "haiku" };
+			runtime.config = { ...runtime.config, fallbackModel: { ...FALLBACK } };
+			const registry = {
+				find: vi.fn(() => ({ ...FALLBACK })),
+				getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "primary-key" })),
+			};
+
+			const result = await runtime.resolveModel({ model: primary, modelRegistry: registry, hasUI: false });
+
+			expect(result).toEqual({ ok: true, model: primary, apiKey: "primary-key", headers: undefined });
+			expect(registry.find).not.toHaveBeenCalled();
+		});
+
+		it("reports both reasons when the primary and the fallback both fail", async () => {
+			const runtime = new Runtime();
+			runtime.config = { ...runtime.config, fallbackModel: { ...FALLBACK } };
+			const registry = { ...fallbackRegistry({ ok: false }, { ok: false }), isUsingOAuth: vi.fn(() => false) };
+
+			const result = await runtime.resolveModel({
+				model: { provider: "anthropic" },
+				modelRegistry: registry,
+				hasUI: false,
+			});
+
+			expect(result.ok).toBe(false);
+			if (result.ok) throw new Error("expected failure");
+			expect(result.reason).toContain('no API key or auth headers for provider "anthropic"');
+			expect(result.reason).toContain('no API key or auth headers for provider "opencode-go"');
+		});
+
+		it("resolveFallbackModel reports unset, identical, and missing fallbacks", async () => {
+			const runtime = new Runtime();
+			const registry = {
+				find: vi.fn((provider: string) => (provider === "anthropic" ? { provider: "anthropic", id: "haiku" } : undefined)),
+				getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "k" })),
+			};
+
+			await expect(runtime.resolveFallbackModel({ model: undefined, modelRegistry: registry, hasUI: false })).resolves.toEqual({
+				ok: false,
+				reason: "no fallback model configured",
+			});
+
+			runtime.config = { ...runtime.config, model: { provider: "anthropic", id: "haiku" }, fallbackModel: { provider: "anthropic", id: "haiku" } };
+			await expect(runtime.resolveFallbackModel({ model: undefined, modelRegistry: registry, hasUI: false })).resolves.toEqual({
+				ok: false,
+				reason: "fallback model anthropic/haiku is identical to the effective primary model",
+			});
+
+			runtime.config = { ...runtime.config, model: undefined, fallbackModel: { provider: "anthropic", id: "haiku" } };
+			await expect(runtime.resolveFallbackModel({ model: { provider: "anthropic", id: "haiku" }, modelRegistry: registry, hasUI: false })).resolves.toEqual({
+				ok: false,
+				reason: "fallback model anthropic/haiku is identical to the effective primary model",
+			});
+
+			runtime.config = { ...runtime.config, fallbackModel: { ...FALLBACK } };
+			await expect(runtime.resolveFallbackModel({ model: undefined, modelRegistry: registry, hasUI: false })).resolves.toEqual({
+				ok: false,
+				reason: "fallback model opencode-go/deepseek-v4.1-flash not found",
+			});
+		});
+
+		it("resolveFallbackModel applies the same auth rules as the primary path", async () => {
+			const runtime = new Runtime();
+			runtime.config = { ...runtime.config, model: { provider: "anthropic", id: "haiku" }, fallbackModel: { ...FALLBACK } };
+			const registry = fallbackRegistry({ ok: true, apiKey: "primary" }, { ok: true, headers: { Authorization: "Bearer go" } });
+
+			const result = await runtime.resolveFallbackModel({ model: undefined, modelRegistry: registry, hasUI: false });
+
+			expect(result).toEqual({ ok: true, model: FALLBACK, apiKey: undefined, headers: { Authorization: "Bearer go" } });
+		});
+	});
 });
