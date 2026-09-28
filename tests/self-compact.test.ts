@@ -64,6 +64,19 @@ describe("self-compact", () => {
 		);
 	});
 
+	it("shows the resume note only when the result is expanded", () => {
+		const { tool } = setup();
+		const theme = { fg: (_color: string, text: string) => text };
+		const result = { content: [{ type: "text", text: "Compaction scheduled." }], details: { scheduled: true } };
+		const context = { args: { resume: "Finish step 3." } };
+		const render = (expanded: boolean) =>
+			tool().renderResult(result, { expanded, isPartial: false }, theme, context).render(80).join("\n");
+
+		expect(render(false)).toContain("Compaction scheduled.");
+		expect(render(false)).not.toContain("Finish step 3.");
+		expect(render(true)).toContain("Finish step 3.");
+	});
+
 	it("stays idle without a note and reports failures only to a resuming agent", async () => {
 		const { pi, ctx, settle, tool } = setup();
 

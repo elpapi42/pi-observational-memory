@@ -1,5 +1,6 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 
 import { resolveTokenThreshold } from "../config.js";
 import type { Runtime } from "../runtime.js";
@@ -18,6 +19,13 @@ const compactContextTool = (runtime: Runtime) => defineTool({
 			description: "Current task and next step, delivered to you after compaction. Omit when no work remains.",
 		})),
 	}),
+	renderResult(result, options, theme, context) {
+		const status = result.content.map((block) => (block.type === "text" ? block.text : "")).join("");
+		const resume = context.args.resume?.trim();
+		let text = theme.fg("toolOutput", status);
+		if (options.expanded && resume) text += `\n\n${theme.fg("muted", "Resume note:")}\n${theme.fg("toolOutput", resume)}`;
+		return new Text(text, 0, 0);
+	},
 	async execute(_toolCallId, params) {
 		const scheduled = runtime.selfCompactPending === undefined;
 		if (scheduled) runtime.selfCompactPending = params.resume?.trim() ? { resume: params.resume.trim() } : {};
