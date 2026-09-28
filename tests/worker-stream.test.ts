@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { streamSimple as compatStreamSimple } from "@earendil-works/pi-ai/compat";
+import {
+	registerApiProvider,
+	streamSimple as compatStreamSimple,
+	unregisterApiProviders,
+} from "@earendil-works/pi-ai/compat";
 
 import { resolveWorkerStreamSimple, type WorkerStreamSimple } from "../src/agents/worker-stream.js";
 import { runObserver } from "../src/agents/observer/agent.js";
@@ -96,6 +100,30 @@ describe("resolveWorkerStreamSimple", () => {
 		expect(resolveWorkerStreamSimple({ api: "openai-completions", provider: "openai", id: "gpt" } as any, {
 			getRegisteredProviderConfig: () => undefined,
 		})).toBe(compatStreamSimple);
+	});
+
+	it("prefers pi-ai's registry for a custom API an extension registered there", () => {
+		const sourceId = "worker-stream-test-side";
+		const sideStream = vi.fn() as unknown as WorkerStreamSimple;
+		registerApiProvider({ api: "side-api", stream: sideStream as any, streamSimple: sideStream as any }, sourceId);
+		try {
+			const sideModel = { api: "side-api", provider: "side", id: "side-model" } as any;
+			const conversationStream = vi.fn() as unknown as WorkerStreamSimple;
+			expect(resolveWorkerStreamSimple(sideModel, {
+				streamSimple: customStream,
+				getRegisteredProviderConfig: () => ({ api: "side-api", streamSimple: conversationStream }),
+			})).toBe(compatStreamSimple);
+		} finally {
+			unregisterApiProviders(sourceId);
+		}
+	});
+
+	it("keeps built-in APIs on ModelRegistry.streamSimple", () => {
+		const resolved = resolveWorkerStreamSimple(
+			{ api: "anthropic-messages", provider: "anthropic", id: "claude" } as any,
+			{ streamSimple: customStream },
+		);
+		expect(resolved).not.toBe(compatStreamSimple);
 	});
 
 	it("falls back to compat when registry lookup throws", () => {
