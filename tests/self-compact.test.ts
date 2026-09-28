@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { registerSelfCompact, SELF_COMPACT_RESUME_TYPE, SELF_COMPACT_TOOL_NAME } from "../src/hooks/self-compact.js";
+import {
+	registerSelfCompact,
+	SELF_COMPACT_OVERLAP_TYPE,
+	SELF_COMPACT_RESUME_TYPE,
+	SELF_COMPACT_TOOL_NAME,
+} from "../src/hooks/self-compact.js";
 
 function setup(warnAt: unknown[] = []) {
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
@@ -11,6 +16,7 @@ function setup(warnAt: unknown[] = []) {
 		getActiveTools: vi.fn(() => [] as string[]),
 		setActiveTools: vi.fn(),
 		sendMessage: vi.fn(),
+		appendEntry: vi.fn(),
 	};
 	const runtime = {
 		ensureConfig: vi.fn(),
@@ -30,15 +36,16 @@ function setup(warnAt: unknown[] = []) {
 		sessionManager: { getBranch: () => branch },
 	};
 	handlers.get("session_start")!({ type: "session_start" }, ctx);
+	const settleSync = () => handlers.get("agent_settled")!({ type: "agent_settled" }, ctx);
 	const settle = async () => {
-		handlers.get("agent_settled")!({ type: "agent_settled" }, ctx);
+		settleSync();
 		await vi.runAllTimersAsync();
 	};
 	const turnEnd = (tokens: number, toolResults: unknown[] = [{}]) => {
 		usage.tokens = tokens;
 		handlers.get("turn_end")!({ type: "turn_end", toolResults }, ctx);
 	};
-	return { pi, runtime, ctx, settle, turnEnd, branch, tool: () => tool };
+	return { pi, runtime, ctx, settle, settleSync, turnEnd, branch, handlers, tool: () => tool };
 }
 
 describe("self-compact", () => {
@@ -46,14 +53,16 @@ describe("self-compact", () => {
 	afterEach(() => vi.useRealTimers());
 
 	it("compacts after the run settles and resumes from the agent's note", async () => {
-		const { pi, runtime, ctx, settle, tool } = setup();
+		const { pi, runtime, ctx, settleSync, tool } = setup();
 		expect(tool().name).toBe(SELF_COMPACT_TOOL_NAME);
 
 		const result = await tool().execute("call-1", { resume: "Finish step 3." });
 		expect(result.terminate).toBe(true);
 		expect(ctx.compact).not.toHaveBeenCalled();
 
-		await settle();
+		// Synchronous within the handler, so an RPC parent's next get_state sees isCompacting.
+		settleSync();
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
 		expect(runtime.compactInFlight).toBe(true);
 		ctx.compact.mock.calls[0][0].onComplete({});
 
@@ -62,6 +71,22 @@ describe("self-compact", () => {
 			expect.objectContaining({ customType: SELF_COMPACT_RESUME_TYPE, content: expect.stringContaining("Finish step 3.") }),
 			{ triggerTurn: true },
 		);
+	});
+
+	it("records a run that starts while its compaction is running, once, and not the resume turn", async () => {
+		const { pi, ctx, settleSync, handlers, tool } = setup();
+		const agentStart = () => handlers.get("agent_start")!({ type: "agent_start" }, ctx);
+
+		await tool().execute("call-1", { resume: "Next." });
+		settleSync();
+		agentStart();
+		agentStart();
+		expect(pi.appendEntry).toHaveBeenCalledTimes(1);
+		expect(pi.appendEntry.mock.calls[0][0]).toBe(SELF_COMPACT_OVERLAP_TYPE);
+
+		ctx.compact.mock.calls[0][0].onComplete({});
+		agentStart();
+		expect(pi.appendEntry).toHaveBeenCalledTimes(1);
 	});
 
 	it("shows the resume note only when the result is expanded", () => {

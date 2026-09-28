@@ -8,6 +8,8 @@ import { OM_SELF_COMPACT_WARNING, type Entry } from "../session-ledger/index.js"
 
 export const SELF_COMPACT_TOOL_NAME = "compact_context";
 export const SELF_COMPACT_RESUME_TYPE = "om.self-compact.resume";
+/** Debug record: a run started while a self-compaction was still running. */
+export const SELF_COMPACT_OVERLAP_TYPE = "om.self-compact.overlap";
 
 const compactContextTool = (runtime: Runtime) => defineTool({
 	name: SELF_COMPACT_TOOL_NAME,
@@ -60,6 +62,8 @@ function warnedLevelSinceCompaction(entries: Entry[]): { cycle: string; level: n
 
 export function registerSelfCompact(pi: ExtensionAPI, runtime: Runtime): void {
 	let registered = false;
+	// Only this hook's compaction; the resume turn starts after it is cleared.
+	let compacting: { overlapRecorded: boolean } | undefined;
 	// Queued warnings reach the branch only when delivered.
 	let queued = { cycle: "", level: 0 };
 
@@ -106,6 +110,16 @@ export function registerSelfCompact(pi: ExtensionAPI, runtime: Runtime): void {
 		);
 	});
 
+	// Compaction starts inside agent_settled, so a turn another extension defers from the same
+	// agent_settled starts while it runs. Pi gives no signal for prompts it rejects then.
+	pi.on("agent_start", () => {
+		if (!compacting || compacting.overlapRecorded) return;
+		compacting.overlapRecorded = true;
+		pi.appendEntry(SELF_COMPACT_OVERLAP_TYPE, {
+			message: "An agent run started while compact_context's compaction was running.",
+		});
+	});
+
 	// Registered before the proactive trigger so an agent-requested compaction
 	// claims compactInFlight first on the same agent_settled.
 	pi.on("agent_settled", (_event, ctx: ExtensionContext) => {
@@ -120,29 +134,28 @@ export function registerSelfCompact(pi: ExtensionAPI, runtime: Runtime): void {
 			return;
 		}
 		runtime.compactInFlight = true;
-		setTimeout(() => {
-			// Input that arrived since settling takes precedence over the handoff.
-			if (!ctx.isIdle()) {
-				runtime.compactInFlight = false;
-				if (hasUI) ui?.notify("Observational memory: self-compaction skipped — agent became busy", "info");
-				return;
-			}
-			try {
-				ctx.compact({
-					onComplete: () => {
-						runtime.compactInFlight = false;
-						sendResume(pi, pending.resume);
-					},
-					onError: (error: { message: string }) => {
-						runtime.compactInFlight = false;
-						if (hasUI) ui?.notify(`Observational memory: self-compaction failed: ${error.message}`, "error");
-						sendResume(pi, pending.resume, error.message);
-					},
-				});
-			} catch (error) {
-				runtime.compactInFlight = false;
-				sendResume(pi, pending.resume, error instanceof Error ? error.message : String(error));
-			}
-		}, 0);
+		compacting = { overlapRecorded: false };
+		// Started synchronously so the session reports isCompacting before it reads any
+		// further RPC input; an RPC parent can then tell a pending handoff from a finished run.
+		// The run has settled, so compact()'s abort-and-wait returns at once.
+		try {
+			ctx.compact({
+				onComplete: () => {
+					runtime.compactInFlight = false;
+					compacting = undefined;
+					sendResume(pi, pending.resume);
+				},
+				onError: (error: { message: string }) => {
+					runtime.compactInFlight = false;
+					compacting = undefined;
+					if (hasUI) ui?.notify(`Observational memory: self-compaction failed: ${error.message}`, "error");
+					sendResume(pi, pending.resume, error.message);
+				},
+			});
+		} catch (error) {
+			runtime.compactInFlight = false;
+			compacting = undefined;
+			sendResume(pi, pending.resume, error instanceof Error ? error.message : String(error));
+		}
 	});
 }
