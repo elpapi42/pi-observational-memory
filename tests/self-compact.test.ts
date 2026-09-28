@@ -104,22 +104,26 @@ describe("self-compact", () => {
 		expect(render(true)).toContain("Finish step 3.");
 	});
 
-	it("stays idle without a note and reports failures only to a resuming agent", async () => {
+	it("always starts a turn and repeats the note only on failure", async () => {
 		const { pi, ctx, settle, tool } = setup();
+		expect(tool().parameters.required).toEqual(["resume"]);
 
-		await tool().execute("call-1", {});
+		await tool().execute("call-1", { resume: "" });
 		await settle();
 		ctx.compact.mock.calls[0][0].onComplete({});
-		expect(pi.sendMessage).not.toHaveBeenCalled();
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ content: expect.stringContaining("Compaction complete.") }),
+			{ triggerTurn: true },
+		);
 
 		await tool().execute("call-2", { resume: "Next." });
 		await settle();
 		ctx.compact.mock.calls[1][0].onError(new Error("Nothing to compact"));
-		expect(pi.sendMessage).toHaveBeenCalledWith(
+		expect(pi.sendMessage).toHaveBeenLastCalledWith(
 			expect.objectContaining({ content: expect.stringContaining("Compaction failed: Nothing to compact") }),
 			{ triggerTurn: true },
 		);
-		expect(pi.sendMessage.mock.calls[0][0].content).toContain("Next.");
+		expect(pi.sendMessage.mock.calls[1][0].content).toContain("Next.");
 	});
 
 	it("warns once per threshold per compaction cycle, attaching idle warnings to the next prompt", () => {

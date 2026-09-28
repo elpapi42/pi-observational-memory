@@ -219,7 +219,7 @@ If the fallback advertises a smaller context window than the primary, the observ
 
 Default: `{ "enabled": false }`.
 
-When enabled, the agent gets a `compact_context` tool. Calling it ends the current run; once Pi settles, the extension compacts through the normal V3 hook, so memory is rendered without a model call and recent turns stay in the retained tail. If the agent passed `resume`, a short message starts the next turn and points the agent at the note, which stays in the retained tail as part of the tool call. Without it, the agent stays idle after compaction. A failed compaction is reported to the agent only when it asked to resume, and that report repeats the note so it can continue without compacting.
+When enabled, the agent gets a `compact_context` tool. Calling it ends the current run; once Pi settles, the extension compacts through the normal V3 hook, so memory is rendered without a model call and recent turns stay in the retained tail. The required `resume` note states the current task and next step, or what the agent is waiting on. After compaction a short message starts the next turn and points the agent at the note, which stays in the retained tail as part of the tool call. A failed compaction is reported in that message, which repeats the note so the agent can continue without compacting.
 
 Input that arrives before the compaction starts cancels it. Proactive `compactAfterTokens` compaction keeps working as a backstop.
 
