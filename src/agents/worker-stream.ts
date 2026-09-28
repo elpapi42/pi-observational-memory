@@ -1,5 +1,5 @@
-import type { AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
-import { streamSimple as compatStreamSimple } from "@earendil-works/pi-ai/compat";
+import type { AssistantMessageEventStream, Context, KnownApi, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { getApiProvider, streamSimple as compatStreamSimple } from "@earendil-works/pi-ai/compat";
 
 export type WorkerStreamSimple = (
 	model: Model<any>,
@@ -23,6 +23,20 @@ export type StreamableModelRegistry = {
 	} | undefined;
 };
 
+// Typed as a Record so a new pi-ai built-in API fails typecheck until listed.
+const BUILTIN_APIS: Record<KnownApi, true> = {
+	"openai-completions": true,
+	"mistral-conversations": true,
+	"openai-responses": true,
+	"azure-openai-responses": true,
+	"openai-codex-responses": true,
+	"anthropic-messages": true,
+	"bedrock-converse-stream": true,
+	"google-generative-ai": true,
+	"google-vertex": true,
+	"pi-messages": true,
+};
+
 /**
  * Resolve the stream function background workers must pass to `agentLoop`.
  *
@@ -37,6 +51,14 @@ export function resolveWorkerStreamSimple(
 	override?: WorkerStreamSimple,
 ): WorkerStreamSimple {
 	if (override) return override;
+
+	// An extension that also registers its custom API id in pi-ai's own registry
+	// is declaring the handler for calls outside Pi's conversation. Pi's composed
+	// path would route a worker to that extension's conversation provider instead,
+	// which may reject the worker's own system prompt.
+	if (!Object.hasOwn(BUILTIN_APIS, model.api) && getApiProvider(model.api)) {
+		return compatStreamSimple;
+	}
 
 	const registryStream = modelRegistry?.streamSimple;
 	if (typeof registryStream === "function") {
