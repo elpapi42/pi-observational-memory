@@ -18,7 +18,7 @@ const compactContextTool = (runtime: Runtime) => defineTool({
 		"Compact context into memory at a clean breakpoint; recent turns stay verbatim. Ends this turn.",
 	parameters: Type.Object({
 		resume: Type.Optional(Type.String({
-			description: "Current task and next step, delivered to you after compaction. Omit when no work remains.",
+			description: "Current task and next step, kept in context after compaction. Omit when no work remains.",
 		})),
 	}),
 	renderResult(result, options, theme, context) {
@@ -39,11 +39,12 @@ const compactContextTool = (runtime: Runtime) => defineTool({
 	},
 });
 
+// On success the retained tail already holds the tool call and its note, so only the failure repeats it.
 function sendResume(pi: ExtensionAPI, resume: string | undefined, failure?: string): void {
 	if (!resume) return;
 	const content = failure
 		? `Compaction failed: ${failure}. Continue without compacting from your note:\n\n${resume}`
-		: `Continue from your note written before compaction:\n\n${resume}`;
+		: `Compaction complete. Continue from the resume note in your ${SELF_COMPACT_TOOL_NAME} call.`;
 	pi.sendMessage({ customType: SELF_COMPACT_RESUME_TYPE, content, display: true }, { triggerTurn: true });
 }
 

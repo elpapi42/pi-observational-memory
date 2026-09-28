@@ -68,9 +68,11 @@ describe("self-compact", () => {
 
 		expect(runtime.compactInFlight).toBe(false);
 		expect(pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ customType: SELF_COMPACT_RESUME_TYPE, content: expect.stringContaining("Finish step 3.") }),
+			expect.objectContaining({ customType: SELF_COMPACT_RESUME_TYPE, content: expect.stringContaining("Compaction complete.") }),
 			{ triggerTurn: true },
 		);
+		// The retained tail keeps the tool call, so the note is not repeated.
+		expect(pi.sendMessage.mock.calls[0][0].content).not.toContain("Finish step 3.");
 	});
 
 	it("records a run that starts while its compaction is running, once, and not the resume turn", async () => {
@@ -117,6 +119,7 @@ describe("self-compact", () => {
 			expect.objectContaining({ content: expect.stringContaining("Compaction failed: Nothing to compact") }),
 			{ triggerTurn: true },
 		);
+		expect(pi.sendMessage.mock.calls[0][0].content).toContain("Next.");
 	});
 
 	it("warns once per threshold per compaction cycle, attaching idle warnings to the next prompt", () => {
