@@ -56,7 +56,7 @@ export type ObservationsDroppedEntryData = {
 };
 
 export type EmbeddingsIndexedEntryData = {
-	/** `full` for /om:index, `auto` for the first build of an uncompacted session, `incremental` on settle. */
+	/** `full` for /om:index, `auto` for the first build of an uncompacted session, `incremental` on turns, settles, and recall. */
 	mode: "full" | "auto" | "incremental";
 	outcome: "complete" | "aborted" | "failed";
 	model: string;

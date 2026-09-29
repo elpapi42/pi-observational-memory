@@ -327,7 +327,7 @@ An `id` of 8 lowercase hex characters is a Pi transcript entry id, as returned b
 
 With a `query`, recall ranks with BM25 over every observation and reflection recorded on the branch, including dropped ones, plus the transcript hidden by the latest compaction: source entries before its `firstKeptEntryId`, split into chunks of about 1,200 characters. The retained tail and later entries are in context already and are not indexed. Each transcript entry contributes at most its best chunk. The top 8 hits are returned as memory lines or transcript snippets with ids that the agent can pass back to expand.
 
-With `recallEmbeddings` enabled, the lexical ranking is fused with cosine similarity from a local embedding model over the same documents. Documents are indexed in the background, and any that are not embedded yet keep their lexical rank.
+With `recallEmbeddings` enabled, the lexical ranking is fused with cosine similarity from a local embedding model over the same documents. Documents are indexed in slices across turns and idle time. A query first embeds the documents still queued on an indexed branch. Any other document without a vector keeps its lexical rank.
 
 Recall ignores old V2 memory by construction because it indexes only V3 ledger entry types.
 

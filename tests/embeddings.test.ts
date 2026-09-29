@@ -163,7 +163,7 @@ describe("recall embeddings", () => {
 
 		expect(embeddings.status("s1", branch)).toEqual({ state: "absent", autoBuild: false, documents: 0, orphaned: 0, indexing: false });
 		await embeddings.scheduleIndex("s1", branch);
-		expect(embeddings.status("s1", branch)).toEqual({ state: "present", documents: 2, orphaned: 0, missing: 0, recentEmbedded: 2, recentTotal: 2, indexing: false });
+		expect(embeddings.status("s1", branch)).toEqual({ state: "present", documents: 2, orphaned: 0, missing: 0, pending: 0, recentEmbedded: 2, recentTotal: 2, indexing: false });
 		expect(new SessionEmbeddings(() => ({ ...config, enabled: false })).status("s1", branch)).toBeUndefined();
 	});
 
@@ -203,6 +203,64 @@ describe("recall embeddings", () => {
 		expect(progress).toEqual([{ done: 0, total: 2, pruned: 0 }]);
 		expect(record).toHaveBeenLastCalledWith(expect.not.objectContaining({ throughEntryId: expect.anything() }));
 		expect(embeddings.scheduleIncrementalIndex("s1", branch)).toBeUndefined();
+	});
+
+	// An uncompacted branch indexed once, so its first compaction is picked up incrementally.
+	async function compactedBacklog(dir: string, embedder: Embedder, count: number) {
+		const messages = Array.from({ length: count }, (_, i) => rawMessage(`cccc${String(i).padStart(4, "0")}`, `Turn ${i}.`));
+		const { branch, record } = recordingBranch([...messages, rawMessage("cccc9999", "Kept turn.")]);
+		const embeddings = new SessionEmbeddings(() => config, async () => embedder, () => dir, record);
+		expect(await embeddings.scheduleIncrementalIndex("s1", branch)).toBe("complete");
+		branch.push(compactionEntry("cmp-1", { firstKeptEntryId: "cccc9999" }));
+		record.mockClear();
+		return { branch, record, embeddings };
+	}
+
+	it("spreads a backlog over budgeted runs, recording only the one that completes", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "om-emb-"));
+		dirs.push(dir);
+		let now = 0;
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+		// Each batch of 16 takes 600ms, so a 1s budget fits two.
+		const embedder = { embed: vi.fn(async (texts: string[]) => { now += 600; return fakeEmbedder.embed(texts); }) };
+		const { branch, record, embeddings } = await compactedBacklog(dir, embedder, 40);
+
+		expect(await embeddings.scheduleIncrementalIndex("s1", branch, { budgetMs: 1_000 })).toBe("aborted");
+		expect(embedder.embed).toHaveBeenCalledTimes(2);
+		expect(record).not.toHaveBeenCalled();
+		expect(embeddings.status("s1", branch)).toMatchObject({ state: "present", documents: 32, missing: 0, pending: 8 });
+		// A budget stop leaves the vectors in memory rather than rewriting the store every turn.
+		expect(new SessionEmbeddings(() => config, async () => embedder, () => dir).status("s1", branch)).toMatchObject({ documents: 0 });
+
+		expect(await embeddings.scheduleIncrementalIndex("s1", branch, { budgetMs: 1_000 })).toBe("complete");
+		expect(embedder.embed).toHaveBeenCalledTimes(3);
+		expect(record).toHaveBeenCalledTimes(1);
+		expect(record).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "incremental", outcome: "complete", embedded: 8, throughEntryId: "cmp-1" }));
+		expect(new SessionEmbeddings(() => config, async () => embedder, () => dir).status("s1", branch)).toMatchObject({ documents: 40 });
+		vi.restoreAllMocks();
+	});
+
+	it("catches up before a query by stopping the run in flight and embedding the rest", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "om-emb-"));
+		dirs.push(dir);
+		const embedder = { embed: vi.fn(async (texts: string[]) => { await new Promise((resolve) => setTimeout(resolve, 1)); return fakeEmbedder.embed(texts); }) };
+		const { branch, record, embeddings } = await compactedBacklog(dir, embedder, 40);
+
+		const background = embeddings.scheduleIncrementalIndex("s1", branch);
+		const progress: Array<{ done: number; total: number }> = [];
+		await embeddings.catchUp("s1", branch, { onProgress: (p) => progress.push(p) });
+		expect(await background).toBe("aborted");
+		expect(embeddings.isIndexing).toBe(false);
+		expect(embeddings.status("s1", branch)).toMatchObject({ documents: 40, pending: 0 });
+		expect(progress.at(-1)).toMatchObject({ done: progress.at(-1)!.total });
+		expect(record).toHaveBeenCalledTimes(1);
+		expect(record).toHaveBeenLastCalledWith(expect.objectContaining({ outcome: "complete", throughEntryId: "cmp-1" }));
+
+		// A compacted branch that was never indexed stays with /om:index.
+		const idle = new SessionEmbeddings(() => config, async () => embedder, () => dir);
+		embedder.embed.mockClear();
+		await idle.catchUp("s2", entries);
+		expect(embedder.embed).not.toHaveBeenCalled();
 	});
 
 	it("surfaces semantic matches that share no keywords with the query", () => {
