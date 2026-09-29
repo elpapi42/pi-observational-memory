@@ -41,6 +41,11 @@ The extension loads config once for its runtime. After changing settings, restar
       "id": "google/gemma-4-31b-it",
       "thinking": "low"
     },
+    "fallbackModel": {
+      "provider": "opencode-go",
+      "id": "deepseek-v4.1-flash",
+      "thinking": "low"
+    },
     "showWorkerNotifications": true,
     "passive": false,
     "debugLog": false
@@ -71,6 +76,11 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `compactionCatchUpMaxChunks` | non-negative integer | `2` | Observer chunks the compaction hook may run synchronously to cover source entries the background observer has not reached before Pi's cut. `0` disables. |
 | `workerMemoryMaxTokens` | positive integer | derived | Estimated token budget for the prior memory each observer, reflector, and dropper request carries. Unset: a quarter of the memory model's context window, or `16000` when unknown. |
 | `consolidateWhenIdle` | boolean | `false` | Run memory workers only while the agent is idle (launch from `agent_settled`, abort when a new agent run starts). For hosts where the session model and the memory model share one context budget. |
+
+| `fallbackModel` | object | unset | Optional model the memory workers fall back to when the primary memory model fails to resolve or a worker call errors. |
+| `fallbackModel.provider` | string | unset | Provider name in Pi's model registry. Required when `fallbackModel` is set. |
+| `fallbackModel.id` | string | unset | Model id in Pi's model registry. Required when `fallbackModel` is set. |
+| `fallbackModel.thinking` | enum | unset; falls back to `model.thinking` then `low` | Optional reasoning/thinking level used when the fallback is active. |
 | `showWorkerNotifications` | boolean | `true` | Shows routine observer, reflector, and dropper progress notifications. |
 | `passive` | boolean | `false` | Disables proactive background memory and auto-compaction triggers. |
 | `debugLog` | boolean | `false` | Writes best-effort per-session extension debug events to Pi's agent directory. |
@@ -223,6 +233,40 @@ With `consolidateWhenIdle: true`:
 - Proactive compaction is evaluated after the idle run finishes, so it is not starved by memory work sharing the same settled event.
 
 The trade-off is that during a long autonomous tool loop the observer does not advance; the compaction hook still protects unobserved context by retaining it or delegating to Pi's native summarizer (see [`compactionMaxRetainedTokens`](#compactionmaxretainedtokens)). Memory catches up while you type.
+
+## `fallbackModel`
+
+Default: unset, meaning there is no fallback and a failed memory model behaves exactly as before (the worker skips or fails safely).
+
+Set `fallbackModel` to give the memory workers a second model when the primary one is unavailable:
+
+```json
+{
+  "observational-memory": {
+    "model": {
+      "provider": "anthropic",
+      "id": "claude-haiku-4-5-20251001",
+      "thinking": "low"
+    },
+    "fallbackModel": {
+      "provider": "opencode-go",
+      "id": "deepseek-v4.1-flash",
+      "thinking": "low"
+    }
+  }
+}
+```
+
+The fallback is tried in two places:
+
+1. **Resolution.** When the primary memory model cannot be resolved — not in Pi's registry, or carrying no usable API key/auth headers — the fallback is resolved and used. The notification names both the primary failure and the fallback that took over.
+2. **Runtime.** When a worker stage (observer, reflector, or dropper) errors during its model call, that one stage is retried once with the fallback model. The retry is per-stage and per-pass; a successful retry is logged and notified.
+
+Once the fallback resolves, it is reused for the rest of the consolidation pass, so later stages do not re-pay a known-broken primary. If the primary model itself resolved through the fallback, no further runtime retry is attempted for that pass.
+
+If the fallback advertises a smaller context window than the primary, the observer chunk is capped to the smaller window before the run, so a fallback retry is never handed a prompt sized only for a larger primary. `fallbackModel.thinking`, when set, is the thinking level used for the fallback call.
+
+`provider` and `id` must both be non-empty strings, exactly as for `model`. A `fallbackModel` identical to the effective primary memory model — the configured `model` when it resolves, otherwise the session model — is rejected as a misconfiguration. A fallback that also fails leaves the existing skip/fail-safe behavior intact: no memory is invented, coverage does not advance, and the failure is surfaced (worker failure notification, `/om:status`, debug log).
 
 ## `showWorkerNotifications`
 

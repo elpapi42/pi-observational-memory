@@ -97,7 +97,7 @@ export async function catchUpObserver(args: CatchUpArgs): Promise<CatchUpResult>
 				maxTurns: runtime.config.agentMaxTurns,
 				maxOutputTokens: runtime.config.agentMaxTokens,
 				thinkingLevel: runtime.config.model?.thinking ?? "low",
-				modelRegistry: ctx.modelRegistry,
+				modelRegistry: ctx.modelRegistry as any,
 			});
 		} catch (error) {
 			if (signal?.aborted) return { ...result, stoppedBecause: "aborted" };

@@ -220,6 +220,11 @@ A typical config:
       "id": "google/gemma-4-31b-it",
       "thinking": "low"
     },
+    "fallbackModel": {
+      "provider": "opencode-go",
+      "id": "deepseek-v4.1-flash",
+      "thinking": "low"
+    },
     "showWorkerNotifications": true,
     "passive": false,
     "debugLog": false
@@ -291,6 +296,7 @@ on the `Next compaction` line regardless of mode.
 | `compactionCatchUpMaxChunks` | `2`          | Observer chunks the compaction hook runs synchronously to cover unobserved source before Pi's cut, so it can own the compaction instead of delegating. `0` disables. |
 | `workerMemoryMaxTokens`     | derived       | Token budget for the prior memory each memory-worker request carries (newest first; the dropper sees the oldest observations). Unset: a quarter of the memory model's context window, or `16000`. |
 | `consolidateWhenIdle`       | `false`       | Run memory workers only while the agent is idle and abort them when a new run starts. Use when the session model and the memory model share one context budget (e.g. one local llama.cpp server). |
+| `fallbackModel`             | unset         | Optional second memory-worker model: `{ provider, id, thinking }`. Used when the primary memory model fails to resolve, and to retry a worker stage once when its model call errors. |
 | `showWorkerNotifications`   | `true`        | Shows routine observer, reflector, and dropper progress notifications. Warnings and errors are unaffected. |
 | `passive`                   | `false`       | Disables proactive background observation, reflection, maintenance, and auto-compaction triggers. |
 | `debugLog`                  | `false`       | Writes opt-in per-session extension debug events to Pi's agent directory.                         |
@@ -306,6 +312,8 @@ Valid `model.thinking` values are:
 * `max`
 
 If no `model` is configured, memory workers use the session model, including custom `pi.registerProvider` APIs such as `cursor-sdk`. You do not need a second built-in provider (OpenAI, OpenRouter, …) for observational memory to run. Set `model` only when you want cheaper or faster workers than the coding agent.
+
+Set `fallbackModel` when the memory model may be unavailable: it is tried when the primary memory model cannot be resolved (unknown provider/model or no usable credentials), and a worker stage that errors mid-call is retried once with it. Once the fallback is used, it stays active for the rest of the consolidation pass. With no `fallbackModel` configured, a failed memory model skips or fails safely exactly as before.
 
 Set `showWorkerNotifications` to `false` to hide routine worker start and completion messages (including deliberate-empty observer info messages). Model fallback/unavailability, worker failures (including observer stream errors), compaction notifications, and explicit `/om:*` command output remain visible.
 

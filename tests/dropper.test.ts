@@ -72,6 +72,18 @@ describe("runDropper maxTokens clamping", () => {
 
 		expect(config().maxTokens).toBe(AGENT_LOOP_MAX_TOKENS);
 	});
+
+	it("uses finishTurn as a dropper turn cap without overriding hard exits", async () => {
+		const { loop, config } = captureLoopConfig();
+
+		await runDropper({ ...args, model: {} as any, agentLoop: loop, maxTurns: 2 });
+
+		expect(config().finishTurn).toBeTypeOf("function");
+		expect(config().finishTurn({ message: { stopReason: "error" } })).toBeUndefined();
+		expect(config().finishTurn({ message: { stopReason: "aborted" } })).toBeUndefined();
+		expect(config().finishTurn({ message: { stopReason: "toolUse" } })).toBeUndefined();
+		expect(config().finishTurn({ message: { stopReason: "stop" } })).toEqual({ action: "end" });
+	});
 });
 
 describe("V3 dropper agent", () => {
@@ -119,7 +131,7 @@ describe("V3 dropper agent", () => {
 	it("keeps core dropper safety guidance in V3 terms", async () => {
 		let systemPrompt = "";
 		const loop = fakeAgentLoop((_prompts, context) => {
-			systemPrompt = context.systemPrompt;
+			systemPrompt = context.messages[0]?.role === "system" ? context.messages[0].content : "";
 		});
 
 		await runDropper({ ...baseArgs, agentLoop: loop });
@@ -260,6 +272,32 @@ describe("V3 dropper agent", () => {
 	it("returns undefined when no tool call drops observations", async () => {
 		const loop = fakeAgentLoop(() => {});
 		await expect(runDropper({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
+	});
+
+	it("throws on a failed stream with no selected drops", async () => {
+		for (const stopReason of ["error", "aborted"]) {
+			const loop = (() => ({
+				async *[Symbol.asyncIterator]() {
+					yield { type: "message_end", message: { role: "assistant", stopReason, errorMessage: "rate limited" } };
+				},
+				result: async () => ({}),
+			})) as any;
+			await expect(runDropper({ ...baseArgs, agentLoop: loop })).rejects.toMatchObject({
+				name: "DropperStreamError", stopReason, message: expect.stringContaining("rate limited"),
+			});
+		}
+	});
+
+	it("keeps safely selected drops when a later stream turn fails", async () => {
+		const loop = ((prompts: any[], context: any) => ({
+			async *[Symbol.asyncIterator]() {
+				yield { type: "message_end", message: { role: "assistant", stopReason: "toolUse" } };
+				await context.tools[0].execute("tool-1", { ids: ["aaaaaaaaaaaa"] });
+				yield { type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "rate limited" } };
+			},
+			result: async () => ({}),
+		})) as any;
+		await expect(runDropper({ ...baseArgs, agentLoop: loop })).resolves.toEqual(["aaaaaaaaaaaa"]);
 	});
 
 	it("skips the model at or below the target", async () => {

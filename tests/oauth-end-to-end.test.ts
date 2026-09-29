@@ -2,7 +2,8 @@ import { createServer, type Server } from "node:http";
 import { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 import { DEFAULTS } from "../src/config.js";
 import { registerConsolidationTrigger } from "../src/hooks/consolidation-trigger.js";
@@ -18,7 +19,8 @@ import { textCustomMessage } from "./fixtures/session.js";
  * in the session ledger.
  */
 
-const OAUTH_TOKEN = "Bearer pi-oauth-access-token";
+const OAUTH_ACCESS_TOKEN = "pi-oauth-access-token";
+const OAUTH_TOKEN = `Bearer ${OAUTH_ACCESS_TOKEN}`;
 
 type RecordedRequest = { headers: Record<string, string | undefined>; body: any };
 
@@ -89,21 +91,24 @@ async function startMockAnthropic(requests: RecordedRequest[]): Promise<{ server
  * OAuth-shaped: no stored apiKey, an Authorization header instead. This is the
  * `{ ok: true, headers }` (no apiKey) result the real registry hands extensions.
  */
-function oauthModelRegistry(): any {
-	return new ModelRegistry({
-		getAuth: async () => undefined,
-		getCompatibilityRequestConfig: () => ({ headers: { Authorization: OAUTH_TOKEN }, authHeader: false }),
-		isUsingOAuth: (providerId: string) => providerId === "kimi-coding",
-	} as any);
+async function oauthModelRegistry(): Promise<ModelRegistry> {
+	const credentials = new InMemoryCredentialStore();
+	await credentials.modify("kimi-coding", async () => ({
+		type: "oauth",
+		access: OAUTH_ACCESS_TOKEN,
+		refresh: "unused-refresh-token",
+		expires: Date.now() + 60 * 60 * 1000,
+	}));
+	const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
+	return new ModelRegistry(runtime);
 }
 
-/** Real ModelRegistry for an OAuth provider whose credentials no longer resolve. */
-function expiredOAuthModelRegistry(provider: string): any {
-	return new ModelRegistry({
-		getAuth: async () => undefined,
-		getCompatibilityRequestConfig: () => ({ headers: undefined, authHeader: true }),
-		isUsingOAuth: (providerId: string) => providerId === provider,
-	} as any);
+/** Minimal registry state for an OAuth provider whose credentials no longer resolve. */
+function expiredOAuthModelRegistry(): any {
+	return {
+		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: undefined, headers: undefined }),
+		isUsingOAuth: () => true,
+	};
 }
 
 let activeServer: Server | undefined;
@@ -155,7 +160,7 @@ describe("OAuth provider end-to-end consolidation", () => {
 			hasUI: true,
 			ui: { notify: (message: string) => notices.push(message) },
 			model,
-			modelRegistry: oauthModelRegistry(),
+			modelRegistry: await oauthModelRegistry(),
 			sessionManager: { getBranch: () => entries },
 		});
 		await runtime.consolidationPromise;
@@ -208,7 +213,7 @@ describe("OAuth provider end-to-end consolidation", () => {
 			hasUI: true,
 			ui: { notify: (message: string) => notices.push(message) },
 			model,
-			modelRegistry: expiredOAuthModelRegistry("openai-codex"),
+			modelRegistry: expiredOAuthModelRegistry(),
 			sessionManager: { getBranch: () => entries },
 		});
 		await runtime.consolidationPromise;

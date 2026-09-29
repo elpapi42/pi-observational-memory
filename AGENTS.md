@@ -14,6 +14,21 @@ caller-supplied `Authorization` header as a substitute apiKey. The acceptance ru
 re-introduce a hard `apiKey` requirement — it breaks compaction/consolidation for every OAuth model.
 Tests: `npm test` (vitest); typecheck: `npm run typecheck`.
 
+## Fallback model (`fallbackModel`)
+
+`config.fallbackModel` is a second memory-worker model. It is tried in two places, both in
+`src/runtime.ts` + `src/hooks/consolidation-trigger.ts`:
+
+- Resolution (`Runtime.resolveModel` → `resolveFallbackModel`): used when the primary memory model
+  (config `model`, else session model) is missing from the registry or has no usable auth.
+- Runtime (`runStageWithFallback`): a worker stage that throws is retried once with the fallback.
+
+`makeModelResolver` caches the fallback for the rest of the pass once it resolves, and a stage whose
+result already carries `fallbackUsed: true` is never retried again. Keep `resolveCandidate` as the
+single place that applies Pi's auth acceptance rule — both the primary and fallback paths must share
+it. Do not make the fallback mandatory: with none configured, the previous skip/fail-safe behavior
+must be byte-for-byte unchanged (covered by `tests/runtime.test.ts` and `tests/consolidation-trigger.test.ts`).
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

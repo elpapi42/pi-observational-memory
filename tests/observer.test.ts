@@ -95,7 +95,7 @@ describe("runObserver", () => {
 	it("keeps core observer prompt rules", async () => {
 		let systemPrompt = "";
 		const loop = fakeAgentLoop((_prompts, context) => {
-			systemPrompt = context.systemPrompt;
+			systemPrompt = context.messages[0]?.role === "system" ? context.messages[0].content : "";
 		});
 
 		await runObserver({ ...baseArgs, agentLoop: loop });
@@ -187,17 +187,19 @@ describe("runObserver", () => {
 		expect(observations?.[0].content).toBe("Kept despite later error");
 	});
 
-	it("uses maxTurns as an observer turn cap", async () => {
-		let shouldStopAfterTurn: any;
+	it("uses finishTurn as an observer turn cap without overriding hard exits", async () => {
+		let finishTurn: any;
 		const loop = fakeAgentLoop((_prompts, _context, config) => {
-			shouldStopAfterTurn = config.shouldStopAfterTurn;
+			finishTurn = config.finishTurn;
 		});
 
 		await runObserver({ ...baseArgs, agentLoop: loop, maxTurns: 2 });
 
-		expect(shouldStopAfterTurn).toBeTypeOf("function");
-		expect(shouldStopAfterTurn({})).toBe(false);
-		expect(shouldStopAfterTurn({})).toBe(true);
+		expect(finishTurn).toBeTypeOf("function");
+		expect(finishTurn({ message: { stopReason: "error" } })).toBeUndefined();
+		expect(finishTurn({ message: { stopReason: "aborted" } })).toBeUndefined();
+		expect(finishTurn({ message: { stopReason: "toolUse" } })).toBeUndefined();
+		expect(finishTurn({ message: { stopReason: "stop" } })).toEqual({ action: "end" });
 	});
 
 	it("uses configured observer thinking level for reasoning models", async () => {

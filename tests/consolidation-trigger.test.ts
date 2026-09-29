@@ -102,6 +102,7 @@ function setup(args: {
 		lastDropperError: undefined as string | undefined,
 		ensureConfig: vi.fn(),
 		resolveModel: vi.fn(async () => ({ ok: true, model: { reasoning: true }, apiKey: "key", headers: { h: "v" } })),
+		resolveFallbackModel: vi.fn(async () => ({ ok: false, reason: "no fallback model configured" })),
 		launchConsolidationTask: vi.fn((_ctx, work) => {
 			runtime.consolidationInFlight = true;
 			runtime.consolidationAbortController = new AbortController();
@@ -822,6 +823,234 @@ describe("V3 consolidation trigger", () => {
 		expect(dropperFailure.pi.appendEntry).toHaveBeenCalledTimes(1);
 		expect(dropperFailure.pi.appendEntry).toHaveBeenCalledWith(OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" });
 	});
+
+	describe("fallback model retry", () => {
+		it("uses the resolution-level fallback model for the observer", async () => {
+			const obs = observation("cccccccccccc", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
+			mockAgents.runObserver.mockResolvedValueOnce([obs]);
+			const { fire, runLaunchedWork, pi, runtime } = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], reflectAfterTokens: 999 });
+			(runtime.config as any).fallbackModel = { provider: "opencode-go", id: "deepseek-v4.1-flash", thinking: "high" };
+			const fallback = { provider: "opencode-go", id: "deepseek-v4.1-flash", baseUrl: "https://opencode.ai/zen/go/v1" };
+			runtime.resolveModel.mockResolvedValueOnce({
+				ok: true,
+				model: fallback,
+				apiKey: "go-key",
+				fallbackUsed: true,
+				primaryFailure: "primary unavailable",
+			});
+
+			fire();
+			await runLaunchedWork();
+
+			expect(mockAgents.runObserver).toHaveBeenCalledOnce();
+			expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({
+				model: fallback,
+				apiKey: "go-key",
+				headers: { "x-opencode-session": "session-1", "x-opencode-client": "pi" },
+				thinkingLevel: "high",
+			}));
+			expect(runtime.resolveFallbackModel).not.toHaveBeenCalled();
+			expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [obs], coversUpToId: "raw-1" });
+		});
+
+		it("retries the observer once with the fallback model after a primary stream error", async () => {
+			const obs = observation("cccccccccccc", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
+			mockAgents.runObserver
+				.mockRejectedValueOnce(new ObserverStreamError("error", "primary down"))
+				.mockResolvedValueOnce([obs]);
+			const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+			const { fire, runLaunchedWork, pi, runtime, ctx } = setup({ entries, reflectAfterTokens: 999 });
+			runtime.resolveFallbackModel.mockResolvedValueOnce({
+				ok: true,
+				model: { provider: "opencode-go", id: "deepseek-v4.1-flash", baseUrl: "https://opencode.ai/zen/go/v1" },
+				apiKey: "go-key",
+			});
+
+			fire();
+			await runLaunchedWork();
+
+			expect(mockAgents.runObserver).toHaveBeenCalledTimes(2);
+			expect(mockAgents.runObserver).toHaveBeenNthCalledWith(2, expect.objectContaining({
+				apiKey: "go-key",
+				headers: { "x-opencode-session": "session-1", "x-opencode-client": "pi" },
+			}));
+			expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [obs], coversUpToId: "raw-1" });
+			expect(runtime.lastObserverError).toBeUndefined();
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				expect.stringContaining("retrying with fallback model"),
+				"warning",
+			);
+		});
+
+		it("reuses the fallback model for later stages in the same pass", async () => {
+			const obs = observation("cccccccccccc", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
+			const ref = reflection("ffffffffffff", ["cccccccccccc"]);
+			mockAgents.runObserver
+				.mockRejectedValueOnce(new ObserverStreamError("error", "primary down"))
+				.mockResolvedValueOnce([obs]);
+			mockAgents.runReflector.mockResolvedValueOnce([ref]);
+			const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+			const { fire, runLaunchedWork, runtime } = setup({ entries, reflectAfterTokens: 1 });
+			runtime.resolveFallbackModel.mockResolvedValueOnce({
+				ok: true,
+				model: { provider: "opencode-go", id: "deepseek-v4.1-flash" },
+				apiKey: "go-key",
+			});
+
+			fire();
+			await runLaunchedWork();
+
+			expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "go-key" }));
+			expect(runtime.resolveFallbackModel).toHaveBeenCalledTimes(1);
+		});
+
+		it("aborts the observer when the fallback retry also fails", async () => {
+			mockAgents.runObserver
+				.mockRejectedValueOnce(new ObserverStreamError("error", "primary down"))
+				.mockRejectedValueOnce(new ObserverStreamError("error", "fallback down"));
+			const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+			const { fire, runLaunchedWork, runtime, pi } = setup({ entries, reflectAfterTokens: 999 });
+			runtime.resolveFallbackModel.mockResolvedValueOnce({
+				ok: true,
+				model: { provider: "opencode-go", id: "deepseek-v4.1-flash" },
+				apiKey: "go-key",
+			});
+
+			fire();
+			await runLaunchedWork();
+
+			expect(mockAgents.runObserver).toHaveBeenCalledTimes(2);
+			expect(runtime.lastObserverError).toContain("fallback down");
+			expect(pi.appendEntry).not.toHaveBeenCalled();
+		});
+
+		it("retries the reflector once with the fallback model", async () => {
+			const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
+			mockAgents.runReflector
+				.mockRejectedValueOnce(new Error("reflect failed"))
+				.mockResolvedValueOnce([newRef]);
+			const entries = [
+				textCustomMessage("raw-1", "aaaaaaaa"),
+				observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+			];
+			const { fire, runLaunchedWork, pi, runtime } = setup({ entries, observeAfterTokens: 999 });
+			runtime.resolveFallbackModel.mockResolvedValueOnce({
+				ok: true,
+				model: { provider: "opencode-go", id: "deepseek-v4.1-flash" },
+				apiKey: "go-key",
+			});
+
+			fire();
+			await runLaunchedWork();
+
+			expect(mockAgents.runReflector).toHaveBeenCalledTimes(2);
+			expect(pi.appendEntry).toHaveBeenCalledWith(OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" });
+		});
+
+		it("retries the dropper once with the fallback model after a primary error", async () => {
+			const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
+			mockAgents.runReflector.mockResolvedValueOnce([newRef]);
+			mockAgents.runDropper.mockRejectedValueOnce(new Error("primary down")).mockResolvedValueOnce(["aaaaaaaaaaaa"]);
+			const entries = [
+				textCustomMessage("raw-1", "aaaaaaaa"),
+				observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+			];
+			const { fire, runLaunchedWork, pi, runtime, ctx } = setup({ entries, observeAfterTokens: 999, observationsPoolMaxTokens: 10 });
+			const fallback = { provider: "opencode-go", id: "deepseek-v4.1-flash" };
+			runtime.resolveFallbackModel.mockResolvedValueOnce({ ok: true, model: fallback, apiKey: "go-key" });
+
+			fire();
+			await runLaunchedWork();
+
+			expect(mockAgents.runDropper).toHaveBeenCalledTimes(2);
+			expect(mockAgents.runDropper).toHaveBeenNthCalledWith(1, expect.objectContaining({ apiKey: "key", headers: { h: "v" } }));
+			expect(mockAgents.runDropper).toHaveBeenNthCalledWith(2, expect.objectContaining({ model: fallback, apiKey: "go-key" }));
+			expect(runtime.resolveFallbackModel).toHaveBeenCalledTimes(1);
+			expect(runtime.lastDropperError).toBeUndefined();
+			expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("dropper failed (primary down); retrying with fallback model"), "warning");
+			expect(pi.appendEntry.mock.calls).toEqual([
+				[OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" }],
+				[OM_OBSERVATIONS_DROPPED, { observationIds: ["aaaaaaaaaaaa"], coversUpToId: "raw-1" }],
+			]);
+		});
+
+		it("does not retry when no fallback model is configured", async () => {
+			mockAgents.runObserver.mockRejectedValueOnce(new Error("observe failed"));
+			const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+			const { fire, runLaunchedWork, runtime } = setup({ entries, reflectAfterTokens: 999 });
+
+			fire();
+			await runLaunchedWork();
+
+			expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
+			expect(runtime.resolveFallbackModel).toHaveBeenCalledTimes(1);
+			expect(runtime.lastObserverError).toBe("observe failed");
+		});
+
+		it("does not retry a stage that already resolved through the fallback", async () => {
+			mockAgents.runObserver.mockRejectedValueOnce(new ObserverStreamError("error", "fallback down"));
+			const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+			const { fire, runLaunchedWork, runtime } = setup({ entries, reflectAfterTokens: 999 });
+			runtime.resolveModel.mockResolvedValueOnce({
+				ok: true,
+				model: { provider: "opencode-go", id: "deepseek-v4.1-flash" },
+				apiKey: "go-key",
+				fallbackUsed: true,
+				primaryFailure: "primary down",
+			});
+
+			fire();
+			await runLaunchedWork();
+
+			expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
+			expect(runtime.resolveFallbackModel).not.toHaveBeenCalled();
+		});
+
+		it("uses the fallback model's thinking level on retry", async () => {
+			const obs = observation("cccccccccccc", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
+			mockAgents.runObserver
+				.mockRejectedValueOnce(new ObserverStreamError("error", "primary down"))
+				.mockResolvedValueOnce([obs]);
+			const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+			const { fire, runLaunchedWork, runtime } = setup({ entries, reflectAfterTokens: 999 });
+			(runtime.config as any).fallbackModel = { provider: "opencode-go", id: "deepseek-v4.1-flash", thinking: "high" };
+			runtime.resolveFallbackModel.mockResolvedValueOnce({
+				ok: true,
+				model: { provider: "opencode-go", id: "deepseek-v4.1-flash" },
+				apiKey: "go-key",
+			});
+
+			fire();
+			await runLaunchedWork();
+
+			expect(mockAgents.runObserver).toHaveBeenNthCalledWith(1, expect.objectContaining({ thinkingLevel: "minimal" }));
+			expect(mockAgents.runObserver).toHaveBeenNthCalledWith(2, expect.objectContaining({ thinkingLevel: "high" }));
+		});
+
+		it("caps the observer chunk to a smaller-context fallback window", async () => {
+			const first = observation("111111111111", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
+			mockAgents.runObserver.mockResolvedValueOnce([first]);
+			const entries = [
+				textCustomMessage("raw-1", "a".repeat(800)),
+				textCustomMessage("raw-2", "b".repeat(800)),
+			];
+			const { fire, runLaunchedWork, runtime, ctx } = setup({ entries, reflectAfterTokens: 999 });
+			(runtime.config as any).fallbackModel = { provider: "opencode-go", id: "deepseek-v4.1-flash" };
+			runtime.resolveModel.mockResolvedValueOnce({
+				ok: true,
+				model: { provider: "anthropic", contextWindow: 200000 },
+				apiKey: "key",
+			});
+			// Only the fallback model advertises a window; its 100-token window caps the
+			// chunk at the 256-token minimum so a single source entry fits per run.
+			ctx.modelRegistry = { find: vi.fn(() => ({ contextWindow: 100 })) };
+
+			fire();
+			await runLaunchedWork();
+
+			expect(mockAgents.runObserver).toHaveBeenNthCalledWith(1, expect.objectContaining({ allowedSourceEntryIds: ["raw-1"] }));
+		});
+	});
 });
 
 describe("observer chunk cap", () => {
@@ -972,6 +1201,25 @@ describe("consolidateWhenIdle", () => {
 			"Observational memory: memory workers paused while the agent runs (consolidateWhenIdle)",
 			"info",
 		);
+	});
+
+	it("does not retry with the fallback model when the run was aborted", async () => {
+		mockAgents.runObserver.mockImplementationOnce((args: { signal: AbortSignal }) => new Promise((_, reject) => {
+			if (args.signal.aborted) return reject(new Error("aborted"));
+			args.signal.addEventListener("abort", () => reject(new Error("aborted")));
+		}));
+		const { fireAgentSettled, fireAgentStart, runLaunchedWork, runtime, pi } = setup({ entries: dueEntries, consolidateWhenIdle: true, reflectAfterTokens: 999 });
+		runtime.resolveFallbackModel.mockResolvedValue({ ok: true, model: { provider: "opencode-go", id: "fallback" }, apiKey: "go-key" });
+
+		fireAgentSettled();
+		const work = runLaunchedWork();
+		await vi.waitFor(() => expect(mockAgents.runObserver).toHaveBeenCalledTimes(1));
+		fireAgentStart();
+		await work;
+
+		expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
+		expect(runtime.resolveFallbackModel).not.toHaveBeenCalled();
+		expect(pi.appendEntry).not.toHaveBeenCalled();
 	});
 
 	it("does not abort anything when no run is in flight", () => {
