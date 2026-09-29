@@ -108,6 +108,13 @@ export interface Config {
 	showWorkerNotifications: boolean;
 	passive: boolean;
 	debugLog: boolean;
+	/**
+	 * Pi's own `compaction.enabled` setting, read from the same settings files
+	 * (not an extension setting). When Pi's automatic compaction is disabled,
+	 * the proactive trigger counts raw source tokens instead of observed ones,
+	 * since nothing else would compact a session whose observer has stalled.
+	 */
+	piAutoCompactionEnabled: boolean;
 }
 
 export const DEFAULTS: Config = {
@@ -125,6 +132,7 @@ export const DEFAULTS: Config = {
 	showWorkerNotifications: true,
 	passive: false,
 	debugLog: false,
+	piAutoCompactionEnabled: true,
 };
 
 export const COMPACT_AFTER_TOKENS_MODE_VALUES: readonly CompactAfterTokensMode[] = ["calibrated", "ratio"] as const;
@@ -362,6 +370,18 @@ export function readEnvConfig(env: NodeJS.ProcessEnv = process.env): Partial<Con
 	return {};
 }
 
+/** Pi's `compaction.enabled` from one settings file, if present and boolean. */
+function readPiCompactionEnabled(path: string): boolean | undefined {
+	if (!existsSync(path)) return undefined;
+	try {
+		const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+		const compaction = raw.compaction;
+		return isRecord(compaction) && typeof compaction.enabled === "boolean" ? compaction.enabled : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function readNamespacedConfig(path: string): Partial<Config> {
 	if (!existsSync(path)) return {};
 	try {
@@ -391,8 +411,13 @@ export function loadConfig(cwd: string, env: NodeJS.ProcessEnv = process.env): C
 		merged.observationsPoolMaxTokens,
 	) ?? derivedObservationPoolTarget(merged.observationsPoolMaxTokens);
 
+	const piAutoCompactionEnabled = readPiCompactionEnabled(projectPath)
+		?? readPiCompactionEnabled(globalPath)
+		?? DEFAULTS.piAutoCompactionEnabled;
+
 	return {
 		...merged,
 		observationsPoolTargetTokens: target,
+		piAutoCompactionEnabled,
 	};
 }

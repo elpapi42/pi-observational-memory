@@ -22,7 +22,9 @@ function pick<T>(records: T[], line: (record: T) => string, budget: number, from
 	const order = from === "newest" ? records.map((_, i) => records.length - 1 - i) : records.map((_, i) => i);
 	for (const i of order) {
 		const cost = lineTokens(line(records[i]));
-		if (tokens + cost > budget) break;
+		// Skip a record that does not fit instead of stopping: a single long
+		// newest record must not hide shorter older ones that still fit.
+		if (tokens + cost > budget) continue;
 		tokens += cost;
 		indexes.push(i);
 	}

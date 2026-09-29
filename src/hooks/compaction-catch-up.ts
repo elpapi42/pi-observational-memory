@@ -11,6 +11,7 @@ import {
 	buildObservationsRecordedData,
 	fullProjection,
 	isSourceEntry,
+	latestCoverageIndex,
 	observationToSummaryLine,
 	reflectionToSummaryLine,
 	type Entry,
@@ -62,7 +63,13 @@ export async function catchUpObserver(args: CatchUpArgs): Promise<CatchUpResult>
 
 	const contextWindow = (resolved.model as { contextWindow?: number }).contextWindow;
 	const maxChunkTokens = resolveObserverChunkMaxTokens(runtime.config, contextWindow);
-	let remaining = entries.slice(gap.firstIndex, gap.lastIndex + 1).filter(isSourceEntry);
+	// Start at the global observation frontier, not at the gap (which begins
+	// at the retained-range start). A coverage marker claims everything before
+	// it, so starting later would mark unread source between the frontier and
+	// the range start as observed and the background observer would never
+	// revisit it.
+	const frontierIndex = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
+	let remaining = entries.slice(frontierIndex + 1, gap.lastIndex + 1).filter(isSourceEntry);
 	let branch = entries;
 
 	for (let chunkIndex = 0; chunkIndex < maxChunks && remaining.length > 0; chunkIndex++) {

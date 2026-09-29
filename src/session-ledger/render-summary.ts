@@ -49,7 +49,9 @@ function selectWithinBudget<T>(records: T[], line: (record: T) => string, budget
 	let tokens = 0;
 	for (let i = records.length - 1; i >= 0; i--) {
 		const cost = estimateTokens(line(records[i])) + 1;
-		if (tokens + cost > budget) break;
+		// Skip a record that does not fit instead of stopping: a single long
+		// newest record must not hide shorter older ones that still fit.
+		if (tokens + cost > budget) continue;
 		tokens += cost;
 		keptIndexes.push(i);
 	}

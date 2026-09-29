@@ -107,3 +107,16 @@ describe("budgeted summary rendering", () => {
 		expect(renderSummary(reflections, observations, { maxTokens: 0 })).toBe(renderSummary(reflections, observations));
 	});
 });
+
+describe("oversized newest record (PR #81 review, issue 3)", () => {
+	it("still keeps a shorter older observation that fits", () => {
+		const older = observation("a1aaaaaaaaaa", { content: "Short older fact." });
+		const newest = observation("a2aaaaaaaaaa", { content: "x".repeat(4000) });
+
+		const rendered = renderSummaryWithBudget([], [older, newest], { maxTokens: 500 });
+
+		expect(rendered.observations.map((obs) => obs.id)).toEqual(["a1aaaaaaaaaa"]);
+		expect(rendered.text).toContain("[a1aaaaaaaaaa] ");
+		expect(rendered.text).toContain("Short older fact.");
+	});
+});

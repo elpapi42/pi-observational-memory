@@ -56,6 +56,7 @@ function laggingBranch(): TestEntry[] {
 function setup(args: {
 	entries: TestEntry[];
 	compactionMaxRetainedTokens?: number;
+	compactionSummaryMaxTokens?: number;
 	model?: unknown;
 }) {
 	let handler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
@@ -70,6 +71,7 @@ function setup(args: {
 		config: {
 			observationsPoolMaxTokens: 20_000,
 			compactionMaxRetainedTokens: args.compactionMaxRetainedTokens,
+			compactionSummaryMaxTokens: args.compactionSummaryMaxTokens,
 		},
 		compactHookInFlight: false,
 		resolveModel: vi.fn(() => {
@@ -299,5 +301,24 @@ describe("resolveCompactionCut", () => {
 		if (resolution.kind === "cut") {
 			expect(resolution.cut).toEqual({ firstKeptEntryId: "a1", foldThroughEntryId: "a1" });
 		}
+	});
+});
+
+describe("budgeted summary with no record (PR #81 review, issue 3)", () => {
+	it("delegates instead of writing a summary with instructions only", async () => {
+		const huge = observationsRecordedEntry("om-huge", {
+			observations: [observation("dddddddddddd", { sourceEntryIds: ["a0"], content: "x".repeat(8000), tokenCount: 2000 })],
+			coversUpToId: "u2",
+		});
+		const entries = [userMessage("u0"), assistantMessage("a0"), userMessage("u1"), assistantMessage("a1"), userMessage("u2"), huge];
+		const { run, ctx } = setup({ entries, compactionSummaryMaxTokens: 500 });
+
+		const result = await run("u2");
+
+		expect(result).toBeUndefined();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Observational memory: no memory record fits the ~500-token summary budget; delegating to Pi's native summarizer",
+			"warning",
+		);
 	});
 });

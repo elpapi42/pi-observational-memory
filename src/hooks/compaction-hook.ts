@@ -19,7 +19,7 @@ import {
 	latestCoverageIndex,
 	latestCoverageMarkerId,
 	rawTokensAfterIndex,
-	renderSummary,
+	renderSummaryWithBudget,
 	unobservedSourceSpanBefore,
 	type Entry,
 	type UnobservedSourceSpan,
@@ -200,7 +200,26 @@ async function handleCompaction(pi: ExtensionAPI, event: SessionBeforeCompactEve
 			resolution.cut.foldThroughEntryId,
 			{ observationsPoolMaxTokens: observationsPoolMaxTokens(runtime) },
 		);
-		summary = renderSummary(projection.reflections, projection.observations, { maxTokens: summaryMaxTokens });
+		const rendered = renderSummaryWithBudget(projection.reflections, projection.observations, { maxTokens: summaryMaxTokens });
+		summary = rendered.text;
+		// A summary that kept no record would replace older context with only
+		// instructions and an omission notice. Decline instead, so Pi's native
+		// summarizer preserves the facts.
+		const hadRecords = projection.reflections.length + projection.observations.length > 0;
+		if (hadRecords && rendered.reflections.length + rendered.observations.length === 0) {
+			debugLog("compaction.summary_budget_empty", {
+				summaryMaxTokens,
+				reflections: projection.reflections.length,
+				observations: projection.observations.length,
+			});
+			if (ctx.hasUI) {
+				ctx.ui.notify(
+					`Observational memory: no memory record fits the ~${summaryMaxTokens.toLocaleString()}-token summary budget; delegating to Pi's native summarizer`,
+					"warning",
+				);
+			}
+			summary = "";
+		}
 
 		// A moved cut keeps the unobserved tail AND adds the rendered memory on
 		// top of it. Both must fit the budget, or Pi's threshold fires again

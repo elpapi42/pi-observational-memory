@@ -10,7 +10,7 @@ import {
 	type TestEntry,
 } from "./fixtures/session.js";
 
-function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensMode?: "calibrated" | "ratio"; compactAfterTokensRatio?: number; passive?: boolean; compactInFlight?: boolean } = {}) {
+function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensMode?: "calibrated" | "ratio"; compactAfterTokensRatio?: number; passive?: boolean; compactInFlight?: boolean; piAutoCompactionEnabled?: boolean } = {}) {
 	let handler: ((event: unknown, ctx: unknown) => void) | undefined;
 	const pi = {
 		on: vi.fn((name: string, cb: typeof handler) => {
@@ -25,6 +25,7 @@ function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensM
 			compactAfterTokensMode: args.compactAfterTokensMode ?? "calibrated",
 			compactAfterTokensRatio: args.compactAfterTokensRatio ?? 0.68,
 			passive: args.passive ?? false,
+			piAutoCompactionEnabled: args.piAutoCompactionEnabled ?? true,
 		},
 		compactInFlight: args.compactInFlight ?? false,
 		observerPromise: new Promise(() => {}),
@@ -402,6 +403,22 @@ describe("V3 compaction trigger", () => {
 		await vi.runAllTimersAsync();
 
 		expect(ctx.compact).toHaveBeenCalledTimes(1);
+	});
+
+	it("counts raw tokens when Pi's own auto-compaction is disabled (PR #81 review, issue 4)", async () => {
+		// No observation coverage at all: with Pi's auto-compaction off nothing
+		// else would compact, so the raw metric applies.
+		const { handler } = captureHandler({ compactAfterTokens: 3, piAutoCompactionEnabled: false });
+		const ctx = fakeCtx([[textCustomMessage("raw-1", "aaaaaaaaaaaa")]]);
+
+		handler(agentSettled(), ctx);
+		await vi.runAllTimersAsync();
+
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Observational memory: compaction threshold reached (~3 estimated source tokens); triggering compaction",
+			"info",
+		);
 	});
 
 	describe("ratio mode", () => {

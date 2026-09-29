@@ -1,7 +1,25 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolveCompactAfterTokens } from "../config.js";
-import { observedTokensSinceLastCompaction, type Entry } from "../session-ledger/index.js";
+import { observedTokensSinceLastCompaction, rawTokensSinceLastCompaction, type Entry } from "../session-ledger/index.js";
 import type { Runtime } from "../runtime.js";
+
+/**
+ * Source tokens counted toward the proactive threshold. Normally only tokens
+ * the observer has covered: compacting past the frontier would discard entries
+ * no memory describes, and Pi's own threshold compaction backstops a stalled
+ * observer. When Pi's automatic compaction is disabled there is no backstop,
+ * so count raw tokens; the compaction hook still protects unobserved entries
+ * (catch-up, retention, or delegation to Pi's native summarizer).
+ */
+export function compactionProgress(runtime: Runtime, entries: Entry[]): number {
+	return runtime.config.piAutoCompactionEnabled === false
+		? rawTokensSinceLastCompaction(entries)
+		: observedTokensSinceLastCompaction(entries);
+}
+
+export function progressLabel(runtime: Runtime): "observed" | "estimated" {
+	return runtime.config.piAutoCompactionEnabled === false ? "estimated" : "observed";
+}
 
 type CompactionTriggerCtx = Parameters<Parameters<ExtensionAPI["on"]>[1]>[1];
 
@@ -24,10 +42,7 @@ export function maybeTriggerCompaction(runtime: Runtime, ctx: CompactionTriggerC
 
 		const entries = ctx.sessionManager?.getBranch?.() as Entry[] | undefined;
 		if (!entries) return;
-		// Count only source tokens the observer has already covered: compacting
-		// past the observer frontier would discard entries no memory describes,
-		// and the compaction hook would have to keep them anyway.
-		const progress = observedTokensSinceLastCompaction(entries);
+		const progress = compactionProgress(runtime, entries);
 		const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : undefined;
 		const threshold = resolveCompactAfterTokens(runtime.config, contextWindow);
 		if (progress < threshold) return;
@@ -38,7 +53,7 @@ export function maybeTriggerCompaction(runtime: Runtime, ctx: CompactionTriggerC
 		const ui = ctx.ui;
 
 		if (hasUI) ui?.notify(
-			`Observational memory: compaction threshold reached (~${progress.toLocaleString()} observed source tokens); triggering compaction`,
+			`Observational memory: compaction threshold reached (~${progress.toLocaleString()} ${progressLabel(runtime)} source tokens); triggering compaction`,
 			"info",
 		);
 
@@ -58,7 +73,7 @@ export function maybeTriggerCompaction(runtime: Runtime, ctx: CompactionTriggerC
 					runtime.compactInFlight = false;
 					return;
 				}
-				const currentProgress = observedTokensSinceLastCompaction(currentEntries);
+				const currentProgress = compactionProgress(runtime, currentEntries);
 				if (currentProgress < threshold) {
 					runtime.compactInFlight = false;
 					if (hasUI) ui?.notify(

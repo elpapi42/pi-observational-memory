@@ -9,7 +9,7 @@ vi.mock("../src/agents/observer/agent.js", async (importOriginal) => ({
 
 import { registerCompactionHook } from "../src/hooks/compaction-hook.js";
 import { OM_OBSERVATIONS_RECORDED } from "../src/session-ledger/index.js";
-import { observation, observationsRecordedEntry, rawMessage, type TestEntry } from "./fixtures/session.js";
+import { compactionEntry, observation, observationsRecordedEntry, rawMessage, type TestEntry } from "./fixtures/session.js";
 
 function userMessage(id: string, text = `user ${id}`): TestEntry {
 	return rawMessage(id, text);
@@ -229,5 +229,35 @@ describe("compaction hook synchronous catch-up", () => {
 		expect(mockAgents.runObserver).not.toHaveBeenCalled();
 		expect(pi.appendEntry).not.toHaveBeenCalled();
 		expect(result.compaction.firstKeptEntryId).toBe("a1");
+	});
+});
+
+describe("catch-up coverage truthfulness (PR #81 review, issue 2)", () => {
+	it("starts at the global observation frontier, so unread source before the retained range is read", async () => {
+		// Coverage stops at a0 (A). A previous compaction retained raw text from
+		// u2 (C). u1/a1 (B) are unread and outside the retained range. The new
+		// gap is u2..a2 (C, D). A marker through a2 must not claim B unread.
+		const entries = [
+			userMessage("u0"),
+			assistantMessage("a0"),
+			coverage("om-a0", "a0", "aaaaaaaaaaaa"),
+			userMessage("u1"),
+			assistantMessage("a1"),
+			userMessage("u2"),
+			assistantMessage("a2"),
+			compactionEntry("cmp-0", { firstKeptEntryId: "u2" }),
+			userMessage("u3"),
+			assistantMessage("a3"),
+			userMessage("u4"),
+		];
+		mockAgents.runObserver.mockResolvedValueOnce([observation("cccccccccccc", { sourceEntryIds: ["u1", "a3"] })]);
+		const { run } = setup({ entries });
+
+		await run("u4");
+
+		expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
+		const allowed = mockAgents.runObserver.mock.calls[0][0].allowedSourceEntryIds;
+		expect(allowed[0]).toBe("u1");
+		expect(allowed).toEqual(["u1", "a1", "u2", "a2", "u3", "a3"]);
 	});
 });
