@@ -19,6 +19,15 @@ import {
 	type ReflectionCoverageTier,
 } from "../dropper/coverage.js";
 
+export class ReflectorStreamError extends Error {
+	readonly stopReason: string;
+	constructor(stopReason: string, errorMessage?: string) {
+		super(`reflector stream ended with stopReason "${stopReason}"${errorMessage ? `: ${errorMessage}` : ""}`);
+		this.name = "ReflectorStreamError";
+		this.stopReason = stopReason;
+	}
+}
+
 interface RunReflectorArgs {
 	model: Model<any>;
 	apiKey?: string;
@@ -207,12 +216,18 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 		signal,
 		resolveWorkerStreamSimple(model, args.modelRegistry, args.streamSimple),
 	);
+	let streamError: { stopReason: string; errorMessage?: string } | undefined;
 	for await (const event of stream) {
 		// Tool execution collects records.
 		logAgentStreamError("reflector", event);
+		const message = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string } }).message;
+		if (message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")) {
+			streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+		}
 	}
 	await stream.result();
 	const acceptedReflections = Array.from(accumulated.values());
+	if (acceptedReflections.length === 0 && streamError) throw new ReflectorStreamError(streamError.stopReason, streamError.errorMessage);
 	const afterCoverageById = reflectionCoverageMap(observations, [...reflections, ...acceptedReflections]);
 	debugLog("reflector.result", {
 		reason: acceptedReflections.length > 0 ? "accepted_nonempty" : toolCallCount === 0 ? "no_tool_call" : "all_filtered",

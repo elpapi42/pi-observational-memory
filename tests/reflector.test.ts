@@ -271,4 +271,31 @@ describe("V3 reflector agent", () => {
 		const loop = fakeAgentLoop(() => {});
 		await expect(runReflector({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
 	});
+
+	it("throws on a failed stream with no accepted reflections", async () => {
+		for (const stopReason of ["error", "aborted"]) {
+			const loop = (() => ({
+				async *[Symbol.asyncIterator]() {
+					yield { type: "message_end", message: { role: "assistant", stopReason, errorMessage: "rate limited" } };
+				},
+				result: async () => ({}),
+			})) as any;
+			await expect(runReflector({ ...baseArgs, agentLoop: loop })).rejects.toMatchObject({
+				name: "ReflectorStreamError", stopReason, message: expect.stringContaining("rate limited"),
+			});
+		}
+	});
+
+	it("keeps accepted reflections when a later stream turn fails", async () => {
+		const content = "User prefers source-backed memory.";
+		const loop = ((prompts: any[], context: any) => ({
+			async *[Symbol.asyncIterator]() {
+				yield { type: "message_end", message: { role: "assistant", stopReason: "toolUse" } };
+				await context.tools[0].execute("tool-1", { reflections: [{ content, supportingObservationIds: ["aaaaaaaaaaaa"] }] });
+				yield { type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "rate limited" } };
+			},
+			result: async () => ({}),
+		})) as any;
+		await expect(runReflector({ ...baseArgs, agentLoop: loop })).resolves.toMatchObject([{ content }]);
+	});
 });

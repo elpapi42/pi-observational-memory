@@ -274,6 +274,32 @@ describe("V3 dropper agent", () => {
 		await expect(runDropper({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
 	});
 
+	it("throws on a failed stream with no selected drops", async () => {
+		for (const stopReason of ["error", "aborted"]) {
+			const loop = (() => ({
+				async *[Symbol.asyncIterator]() {
+					yield { type: "message_end", message: { role: "assistant", stopReason, errorMessage: "rate limited" } };
+				},
+				result: async () => ({}),
+			})) as any;
+			await expect(runDropper({ ...baseArgs, agentLoop: loop })).rejects.toMatchObject({
+				name: "DropperStreamError", stopReason, message: expect.stringContaining("rate limited"),
+			});
+		}
+	});
+
+	it("keeps safely selected drops when a later stream turn fails", async () => {
+		const loop = ((prompts: any[], context: any) => ({
+			async *[Symbol.asyncIterator]() {
+				yield { type: "message_end", message: { role: "assistant", stopReason: "toolUse" } };
+				await context.tools[0].execute("tool-1", { ids: ["aaaaaaaaaaaa"] });
+				yield { type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "rate limited" } };
+			},
+			result: async () => ({}),
+		})) as any;
+		await expect(runDropper({ ...baseArgs, agentLoop: loop })).resolves.toEqual(["aaaaaaaaaaaa"]);
+	});
+
 	it("skips the model at or below the target", async () => {
 		let called = false;
 		const loop = fakeAgentLoop(() => {

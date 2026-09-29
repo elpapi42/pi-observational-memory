@@ -37,6 +37,15 @@ export {
 } from "./coverage.js";
 export type { CoverageSummaryByRelevance, CoverageTransitionSummaryByRelevance, ReflectionCoverageTier } from "./coverage.js";
 
+export class DropperStreamError extends Error {
+	readonly stopReason: string;
+	constructor(stopReason: string, errorMessage?: string) {
+		super(`dropper stream ended with stopReason "${stopReason}"${errorMessage ? `: ${errorMessage}` : ""}`);
+		this.name = "DropperStreamError";
+		this.stopReason = stopReason;
+	}
+}
+
 interface RunDropperArgs {
 	model: Model<any>;
 	apiKey?: string;
@@ -274,12 +283,18 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 		signal,
 		resolveWorkerStreamSimple(model, args.modelRegistry, args.streamSimple),
 	);
+	let streamError: { stopReason: string; errorMessage?: string } | undefined;
 	for await (const event of stream) {
 		// Tool execution collects candidate ids.
 		logAgentStreamError("dropper", event);
+		const message = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string } }).message;
+		if (message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")) {
+			streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+		}
 	}
 	await stream.result();
 	const droppedIds = selectDropCandidates(proposedDropIds, observations, maxDropsAllowed, reflections);
+	if (droppedIds.length === 0 && streamError) throw new DropperStreamError(streamError.stopReason, streamError.errorMessage);
 	const reason = droppedIds.length > 0
 		? "selected_nonempty"
 		: toolCallCount === 0
