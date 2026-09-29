@@ -223,7 +223,7 @@ When enabled, the agent gets a `compact_context` tool. Calling it ends the curre
 
 Input that arrives before the compaction starts cancels it. Proactive `compactAfterTokens` compaction keeps working as a backstop.
 
-`warnAt` asks the agent to compact as context fills. Each threshold is compared with Pi's live context usage, which includes the system prompt and tool schemas, unlike `compactAfterTokens`. Each level is sent once per compaction cycle. The highest level asks the agent to compact before starting new work, and lower levels ask for the next clean breakpoint. A warning raised mid-run is steered into the current run. One raised after the final reply is attached to your next prompt instead of starting a turn. Warnings are not treated as session content by the observer.
+`warnAt` asks the agent to compact as context fills. Each threshold is compared with Pi's live context usage, which includes the system prompt and tool schemas, unlike `compactAfterTokens`. Each level is sent once per compaction cycle. The highest level asks the agent to finish the current step and then compact before starting new work. Lower levels ask it to finish a nearly done task first, and otherwise compact at the next clean breakpoint. A warning raised mid-run is steered into the current run. One raised after the final reply is attached to your next prompt instead of starting a turn. Warnings are not treated as session content by the observer. After any compaction, including a manual `/compact`, warnings from the earlier cycle stay in the session but are hidden from the model. Warnings saved by older versions count as stale.
 
 ```json
 {
