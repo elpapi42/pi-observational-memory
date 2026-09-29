@@ -56,7 +56,8 @@ function recallIndexLine(status: Exclude<IndexStatus, { state: "failed" }>): str
 			: "";
 		return `Recall index: none on this branch${shared} — run /om:index to build it`;
 	}
-	const line = `Recall index: ${status.documents.toLocaleString()} documents / ${status.recentEmbedded.toLocaleString()} of ${status.recentTotal.toLocaleString()} since last compaction embedded (${status.recentTotal === 0 ? 100 : pct(status.recentEmbedded, status.recentTotal)}%)`;
+	const queued = status.pending > 0 ? `, ${status.pending.toLocaleString()} queued` : "";
+	const line = `Recall index: ${status.documents.toLocaleString()} documents / ${status.recentEmbedded.toLocaleString()} of ${status.recentTotal.toLocaleString()} since last compaction embedded (${status.recentTotal === 0 ? 100 : pct(status.recentEmbedded, status.recentTotal)}%)${queued}`;
 	if (status.indexing) return `${line} — indexing`;
 	return line;
 }

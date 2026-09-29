@@ -93,6 +93,8 @@ export type RecallSearchDetails = {
 	query: string;
 	semantic: boolean;
 	hits: Array<Pick<SearchHit, "kind" | "id" | "score">>;
+	/** Set on partial results while the query waits for documents to be embedded. */
+	indexing?: { done: number; total: number };
 };
 
 type RecallToolDetails = RecallObservationToolDetails | RecallSearchDetails;
@@ -488,13 +490,36 @@ function searchHitText(hit: SearchHit, query: string): string {
 	return `[${hit.id}] transcript ${snippet(hit.text, query)}`;
 }
 
-/** Optional semantic scores per document; undefined falls back to lexical ranking. */
-export type VectorScorer = (sessionId: string, docs: SearchDocument[], query: string) => Promise<Array<number | undefined> | undefined>;
+export type VectorScorerOptions = { signal?: AbortSignal; onProgress?: (progress: { done: number; total: number }) => void };
 
-async function searchResult(entries: Entry[], query: string, sessionId: string, vectorScores?: VectorScorer) {
+/**
+ * Optional semantic scores per document; undefined falls back to lexical ranking. The scorer
+ * may embed the branch's unindexed documents first, reporting progress; aborting scores what is embedded.
+ */
+export type VectorScorer = (
+	sessionId: string,
+	entries: Entry[],
+	docs: SearchDocument[],
+	query: string,
+	options: VectorScorerOptions,
+) => Promise<Array<number | undefined> | undefined>;
+
+async function searchResult(
+	entries: Entry[],
+	query: string,
+	sessionId: string,
+	vectorScores: VectorScorer | undefined,
+	signal: AbortSignal | undefined,
+	onUpdate: ((partial: AgentToolResult<RecallToolDetails>) => void) | undefined,
+) {
 	const docs = buildSearchCorpus(entries);
 	const lexical = rankLexical(docs, query);
-	const vector = vectorScores ? await vectorScores(sessionId, docs, query) : undefined;
+	const onProgress = ({ done, total }: { done: number; total: number }) => {
+		if (total === 0) return;
+		const text = `Embedding recall documents ${done.toLocaleString()} / ${total.toLocaleString()} before searching…`;
+		onUpdate?.({ content: [{ type: "text", text }], details: { mode: "search", query, semantic: true, hits: [], indexing: { done, total } } });
+	};
+	const vector = vectorScores ? await vectorScores(sessionId, entries, docs, query, { signal, onProgress }) : undefined;
 	const hits = topHits(docs, vector ? fuseScores(lexical, vector) : lexical, SEARCH_LIMIT);
 	const details: RecallSearchDetails = { mode: "search", query, semantic: vector !== undefined, hits: hits.map(({ kind, id, score }) => ({ kind, id, score })) };
 	const text = hits.length === 0
@@ -514,6 +539,7 @@ function entryResult(entries: Entry[], entryId: string) {
 }
 
 export function formatRecallSearchResultForTui(details: RecallSearchDetails): string {
+	if (details.indexing) return `\n… embedding ${details.indexing.done.toLocaleString()} / ${details.indexing.total.toLocaleString()} documents before searching`;
 	if (details.hits.length === 0) return `\n× no matches for "${details.query}"`;
 	const rows = details.hits.map((hit) => alignedRow(`✓ ${hit.kind}`, hit.id, `score ${hit.score.toFixed(3)}`));
 	return `\n✓ ${plural(details.hits.length, "match", "matches")}${details.semantic ? " · semantic" : ""}\n\n${rows.join("\n")}`;
@@ -546,7 +572,7 @@ export const createRecallTool = (vectorScores?: VectorScorer) => defineTool({
 		if (isSearchDetails(details)) return new Text(formatRecallSearchResultForTui(details), 0, 0);
 		return new Text(formatRecallRenderedResultForTui(result as AgentToolResult<RecallObservationToolDetails>, options.expanded), 0, 0);
 	},
-	async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<RecallToolDetails>> {
+	async execute(_toolCallId, params, signal, onUpdate, ctx): Promise<AgentToolResult<RecallToolDetails>> {
 		const branch = () => ctx.sessionManager.getBranch() as Entry[];
 		const query = params.query?.trim();
 		const memoryId = params.id ?? "";
@@ -554,7 +580,7 @@ export const createRecallTool = (vectorScores?: VectorScorer) => defineTool({
 			const message = "Pass either query or id, not both.";
 			return textResult(message, emptyDetails("invalid_id", memoryId, message));
 		}
-		if (query) return searchResult(branch(), query, ctx.sessionManager.getSessionId(), vectorScores);
+		if (query) return searchResult(branch(), query, ctx.sessionManager.getSessionId(), vectorScores, signal, onUpdate);
 		if (ENTRY_ID_PATTERN.test(memoryId)) return entryResult(branch(), memoryId);
 		if (!MEMORY_ID_PATTERN.test(memoryId)) {
 			const message = `Pass query to search, or an id: 12 lowercase hex characters for memory, 8 for a transcript entry. Received: ${memoryId || "nothing"}`;

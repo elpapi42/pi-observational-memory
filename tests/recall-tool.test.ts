@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
 	RECALL_OBSERVATION_TOOL_NAME,
+	createRecallTool,
 	formatRecallCallForTui,
+	formatRecallSearchResultForTui,
 	formatRecallRenderedResultForTui,
 	recallObservationTool,
 	registerRecallTool,
@@ -180,5 +182,30 @@ describe("V3 recall tool", () => {
 
 		expect(result.details?.reflections[0].status).toBe("active");
 		expect(text).not.toContain("[dropped]");
+	});
+
+	it("reports embedding progress while a query waits for the index", async () => {
+		const entries = [
+			rawMessage("abcd1234", "The deploy failed because the S3 bucket policy denied PutObject."),
+			rawMessage("abcd5678", "Recent turn."),
+			compactionEntry("cmp-1", { firstKeptEntryId: "abcd5678" }),
+		];
+		const scorer = vi.fn(async (_sessionId: string, _entries: unknown, docs: unknown[], _query: string, options: any) => {
+			options.onProgress({ done: 0, total: 0 });
+			options.onProgress({ done: 16, total: 40 });
+			return docs.map(() => 1);
+		});
+		const onUpdate = vi.fn();
+		const signal = new AbortController().signal;
+		const { ctx } = fakeCtx(entries);
+		const result = await createRecallTool(scorer).execute("tool-1", { query: "bucket" }, signal, onUpdate, ctx as any);
+
+		expect(scorer).toHaveBeenCalledWith("session-1", entries, expect.any(Array), "bucket", expect.objectContaining({ signal }));
+		expect(onUpdate).toHaveBeenCalledTimes(1);
+		const partial = onUpdate.mock.calls[0][0];
+		expect(partial.content[0].text).toBe("Embedding recall documents 16 / 40 before searching…");
+		expect(formatRecallSearchResultForTui(partial.details)).toBe("\n… embedding 16 / 40 documents before searching");
+		expect(result.details).toMatchObject({ mode: "search", semantic: true });
+		expect(result.details).not.toHaveProperty("indexing");
 	});
 });

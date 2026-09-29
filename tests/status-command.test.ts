@@ -307,16 +307,22 @@ describe("V3 /om:status", () => {
 		status.mockReturnValue({ state: "absent", autoBuild: true, documents: 0, orphaned: 0, indexing: false });
 		expect(await run()).toContain("Recall index: none yet — builds after the next turn");
 
-		status.mockReturnValue({ state: "present", documents: 16640, orphaned: 0, missing: 0, recentEmbedded: 30, recentTotal: 40, indexing: false });
+		status.mockReturnValue({ state: "present", documents: 16640, orphaned: 0, missing: 0, pending: 0, recentEmbedded: 30, recentTotal: 40, indexing: false });
 		const present = await run();
 		expect(present).toContain("Recall index: 16,640 documents / 30 of 40 since last compaction embedded (75%)");
 		expect(present).not.toContain("orphaned");
 
-		status.mockReturnValue({ state: "present", documents: 5, orphaned: 0, missing: 3, recentEmbedded: 0, recentTotal: 0, indexing: true });
+		// Documents past the cursor are queued for later runs, not a reason to run /om:index.
+		status.mockReturnValue({ state: "present", documents: 30, orphaned: 0, missing: 0, pending: 1200, recentEmbedded: 30, recentTotal: 1230, indexing: false });
+		const queued = await run();
+		expect(queued).toContain("Recall index: 30 documents / 30 of 1,230 since last compaction embedded (2%), 1,200 queued");
+		expect(queued).not.toContain("not embedded");
+
+		status.mockReturnValue({ state: "present", documents: 5, orphaned: 0, missing: 3, pending: 0, recentEmbedded: 0, recentTotal: 0, indexing: true });
 		// Missing documents are what the running index is embedding, so they only get a line once it is idle.
 		expect(await run()).toContain("(100%) — indexing");
 		expect(await run()).not.toContain("not embedded");
-		status.mockReturnValue({ state: "present", documents: 5, orphaned: 0, missing: 3, recentEmbedded: 0, recentTotal: 0, indexing: false });
+		status.mockReturnValue({ state: "present", documents: 5, orphaned: 0, missing: 3, pending: 0, recentEmbedded: 0, recentTotal: 0, indexing: false });
 		expect(await run()).toContain("Recall index: 3 documents on this branch not embedded — run /om:index to embed them");
 
 		status.mockReturnValue({ state: "failed", failure: "no runtime" });
