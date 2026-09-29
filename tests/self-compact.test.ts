@@ -135,10 +135,51 @@ describe("self-compact", () => {
 		turnEnd(22_000);
 		turnEnd(29_000, []);
 		expect(warnings()).toEqual([[1, "steer"], [2, "nextTurn"]]);
-		expect(pi.sendMessage.mock.calls[1][0].content).toContain("before starting any new work");
+		expect(pi.sendMessage.mock.calls[0][0].content).toContain("If the current task is close to done, finish it first.");
+		expect(pi.sendMessage.mock.calls[1][0].content).toContain("Finish the current step, then call compact_context");
+		expect(pi.sendMessage.mock.calls.map(([message]: any[]) => message.details.cycle)).toEqual(["", ""]);
 
 		branch.push({ type: "compaction", id: "cmp-1" });
 		turnEnd(21_000);
 		expect(warnings().at(-1)).toEqual([1, "steer"]);
+	});
+
+	it("hides warnings from earlier cycles from the model and keeps current ones", () => {
+		const { handlers, ctx, branch } = setup();
+		const warning = (cycle?: string) => ({
+			role: "custom",
+			customType: "om.self-compact.warning",
+			content: "Context used",
+			display: true,
+			details: cycle === undefined ? { level: 1 } : { level: 1, cycle },
+			timestamp: 1,
+		});
+		const user = { role: "user", content: "hi", timestamp: 1 };
+		const context = (messages: unknown[]) => handlers.get("context")!({ type: "context", messages }, ctx) as any;
+
+		// No compaction yet: current warnings stay, ones without a recorded cycle are stale.
+		const first = warning("");
+		expect(context([user, first, warning()]).messages).toEqual([user, first]);
+
+		branch.push({ type: "compaction", id: "cmp-1" });
+		// Kept-tail or late-delivered warnings from the old cycle and one without a cycle are hidden.
+		const current = warning("cmp-1");
+		expect(context([user, warning(""), warning(), current]).messages).toEqual([user, current]);
+		expect(context([user, current])).toBeUndefined();
+	});
+
+	it("does not let a stale warning delivered after compaction suppress a new one", () => {
+		const { pi, turnEnd, branch } = setup([{ type: "ratio", value: 0.2 }]);
+		turnEnd(21_000, []);
+		branch.push({ type: "compaction", id: "cmp-1" });
+		// The queued warning lands in the branch after the compaction, still tagged with the old cycle.
+		branch.push({
+			type: "custom_message",
+			customType: "om.self-compact.warning",
+			details: { level: 1, cycle: "" },
+		});
+		turnEnd(21_000);
+		expect(pi.sendMessage).toHaveBeenCalledTimes(2);
+		expect(pi.sendMessage.mock.calls[1][0].details).toEqual({ level: 1, cycle: "cmp-1" });
 	});
 });
