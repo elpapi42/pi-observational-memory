@@ -1,11 +1,11 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
 import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
-import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { logAgentStreamError } from "../stream-errors.js";
+import { resolveWorkerStreamSimple, type StreamableModelRegistry, type WorkerStreamSimple } from "../worker-stream.js";
 import { reflectionToSummaryLine, type Observation, type Reflection } from "../../session-ledger/index.js";
 import { DROPPER_SYSTEM } from "./prompts.js";
 import {
@@ -37,6 +37,15 @@ export {
 } from "./coverage.js";
 export type { CoverageSummaryByRelevance, CoverageTransitionSummaryByRelevance, ReflectionCoverageTier } from "./coverage.js";
 
+export class DropperStreamError extends Error {
+	readonly stopReason: string;
+	constructor(stopReason: string, errorMessage?: string) {
+		super(`dropper stream ended with stopReason "${stopReason}"${errorMessage ? `: ${errorMessage}` : ""}`);
+		this.name = "DropperStreamError";
+		this.stopReason = stopReason;
+	}
+}
+
 interface RunDropperArgs {
 	model: Model<any>;
 	apiKey?: string;
@@ -48,7 +57,11 @@ interface RunDropperArgs {
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
+	/** Maximum output tokens for the loop (defaults to {@link AGENT_LOOP_MAX_TOKENS}). */
+	maxOutputTokens?: number;
 	thinkingLevel?: ModelThinkingLevel;
+	modelRegistry?: StreamableModelRegistry;
+	streamSimple?: WorkerStreamSimple;
 }
 
 const RELEVANCE_DROP_RANK: Record<Observation["relevance"], number> = {
@@ -235,7 +248,10 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 	const fullnessPercent = Math.round(fullness * 100);
 	const userText = `CURRENT REFLECTIONS:\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\nCURRENT OBSERVATIONS:\n${joinOrEmpty(observations.map((observation) => observationToDropperLine(observation, coverageTierForObservation(observation, coverageById))))}\n\nActive observation pool: ~${observationTokens.toLocaleString()} tokens; target: ~${targetTokens.toLocaleString()} tokens; fullness against target: ~${fullnessPercent.toLocaleString()}%; over target by ~${tokensOverTarget.toLocaleString()} tokens.\nMaximum drops allowed this run: ${maxDropsAllowed.toLocaleString()} observation${maxDropsAllowed === 1 ? "" : "s"}. This maximum is sized to move the active pool toward the target if every proposed drop is clearly safe.\nThis maximum is a hard upper bound, not a target. Drop fewer or none if fewer observations are clearly safe.`;
 	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
-	const context: AgentContext = { systemPrompt: DROPPER_SYSTEM, messages: [], tools: [dropObservations as AgentTool<any>] };
+	const context: AgentContext = {
+		messages: [{ role: "system", content: DROPPER_SYSTEM, timestamp: Date.now() }],
+		tools: [dropObservations as AgentTool<any>],
+	};
 	const reasoning = (model as { reasoning?: unknown }).reasoning;
 	const thinkingLevel = args.thinkingLevel ?? "low";
 	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
@@ -245,21 +261,40 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 		apiKey,
 		headers,
 		env,
-		maxTokens: boundedMaxTokens(model, AGENT_LOOP_MAX_TOKENS),
+		maxTokens: boundedMaxTokens(model, args.maxOutputTokens ?? AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
 		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
-		...(effectiveMaxTurns !== undefined ? { shouldStopAfterTurn: () => ++turnCount >= effectiveMaxTurns } : {}),
+		...(effectiveMaxTurns !== undefined
+			? {
+				finishTurn: (turn) => {
+					if (turn.message.stopReason === "error" || turn.message.stopReason === "aborted") return;
+					return ++turnCount >= effectiveMaxTurns ? { action: "end" } : undefined;
+				},
+			}
+			: {}),
 	};
 
 	const loop = args.agentLoop ?? agentLoop;
-	const stream = loop(prompts, context, config, signal, streamSimple);
+	const stream = loop(
+		prompts,
+		context,
+		config,
+		signal,
+		resolveWorkerStreamSimple(model, args.modelRegistry, args.streamSimple),
+	);
+	let streamError: { stopReason: string; errorMessage?: string } | undefined;
 	for await (const event of stream) {
 		// Tool execution collects candidate ids.
 		logAgentStreamError("dropper", event);
+		const message = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string } }).message;
+		if (message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")) {
+			streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+		}
 	}
 	await stream.result();
 	const droppedIds = selectDropCandidates(proposedDropIds, observations, maxDropsAllowed, reflections);
+	if (droppedIds.length === 0 && streamError) throw new DropperStreamError(streamError.stopReason, streamError.errorMessage);
 	const reason = droppedIds.length > 0
 		? "selected_nonempty"
 		: toolCallCount === 0

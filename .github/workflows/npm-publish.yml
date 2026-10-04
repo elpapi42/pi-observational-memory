@@ -1,23 +1,268 @@
-# This workflow will run tests using node and then publish a package to npm when a version tag is pushed
-
-name: Node.js Package
+name: Publish npm package
 
 on:
-  push:
-    tags:
-      - "*"
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish-pi-observational-memory
+  cancel-in-progress: false
+  queue: max
 
 jobs:
-  publish-npm:
-    needs: build
-    runs-on: ubuntu-latest
+  validate:
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org/
-      - run: npm ci
-      - run: npm publish
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.16.0
+      - name: Verify release identity
         env:
-          NODE_AUTH_TOKEN: ${{secrets.npm_token}}
+          EXPECTED_REPOSITORY: elpapi42/pi-observational-memory
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          git fetch --no-tags origin master:refs/remotes/origin/master
+          node scripts/verify-release-identity.mjs
+      - name: Verify npm version
+        run: |
+          npm_version="$(npm --version)"
+          node - "$npm_version" <<'NODE'
+          const npmVersion = process.argv[2];
+          const [major, minor, patch] = npmVersion.split(".").map(Number);
+          if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
+            throw new Error(`npm ${npmVersion} is below the required 11.5.1.`);
+          }
+          NODE
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Inspect publishable package
+        run: |
+          package_json="$(npm pack --ignore-scripts --dry-run --json)"
+          printf '%s' "$package_json" > package-dry-run.json
+          node <<'NODE'
+          import { readFileSync } from "node:fs";
+
+          const [pack] = JSON.parse(readFileSync("package-dry-run.json", "utf8"));
+          const files = new Set(pack.files.map((file) => file.path));
+          const fail = (message) => { throw new Error(message); };
+          for (const required of ["package.json", "README.md", "LICENSE"]) {
+            if (!files.has(required)) fail(`Package is missing ${required}.`);
+          }
+          if (![...files].some((file) => file.startsWith("src/"))) fail("Package is missing source files.");
+          for (const file of files) {
+            if (file === "package-lock.json" || file.startsWith("tests/") || file.startsWith(".github/")) {
+              fail(`Package includes forbidden file ${file}.`);
+            }
+          }
+          NODE
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-24.04
+    environment: publish-env
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.16.0
+      - name: Verify release identity
+        env:
+          EXPECTED_REPOSITORY: elpapi42/pi-observational-memory
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          git fetch --no-tags origin master:refs/remotes/origin/master
+          node scripts/verify-release-identity.mjs
+      - name: Verify npm version
+        run: |
+          npm_version="$(npm --version)"
+          node - "$npm_version" <<'NODE'
+          const npmVersion = process.argv[2];
+          const [major, minor, patch] = npmVersion.split(".").map(Number);
+          if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
+            throw new Error(`npm ${npmVersion} is below the required 11.5.1.`);
+          }
+          NODE
+      - name: Pack and publish exact artifact
+        env:
+          PACKAGE_NAME: pi-observational-memory
+          PACKAGE_VERSION: ${{ github.event.release.tag_name }}
+          REGISTRY: https://registry.npmjs.org/
+        run: |
+          set -euo pipefail
+          package_json="$(npm pack --ignore-scripts --json)"
+          printf '%s' "$package_json" > package.json-output
+          readarray -t package_data < <(node <<'NODE'
+          import { readFileSync } from "node:fs";
+
+          const [pack] = JSON.parse(readFileSync("package.json-output", "utf8"));
+          if (!pack.filename || !pack.integrity) throw new Error("npm pack did not return a filename and integrity.");
+          process.stdout.write(`${pack.filename}\n${pack.integrity}\n`);
+          NODE
+          )
+          TARBALL="${package_data[0]}"
+          INTEGRITY="${package_data[1]}"
+          test -f "$TARBALL"
+          printf 'Publishing %s@%s from %s with integrity %s\n' "$PACKAGE_NAME" "$PACKAGE_VERSION" "$TARBALL" "$INTEGRITY"
+
+          stable_compare() {
+            node - "$1" "$2" <<'NODE'
+            const parse = (value) => {
+              if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value)) {
+                throw new Error(`Not a stable numeric version: ${value}`);
+              }
+              return value.split(".").map(Number);
+            };
+            const left = parse(process.argv[2]);
+            const right = parse(process.argv[3]);
+            for (let index = 0; index < left.length; index += 1) {
+              if (left[index] !== right[index]) process.exit(left[index] > right[index] ? 0 : 1);
+            }
+            process.exit(0);
+          NODE
+          }
+
+          registry_integrity() {
+            local stdout stderr status integrity
+            stdout="$(mktemp)"
+            stderr="$(mktemp)"
+            set +e
+            npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" dist.integrity --json --registry "$REGISTRY" >"$stdout" 2>"$stderr"
+            status=$?
+            set -e
+            if [ "$status" -ne 0 ]; then
+              if node -e 'const fs = require("node:fs"); try { const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.exit(value?.error?.code === "E404" ? 0 : 1); } catch { process.exit(1); }' "$stdout"; then
+                rm -f "$stdout" "$stderr"
+                return 1
+              fi
+              if [ ! -s "$stdout" ] && [ "$(cat "$stderr")" = 'npm error code E404' ]; then
+                rm -f "$stdout" "$stderr"
+                return 1
+              fi
+              cat "$stdout" >&2
+              cat "$stderr" >&2
+              rm -f "$stdout" "$stderr"
+              return 2
+            fi
+            if [ -s "$stderr" ]; then
+              cat "$stderr" >&2
+              rm -f "$stdout" "$stderr"
+              return 2
+            fi
+            if ! integrity="$(node -e 'let value=""; process.stdin.on("data", (chunk) => value += chunk).on("end", () => { const integrity = JSON.parse(value); if (typeof integrity !== "string" || integrity.length === 0) throw new Error("Registry did not return an integrity string."); process.stdout.write(integrity); });' <"$stdout")"; then
+              cat "$stdout" >&2
+              rm -f "$stdout" "$stderr"
+              return 2
+            fi
+            rm -f "$stdout" "$stderr"
+            printf '%s' "$integrity"
+          }
+
+          latest_version() {
+            local stdout stderr status version
+            stdout="$(mktemp)"
+            stderr="$(mktemp)"
+            set +e
+            npm view "$PACKAGE_NAME" dist-tags.latest --json --registry "$REGISTRY" >"$stdout" 2>"$stderr"
+            status=$?
+            set -e
+            if [ "$status" -ne 0 ] || [ -s "$stderr" ]; then
+              cat "$stdout" >&2
+              cat "$stderr" >&2
+              rm -f "$stdout" "$stderr"
+              return 2
+            fi
+            if ! version="$(node -e 'let value=""; process.stdin.on("data", (chunk) => value += chunk).on("end", () => { const version = JSON.parse(value); if (typeof version !== "string" || version.length === 0) throw new Error("Registry did not return a latest version."); process.stdout.write(version); });' <"$stdout")"; then
+              cat "$stdout" >&2
+              rm -f "$stdout" "$stderr"
+              return 2
+            fi
+            rm -f "$stdout" "$stderr"
+            printf '%s' "$version"
+          }
+
+          set +e
+          existing_integrity="$(registry_integrity)"
+          existing_status=$?
+          set -e
+          if [ "$existing_status" -eq 0 ]; then
+            if [ "$existing_integrity" != "$INTEGRITY" ]; then
+              echo "Existing $PACKAGE_NAME@$PACKAGE_VERSION has different integrity." >&2
+              exit 1
+            fi
+            current_latest="$(latest_version)"
+            if [ "$current_latest" = "$PACKAGE_VERSION" ]; then
+              echo "Exact artifact is already published and tagged latest."
+            elif stable_compare "$current_latest" "$PACKAGE_VERSION"; then
+              echo "Exact artifact is already published and superseded by latest $current_latest."
+            else
+              echo "Exact artifact is already published, but latest $current_latest is older." >&2
+              exit 1
+            fi
+            exit 0
+          fi
+          if [ "$existing_status" -ne 1 ]; then
+            echo "Could not determine whether $PACKAGE_NAME@$PACKAGE_VERSION exists." >&2
+            exit 1
+          fi
+
+          current_latest="$(latest_version)"
+          if [ "$current_latest" = "$PACKAGE_VERSION" ] || ! stable_compare "$PACKAGE_VERSION" "$current_latest"; then
+            echo "Refusing to publish absent $PACKAGE_VERSION because latest is $current_latest." >&2
+            exit 1
+          fi
+
+          set +e
+          npm publish "$TARBALL" --ignore-scripts --registry "$REGISTRY" --access public --tag latest --provenance
+          publish_status=$?
+          set -e
+
+          for attempt in 1 2 3 4 5 6; do
+            set +e
+            published_integrity="$(registry_integrity)"
+            published_status=$?
+            current_latest="$(latest_version)"
+            latest_status=$?
+            set -e
+            if [ "$published_status" -eq 0 ] && [ "$published_integrity" != "$INTEGRITY" ]; then
+              echo "Registry integrity does not match the packed artifact." >&2
+              exit 1
+            fi
+            if [ "$published_status" -eq 0 ] && [ "$latest_status" -eq 0 ]; then
+              if [ "$current_latest" = "$PACKAGE_VERSION" ]; then
+                if [ "$publish_status" -ne 0 ]; then
+                  echo "npm publish returned an error, but registry reconciliation confirmed the exact artifact." >&2
+                fi
+                exit 0
+              fi
+              if stable_compare "$current_latest" "$PACKAGE_VERSION"; then
+                echo "Exact artifact is published and superseded by latest $current_latest."
+                exit 0
+              fi
+            fi
+            if [ "$attempt" -lt 6 ]; then sleep 60; fi
+          done
+
+          if [ "$publish_status" -ne 0 ]; then
+            echo "Publication outcome is unresolved after registry verification retries." >&2
+          else
+            echo "Published artifact could not be verified after registry verification retries." >&2
+          fi
+          exit 1

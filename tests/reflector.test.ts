@@ -8,6 +8,7 @@ import {
 } from "../src/agents/reflector/agent.js";
 import { hashId } from "../src/ids.js";
 import { estimateStringTokens } from "../src/tokens.js";
+import { AGENT_LOOP_MAX_TOKENS } from "../src/model-budget.js";
 import { observation, reflection } from "./fixtures/session.js";
 
 function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void): any {
@@ -19,6 +20,68 @@ function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => P
 		},
 	})) as any;
 }
+
+describe("runReflector maxTokens clamping", () => {
+	const args = {
+		apiKey: "test",
+		reflections: [],
+		observations: [observation("aaaaaaaaaaaa"), observation("bbbbbbbbbbbb")],
+	};
+
+	function captureLoopConfig() {
+		let loopConfig: any;
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			loopConfig = config;
+		});
+		return { loop, config: () => loopConfig };
+	}
+
+	it("clamps the loop maxTokens to a model whose maxTokens is below the configured budget", async () => {
+		const { loop, config } = captureLoopConfig();
+
+		await runReflector({
+			...args,
+			model: { maxTokens: 8_192 } as any,
+			maxOutputTokens: 32_000,
+			agentLoop: loop,
+		});
+
+		expect(config().maxTokens).toBe(8_192);
+	});
+
+	it("passes the configured maxOutputTokens through when the model advertises no maxTokens", async () => {
+		const { loop, config } = captureLoopConfig();
+
+		await runReflector({
+			...args,
+			model: {} as any,
+			maxOutputTokens: 8_192,
+			agentLoop: loop,
+		});
+
+		expect(config().maxTokens).toBe(8_192);
+	});
+
+	it("defaults the loop maxTokens to AGENT_LOOP_MAX_TOKENS", async () => {
+		const { loop, config } = captureLoopConfig();
+
+		await runReflector({ ...args, model: {} as any, agentLoop: loop });
+
+		expect(config().maxTokens).toBe(AGENT_LOOP_MAX_TOKENS);
+	});
+
+	it("uses finishTurn as a reflector turn cap without overriding hard exits", async () => {
+		const { loop, config } = captureLoopConfig();
+
+		await runReflector({ ...args, model: {} as any, agentLoop: loop, maxTurns: 2 });
+
+		expect(config().finishTurn).toBeTypeOf("function");
+		expect(config().finishTurn({ message: { stopReason: "error" } })).toBeUndefined();
+		expect(config().finishTurn({ message: { stopReason: "aborted" } })).toBeUndefined();
+		expect(config().finishTurn({ message: { stopReason: "toolUse" } })).toBeUndefined();
+		expect(config().finishTurn({ message: { stopReason: "stop" } })).toEqual({ action: "end" });
+	});
+});
 
 describe("V3 reflector agent", () => {
 	const obsA = observation("aaaaaaaaaaaa");
@@ -33,7 +96,7 @@ describe("V3 reflector agent", () => {
 	it("keeps core reflector prompt guidance in V3 terms", async () => {
 		let systemPrompt = "";
 		const loop = fakeAgentLoop((_prompts, context) => {
-			systemPrompt = context.systemPrompt;
+			systemPrompt = context.messages[0]?.role === "system" ? context.messages[0].content : "";
 		});
 
 		await runReflector({ ...baseArgs, agentLoop: loop });
@@ -207,5 +270,32 @@ describe("V3 reflector agent", () => {
 	it("returns undefined when no tool call records reflections", async () => {
 		const loop = fakeAgentLoop(() => {});
 		await expect(runReflector({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
+	});
+
+	it("throws on a failed stream with no accepted reflections", async () => {
+		for (const stopReason of ["error", "aborted"]) {
+			const loop = (() => ({
+				async *[Symbol.asyncIterator]() {
+					yield { type: "message_end", message: { role: "assistant", stopReason, errorMessage: "rate limited" } };
+				},
+				result: async () => ({}),
+			})) as any;
+			await expect(runReflector({ ...baseArgs, agentLoop: loop })).rejects.toMatchObject({
+				name: "ReflectorStreamError", stopReason, message: expect.stringContaining("rate limited"),
+			});
+		}
+	});
+
+	it("keeps accepted reflections when a later stream turn fails", async () => {
+		const content = "User prefers source-backed memory.";
+		const loop = ((prompts: any[], context: any) => ({
+			async *[Symbol.asyncIterator]() {
+				yield { type: "message_end", message: { role: "assistant", stopReason: "toolUse" } };
+				await context.tools[0].execute("tool-1", { reflections: [{ content, supportingObservationIds: ["aaaaaaaaaaaa"] }] });
+				yield { type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "rate limited" } };
+			},
+			result: async () => ({}),
+		})) as any;
+		await expect(runReflector({ ...baseArgs, agentLoop: loop })).resolves.toMatchObject([{ content }]);
 	});
 });

@@ -2,7 +2,18 @@ import { type Config, DEFAULTS, loadConfig } from "./config.js";
 import { debugLog } from "./debug-log.js";
 
 export type ResolveResult =
-	| { ok: true; model: unknown; apiKey?: string; headers?: Record<string, string>; env?: Record<string, string>; baseUrl?: string }
+	| {
+			ok: true;
+			model: unknown;
+			apiKey?: string;
+			headers?: Record<string, string>;
+			env?: Record<string, string>;
+			baseUrl?: string;
+			/** True when this result came from `config.fallbackModel` after the primary failed. */
+			fallbackUsed?: boolean;
+			/** Primary failure reason recorded when `fallbackUsed` is true. */
+			primaryFailure?: string;
+	  }
 	| { ok: false; reason: string };
 
 /**
@@ -102,6 +113,8 @@ export class Runtime {
 	consolidationInFlight = false;
 	consolidationPromise: Promise<void> | null = null;
 	consolidationPhase: ConsolidationPhase | undefined;
+	/** Aborts the in-flight consolidation run's model calls (see `consolidateWhenIdle`). */
+	consolidationAbortController: AbortController | undefined;
 	compactInFlight = false;
 	/** Session generation (session id, falling back to session file) that owns `compactInFlight`; a replaced session discards the stale flag. */
 	compactInFlightSession: string | undefined;
@@ -125,7 +138,38 @@ export class Runtime {
 		this.configLoaded = true;
 	}
 
+	/**
+	 * Resolve the model memory workers should use.
+	 *
+	 * Order: `config.model` (falling back to the session model when it is absent
+	 * from Pi's registry), then `config.fallbackModel` when the primary resolution
+	 * fails. With no fallback configured the primary reason is returned unchanged;
+	 * with a configured-but-broken fallback both reasons are reported.
+	 */
 	async resolveModel(ctx: ResolveCtx): Promise<ResolveResult> {
+		const primary = await this.resolvePrimaryModel(ctx);
+		if (primary.ok) return primary;
+		const fallback = await this.resolveFallbackModel(ctx);
+		if (!fallback.ok) {
+			return this.config.fallbackModel
+				? { ok: false, reason: `${primary.reason}; ${fallback.reason}` }
+				: primary;
+		}
+		const target = this.config.fallbackModel;
+		const provider = (fallback.model as { provider?: string }).provider ?? target?.provider ?? "unknown";
+		const id = (fallback.model as { id?: string }).id ?? target?.id ?? "unknown";
+		if (ctx.hasUI && ctx.ui) {
+			ctx.ui.notify(
+				`Observational memory: primary model unavailable (${primary.reason}); using fallback ${provider}/${id}`,
+				"warning",
+			);
+		}
+		debugLog("resolve.fallback_used", { provider, id, primaryFailure: primary.reason });
+		return { ...fallback, fallbackUsed: true, primaryFailure: primary.reason };
+	}
+
+	/** `config.model` when it resolves in Pi's registry, otherwise the session model. */
+	private async resolvePrimaryModel(ctx: ResolveCtx): Promise<ResolveResult> {
 		let model = ctx.model;
 		if (this.config.model) {
 			const configured = ctx.modelRegistry.find(this.config.model.provider, this.config.model.id);
@@ -139,6 +183,37 @@ export class Runtime {
 			}
 		}
 		if (!model) return { ok: false, reason: "no model available (session has no model and no observational-memory model configured)" };
+		return this.resolveCandidate(ctx, model);
+	}
+
+	/**
+	 * Resolve `config.fallbackModel` with the same auth rules as the primary path.
+	 * Exposed so the consolidation stages can retry a failed model call once.
+	 * Returns `ok: false` when unset, identical to the configured primary, absent
+	 * from the registry, or carrying no usable credentials.
+	 */
+	async resolveFallbackModel(ctx: ResolveCtx): Promise<ResolveResult> {
+		const target = this.config.fallbackModel;
+		if (!target) return { ok: false, reason: "no fallback model configured" };
+		// Misconfiguration guard: a fallback identical to the effective primary would
+		// re-run the exact failure instead of adding a second chance. The effective
+		// primary is the configured model when it resolves, else the session model,
+		// matching `resolvePrimaryModel`.
+		const configured = this.config.model;
+		const configuredResolved = configured
+			? (ctx.modelRegistry.find(configured.provider, configured.id) as { provider?: string; id?: string } | undefined)
+			: undefined;
+		const effectivePrimary = (configuredResolved ?? (ctx.model as { provider?: string; id?: string } | undefined));
+		if (effectivePrimary && effectivePrimary.provider === target.provider && effectivePrimary.id === target.id) {
+			return { ok: false, reason: `fallback model ${target.provider}/${target.id} is identical to the effective primary model` };
+		}
+		const model = ctx.modelRegistry.find(target.provider, target.id);
+		if (!model) return { ok: false, reason: `fallback model ${target.provider}/${target.id} not found` };
+		return this.resolveCandidate(ctx, model);
+	}
+
+	/** Apply Pi's request-auth acceptance rule to one already-selected model. */
+	private async resolveCandidate(ctx: ResolveCtx, model: unknown): Promise<ResolveResult> {
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 		const provider = (model as { provider?: string }).provider ?? "unknown";
 		const isOAuth = ctx.modelRegistry.isUsingOAuth?.(model) === true;
@@ -211,9 +286,12 @@ export class Runtime {
 		if (!usable) {
 			debugLog("resolve.request_time_signing", { provider, providerCredentialConfigured });
 		}
+		// Match pi's request model: OAuth may route to an account-specific endpoint
+		// (e.g. Copilot Business). Do not mutate the shared session/registry model.
+		const requestModel = auth.baseUrl ? { ...(model as object), baseUrl: auth.baseUrl } : model;
 		return {
 			ok: true,
-			model,
+			model: requestModel,
 			apiKey: auth.apiKey as string | undefined,
 			headers: auth.headers as Record<string, string> | undefined,
 			env: auth.env as Record<string, string> | undefined,
@@ -288,13 +366,24 @@ export class Runtime {
 		this.lastObserverError = undefined;
 		this.lastReflectorError = undefined;
 		this.lastDropperError = undefined;
+		const controller = new AbortController();
+		this.consolidationAbortController = controller;
 		const promise = this.launchTrackedTask(ctx, "consolidation", work, () => {
 			this.consolidationInFlight = false;
 			this.consolidationPhase = undefined;
+			if (this.consolidationAbortController === controller) this.consolidationAbortController = undefined;
 			if (this.consolidationPromise === promise) this.consolidationPromise = null;
 		});
 		this.consolidationPromise = promise;
 		return promise;
+	}
+
+	/** Abort the in-flight consolidation run, if any. Returns true when one was running. */
+	abortConsolidation(): boolean {
+		const controller = this.consolidationAbortController;
+		if (!controller || !this.consolidationInFlight) return false;
+		controller.abort();
+		return true;
 	}
 
 	recordConsolidationStageError(ctx: LaunchCtx, phase: ConsolidationPhase, error: unknown): string {

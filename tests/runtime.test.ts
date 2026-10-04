@@ -79,6 +79,47 @@ describe("Runtime V3 behavior", () => {
 		expect(result).toEqual({ ok: true, model, apiKey: "sk-ant-key", headers: undefined });
 	});
 
+	it.each([
+		{ configured: false, headersOnly: false },
+		{ configured: true, headersOnly: false },
+		{ configured: false, headersOnly: true },
+		{ configured: true, headersOnly: true },
+	])("applies auth baseUrl without mutating the model (configured=$configured, headersOnly=$headersOnly)", async ({ configured, headersOnly }) => {
+		const runtime = new Runtime();
+		const model = Object.freeze({
+			provider: "github-copilot",
+			id: "gpt-4.1",
+			baseUrl: "https://api.individual.githubcopilot.com",
+			api: "openai-completions",
+			contextWindow: 128000,
+		});
+		const baseUrl = "https://api.business.githubcopilot.com";
+		const apiKey = headersOnly ? undefined : "test-key";
+		const headers = { Authorization: "Bearer test-token" };
+		const registry = modelRegistry({ found: model, auth: { ok: true, apiKey, headers, baseUrl } });
+		const sessionModel = configured ? { provider: "openai", id: "session-model" } : model;
+		if (configured) runtime.config = { ...runtime.config, model: { provider: model.provider, id: model.id } };
+
+		const result = await runtime.resolveModel({ model: sessionModel, modelRegistry: registry, hasUI: false });
+
+		expect(registry.getApiKeyAndHeaders).toHaveBeenCalledWith(model);
+		expect(result).toMatchObject({ ok: true, model: { ...model, baseUrl }, apiKey, headers });
+		if (!result.ok) throw new Error("model resolution failed");
+		expect(result.model).not.toBe(model);
+		expect(model.baseUrl).toBe("https://api.individual.githubcopilot.com");
+	});
+
+	it.each([undefined, ""])("keeps the original model when auth baseUrl is %j", async (baseUrl) => {
+		const runtime = new Runtime();
+		const model = Object.freeze({ provider: "openai", id: "test-model", baseUrl: "https://example.com/v1" });
+		const registry = modelRegistry({ auth: { ok: true, apiKey: "test-key", baseUrl } });
+
+		const result = await runtime.resolveModel({ model, modelRegistry: registry, hasUI: false });
+
+		if (!result.ok) throw new Error("model resolution failed");
+		expect(result.model).toBe(model);
+	});
+
 	it("rejects auth that carries neither apiKey nor usable headers", async () => {
 		const runtime = new Runtime();
 		const model = { provider: "xai" };
@@ -177,11 +218,157 @@ describe("Runtime V3 behavior", () => {
 
 		expect(result).toEqual({
 			ok: true,
-			model,
+			model: { ...model, baseUrl: "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1" },
 			apiKey: "test-key",
 			headers: { Authorization: "Bearer test" },
 			env: { CLOUDFLARE_ACCOUNT_ID: "abc123" },
 			baseUrl: "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1"
+		});
+	});
+
+	describe("fallback model", () => {
+		const FALLBACK = { provider: "opencode-go", id: "deepseek-v4.1-flash" };
+
+		function fallbackRegistry(primaryAuth: unknown, fallbackAuth: unknown) {
+			return {
+				find: vi.fn((provider: string, id: string) =>
+					provider === FALLBACK.provider && id === FALLBACK.id ? { ...FALLBACK } : undefined,
+				),
+				getApiKeyAndHeaders: vi.fn(async (model: { provider?: string }) =>
+					model.provider === FALLBACK.provider ? fallbackAuth : primaryAuth,
+				),
+				isUsingOAuth: vi.fn(() => false),
+			};
+		}
+
+		it("resolves the fallback when the primary model has no usable auth", async () => {
+			const runtime = new Runtime();
+			const notify = vi.fn();
+			runtime.config = { ...runtime.config, model: { provider: "anthropic", id: "haiku" }, fallbackModel: { ...FALLBACK } };
+			const registry = fallbackRegistry({ ok: false, error: "expired" }, { ok: true, apiKey: "go-key" });
+
+			const result = await runtime.resolveModel({
+				model: { provider: "session" },
+				modelRegistry: registry,
+				hasUI: true,
+				ui: { notify },
+			});
+
+			expect(result).toMatchObject({ ok: true, model: FALLBACK, apiKey: "go-key", fallbackUsed: true });
+			if (!result.ok) throw new Error("model resolution failed");
+			expect(result.primaryFailure).toContain("no API key or auth headers");
+			expect(notify).toHaveBeenCalledWith(
+				expect.stringContaining("using fallback opencode-go/deepseek-v4.1-flash"),
+				"warning",
+			);
+		});
+
+		it("does not consult the fallback when the primary model resolves", async () => {
+			const runtime = new Runtime();
+			const primary = { provider: "anthropic", id: "haiku" };
+			runtime.config = { ...runtime.config, fallbackModel: { ...FALLBACK } };
+			const registry = {
+				find: vi.fn(() => ({ ...FALLBACK })),
+				getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "primary-key" })),
+			};
+
+			const result = await runtime.resolveModel({ model: primary, modelRegistry: registry, hasUI: false });
+
+			expect(result).toEqual({ ok: true, model: primary, apiKey: "primary-key", headers: undefined });
+			expect(registry.find).not.toHaveBeenCalled();
+		});
+
+		it("reports both reasons when the primary and the fallback both fail", async () => {
+			const runtime = new Runtime();
+			runtime.config = { ...runtime.config, fallbackModel: { ...FALLBACK } };
+			const registry = { ...fallbackRegistry({ ok: false }, { ok: false }), isUsingOAuth: vi.fn(() => false) };
+
+			const result = await runtime.resolveModel({
+				model: { provider: "anthropic" },
+				modelRegistry: registry,
+				hasUI: false,
+			});
+
+			expect(result.ok).toBe(false);
+			if (result.ok) throw new Error("expected failure");
+			expect(result.reason).toContain('no API key or auth headers for provider "anthropic"');
+			expect(result.reason).toContain('no API key or auth headers for provider "opencode-go"');
+		});
+
+		it("resolveFallbackModel reports unset, identical, and missing fallbacks", async () => {
+			const runtime = new Runtime();
+			const registry = {
+				find: vi.fn((provider: string) => (provider === "anthropic" ? { provider: "anthropic", id: "haiku" } : undefined)),
+				getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "k" })),
+			};
+
+			await expect(runtime.resolveFallbackModel({ model: undefined, modelRegistry: registry, hasUI: false })).resolves.toEqual({
+				ok: false,
+				reason: "no fallback model configured",
+			});
+
+			runtime.config = { ...runtime.config, model: { provider: "anthropic", id: "haiku" }, fallbackModel: { provider: "anthropic", id: "haiku" } };
+			await expect(runtime.resolveFallbackModel({ model: undefined, modelRegistry: registry, hasUI: false })).resolves.toEqual({
+				ok: false,
+				reason: "fallback model anthropic/haiku is identical to the effective primary model",
+			});
+
+			runtime.config = { ...runtime.config, model: undefined, fallbackModel: { provider: "anthropic", id: "haiku" } };
+			await expect(runtime.resolveFallbackModel({ model: { provider: "anthropic", id: "haiku" }, modelRegistry: registry, hasUI: false })).resolves.toEqual({
+				ok: false,
+				reason: "fallback model anthropic/haiku is identical to the effective primary model",
+			});
+
+			runtime.config = { ...runtime.config, fallbackModel: { ...FALLBACK } };
+			await expect(runtime.resolveFallbackModel({ model: undefined, modelRegistry: registry, hasUI: false })).resolves.toEqual({
+				ok: false,
+				reason: "fallback model opencode-go/deepseek-v4.1-flash not found",
+			});
+		});
+
+		it("resolveFallbackModel handles OAuth fallback with expired credentials", async () => {
+			const runtime = new Runtime();
+			const fallback = { provider: "openai-codex", id: "gpt-5-codex" };
+			runtime.config = { ...runtime.config, fallbackModel: fallback };
+			const registry = {
+				find: vi.fn(() => fallback),
+				getApiKeyAndHeaders: vi.fn(async () => ({ ok: false, error: "refresh failed" })),
+				isUsingOAuth: vi.fn((model: unknown) => model === fallback),
+			};
+
+			const result = await runtime.resolveFallbackModel({ model: { provider: "anthropic", id: "haiku" }, modelRegistry: registry, hasUI: false });
+
+			expect(registry.isUsingOAuth).toHaveBeenCalledWith(fallback);
+			expect(result).toEqual({
+				ok: false,
+				reason: 'authentication failed for provider "openai-codex" — OAuth credentials may have expired; run \'/login openai-codex\' to re-authenticate',
+			});
+		});
+
+		it("resolveFallbackModel handles request-time signing fallback (Bedrock/Vertex pattern)", async () => {
+			const runtime = new Runtime();
+			const fallback = { provider: "amazon-bedrock", id: "us.anthropic.claude-sonnet-4-5" };
+			runtime.config = { ...runtime.config, fallbackModel: fallback };
+			const registry = {
+				find: vi.fn(() => fallback),
+				getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: undefined, headers: undefined })),
+				hasConfiguredAuth: vi.fn((model: unknown) => model === fallback),
+			};
+
+			const result = await runtime.resolveFallbackModel({ model: { provider: "anthropic", id: "haiku" }, modelRegistry: registry, hasUI: false });
+
+			expect(registry.hasConfiguredAuth).toHaveBeenCalledWith(fallback);
+			expect(result).toEqual({ ok: true, model: fallback, apiKey: undefined, headers: undefined, env: undefined, baseUrl: undefined });
+		});
+
+		it("resolveFallbackModel applies the same auth rules as the primary path", async () => {
+			const runtime = new Runtime();
+			runtime.config = { ...runtime.config, model: { provider: "anthropic", id: "haiku" }, fallbackModel: { ...FALLBACK } };
+			const registry = fallbackRegistry({ ok: true, apiKey: "primary" }, { ok: true, headers: { Authorization: "Bearer go" } });
+
+			const result = await runtime.resolveFallbackModel({ model: undefined, modelRegistry: registry, hasUI: false });
+
+			expect(result).toEqual({ ok: true, model: FALLBACK, apiKey: undefined, headers: { Authorization: "Bearer go" } });
 		});
 	});
 });

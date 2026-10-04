@@ -44,9 +44,13 @@ describe("V3 config", () => {
 			observationsPoolMaxTokens: 20000,
 			observationsPoolTargetTokens: 10000,
 			agentMaxTurns: 16,
+			agentMaxTokens: 32000,
+			compactionCatchUpMaxChunks: 2,
+			consolidateWhenIdle: false,
 			showWorkerNotifications: true,
 			passive: false,
 			debugLog: false,
+			piAutoCompactionEnabled: true,
 		});
 		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
 	});
@@ -60,6 +64,7 @@ describe("V3 config", () => {
 				observationsPoolMaxTokens: 40,
 				observationsPoolTargetTokens: 15,
 				agentMaxTurns: 5,
+				agentMaxTokens: 8192,
 				model: { provider: "anthropic", id: "global", thinking: "medium" },
 				showWorkerNotifications: true,
 				passive: false,
@@ -81,6 +86,7 @@ describe("V3 config", () => {
 			observationsPoolMaxTokens: 40,
 			observationsPoolTargetTokens: 15,
 			agentMaxTurns: 5,
+			agentMaxTokens: 8192,
 			model: { provider: "openai", id: "project", thinking: "low" },
 			showWorkerNotifications: false,
 			passive: true,
@@ -98,6 +104,34 @@ describe("V3 config", () => {
 		expect(loadConfig(cwd, {})).toMatchObject({
 			model: { provider: "anthropic", id: "claude", thinking: "max" },
 		});
+	});
+
+	it("parses a fallback model and ignores invalid fallback values", () => {
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": {
+				model: { provider: "anthropic", id: "claude-haiku-4-5-20251001", thinking: "low" },
+				fallbackModel: { provider: "opencode-go", id: "deepseek-v4.1-flash", thinking: "low" },
+			},
+		});
+
+		expect(loadConfig(cwd, {})).toMatchObject({
+			model: { provider: "anthropic", id: "claude-haiku-4-5-20251001", thinking: "low" },
+			fallbackModel: { provider: "opencode-go", id: "deepseek-v4.1-flash", thinking: "low" },
+		});
+
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": {
+				fallbackModel: { provider: "opencode-go", id: "deepseek-v4.1-flash", thinking: "huge" },
+			},
+		});
+		expect(loadConfig(cwd, {})).toMatchObject({
+			fallbackModel: { provider: "opencode-go", id: "deepseek-v4.1-flash" },
+		});
+
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": { fallbackModel: { provider: "", id: "deepseek-v4.1-flash" } },
+		});
+		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
 	});
 
 	it("ignores invalid V3 values", () => {
@@ -270,5 +304,12 @@ describe("V3 config", () => {
 			expect(resolveCompactAfterTokens(config, 0)).toBe(81000);
 			expect(resolveCompactAfterTokens(config, -1)).toBe(81000);
 		});
+	});
+	it("reads Pi's compaction.enabled, project over global", () => {
+		writeJson(join(agentDir, "settings.json"), { compaction: { enabled: false } });
+		expect(loadConfig(cwd, {}).piAutoCompactionEnabled).toBe(false);
+
+		writeJson(join(cwd, ".pi", "settings.json"), { compaction: { enabled: true } });
+		expect(loadConfig(cwd, {}).piAutoCompactionEnabled).toBe(true);
 	});
 });

@@ -1,10 +1,10 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
 import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
-import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { hashId } from "../../ids.js";
 import { logAgentStreamError } from "../stream-errors.js";
+import { resolveWorkerStreamSimple, type StreamableModelRegistry, type WorkerStreamSimple } from "../worker-stream.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
 import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
@@ -23,7 +23,11 @@ interface RunObserverArgs {
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
+	/** Maximum output tokens for the loop (defaults to {@link AGENT_LOOP_MAX_TOKENS}). */
+	maxOutputTokens?: number;
 	thinkingLevel?: ModelThinkingLevel;
+	modelRegistry?: StreamableModelRegistry;
+	streamSimple?: WorkerStreamSimple;
 }
 
 const RelevanceSchema = Type.Union([
@@ -181,8 +185,7 @@ ${conversation}`;
 	];
 
 	const context: AgentContext = {
-		systemPrompt: OBSERVER_SYSTEM,
-		messages: [],
+		messages: [{ role: "system", content: OBSERVER_SYSTEM, timestamp: Date.now() }],
 		tools: [recordObservations as AgentTool<any>],
 	};
 
@@ -195,22 +198,29 @@ ${conversation}`;
 		apiKey,
 		headers,
 		env,
-		maxTokens: boundedMaxTokens(model, AGENT_LOOP_MAX_TOKENS),
+		maxTokens: boundedMaxTokens(model, args.maxOutputTokens ?? AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
 		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
 		...(effectiveMaxTurns !== undefined
 			? {
-				shouldStopAfterTurn: () => {
+				finishTurn: (turn) => {
+					if (turn.message.stopReason === "error" || turn.message.stopReason === "aborted") return;
 					turnCount++;
-					return turnCount >= effectiveMaxTurns;
+					return turnCount >= effectiveMaxTurns ? { action: "end" } : undefined;
 				},
 			}
 			: {}),
 	};
 
 	const loop = args.agentLoop ?? agentLoop;
-	const stream = loop(prompts, context, config, signal, streamSimple);
+	const stream = loop(
+		prompts,
+		context,
+		config,
+		signal,
+		resolveWorkerStreamSimple(model, args.modelRegistry, args.streamSimple),
+	);
 	let streamError: { stopReason: string; errorMessage?: string } | undefined;
 	for await (const event of stream) {
 		// Drain events; the tool's execute already collects records.

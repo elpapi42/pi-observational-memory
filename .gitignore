@@ -16,3 +16,7 @@ openspec
 v3_plan.md
 v3_spec.md
 .codegraph
+
+# editor swap files
+*.swp
+*.swo

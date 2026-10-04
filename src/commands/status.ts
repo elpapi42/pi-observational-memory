@@ -1,14 +1,16 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { resolveCompactAfterTokens } from "../config.js";
+import { compactionProgress as compactionProgressFor, progressLabel } from "../hooks/compaction-trigger.js";
 import type { Runtime } from "../runtime.js";
 import {
 	diffProjection,
 	foldLedger,
 	fullProjection,
+	observedTokensSinceLastCompaction,
 	rawTokensSinceLastCompaction,
 	rawTokensSinceObservationCoverage,
-	rawTokensSinceReflectionCoverage,
+	observedTokensSinceReflectionCoverage,
 	visibleProjection,
 	type Entry,
 } from "../session-ledger/index.js";
@@ -60,8 +62,9 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				[addedSuffix(drift.reflectionsOnlyInFull.length)],
 			);
 			const obsProgress = rawTokensSinceObservationCoverage(entries);
-			const reflectionProgress = rawTokensSinceReflectionCoverage(entries);
-			const compactionProgress = rawTokensSinceLastCompaction(entries);
+			const reflectionProgress = observedTokensSinceReflectionCoverage(entries);
+			const compactionProgress = compactionProgressFor(runtime, entries);
+			const unobservedSinceCompaction = Math.max(0, rawTokensSinceLastCompaction(entries) - observedTokensSinceLastCompaction(entries));
 			const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : undefined;
 			const compactThreshold = resolveCompactAfterTokens(runtime.config, contextWindow);
 
@@ -81,8 +84,9 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				"",
 				"── Activity ──",
 				`Next observation: ~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} tokens (${pct(obsProgress, runtime.config.observeAfterTokens)}%)`,
-				`Next reflection:  ~${reflectionProgress.toLocaleString()} / ${runtime.config.reflectAfterTokens.toLocaleString()} tokens (${pct(reflectionProgress, runtime.config.reflectAfterTokens)}%)`,
-				`Next compaction:  ~${compactionProgress.toLocaleString()} / ${compactThreshold.toLocaleString()} estimated source tokens (${pct(compactionProgress, compactThreshold)}%)`,
+				`Next reflection:  ~${reflectionProgress.toLocaleString()} / ${runtime.config.reflectAfterTokens.toLocaleString()} observed tokens (${pct(reflectionProgress, runtime.config.reflectAfterTokens)}%)`,
+				`Next compaction:  ~${compactionProgress.toLocaleString()} / ${compactThreshold.toLocaleString()} ${progressLabel(runtime)} source tokens (${pct(compactionProgress, compactThreshold)}%)`,
+				`Observer backlog: ~${unobservedSinceCompaction.toLocaleString()} unobserved source tokens since the compaction boundary`,
 				`Visible observation pool: ~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} tokens (${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%)`,
 				`Active observation pool: ~${activeObservationPool.observationTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} target tokens (${pct(activeObservationPool.observationTokens, runtime.config.observationsPoolTargetTokens)}%)`,
 				`Reflection pool:         ~${visibleReflectionTokens.toLocaleString()} tokens`,

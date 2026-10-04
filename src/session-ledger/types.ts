@@ -59,6 +59,13 @@ export type MemoryDetails = {
 	fullFold: boolean;
 	observations: Observation[];
 	reflections: Reflection[];
+	/**
+	 * Entry through which this summary folded the ledger. Differs from the
+	 * compaction's `firstKeptEntryId` when the hook moved the cut to retain
+	 * unobserved source. A later compaction uses it as the maintenance boundary
+	 * for drops and reflections, so it applies exactly what this fold applied.
+	 */
+	foldThroughEntryId?: string;
 };
 
 export type V3MemoryCustomType =
@@ -147,7 +154,8 @@ export function isMemoryDetails(value: unknown): value is MemoryDetails {
 		Array.isArray(value.observations) &&
 		value.observations.every(isObservation) &&
 		Array.isArray(value.reflections) &&
-		value.reflections.every(isReflection)
+		value.reflections.every(isReflection) &&
+		(value.foldThroughEntryId === undefined || typeof value.foldThroughEntryId === "string")
 	);
 }
 
