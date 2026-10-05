@@ -4,6 +4,8 @@ import { reflectionPoolMetrics } from "../agents/reflection-dropper/pool.js";
 import { resolveCompactAfterTokens, resolveObserveAfterTokens, resolveReflectAfterTokens } from "../config.js";
 import type { IndexStatus, SessionEmbeddings } from "../embeddings.js";
 import type { Runtime } from "../runtime.js";
+import { sessionCostFromEntries } from "../session-cost.js";
+import { EMPTY_WORKER_USAGE } from "../worker-usage.js";
 import {
 	diffProjection,
 	foldLedger,
@@ -124,6 +126,19 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime, embedd
 			];
 			const indexStatus = embeddings?.status(ctx.sessionManager.getSessionId(), entries);
 			if (indexStatus) lines.push(...recallIndexLines(indexStatus));
+
+			// pi reports cost for the main conversation only. Worker runs are billed
+			// on the same provider but are invisible to pi, so both are shown here.
+			const sessionCost = sessionCostFromEntries(entries);
+			const workerCost = runtime.workerUsage?.snapshot() ?? EMPTY_WORKER_USAGE;
+			const money = (value: number) => `$${value.toFixed(4)}`;
+			lines.push(
+				"",
+				"── Cost ──",
+				`Session (main conversation): ${money(sessionCost.cost)} · ${sessionCost.totalTokens.toLocaleString()} tokens`,
+				`Workers (memory runs):        ${money(workerCost.cost)} · ${workerCost.totalTokens.toLocaleString()} tokens`,
+				`Total billed:                 ${money(sessionCost.cost + workerCost.cost)}`,
+			);
 
 			if (runtime.consolidationInFlight || runtime.compactInFlight || runtime.compactHookInFlight) {
 				lines.push("", "── In flight ──");
