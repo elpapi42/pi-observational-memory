@@ -16,7 +16,7 @@ import {
 	type TestEntry,
 } from "./fixtures/session.js";
 
-function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unknown; contextUsage?: unknown; embeddings?: unknown }) {
+function setup(args: { entries: TestEntry[]; allEntries?: TestEntry[]; runtime?: Partial<any>; model?: unknown; contextUsage?: unknown; embeddings?: unknown }) {
 	let handler: ((args: unknown, ctx: any) => Promise<void>) | undefined;
 	const pi = {
 		registerCommand: vi.fn((name: string, command: { handler: typeof handler }) => {
@@ -51,7 +51,7 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unk
 	const ctx = {
 		cwd: "/tmp/project",
 		ui: { notify },
-		sessionManager: { getBranch: () => args.entries, getSessionId: () => "s1" },
+		sessionManager: { getBranch: () => args.entries, getEntries: () => args.allEntries ?? args.entries, getSessionId: () => "s1" },
 		model: args.model,
 		getContextUsage: () => args.contextUsage,
 	};
@@ -327,5 +327,20 @@ describe("V3 /om:status", () => {
 
 		status.mockReturnValue({ state: "failed", failure: "no runtime" });
 		expect(await run()).toContain("Recall index: unavailable, using keyword search — no runtime");
+	});
+
+	it("sums worker cost over the whole session, not just the branch", async () => {
+		const workerCost = (cost: number) => ({
+			type: "custom",
+			customType: "om.worker.cost",
+			data: { at: "", cost, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+		});
+		// Mirrors pi's own session totals: entries outside the current branch count.
+		const output = await setup({
+			entries: [],
+			allEntries: [workerCost(0.5), workerCost(0.25)] as any,
+		}).run();
+		expect(output).toContain("Worker cost: $0.7500");
+		expect(output).not.toContain("── Cost ──");
 	});
 });

@@ -10,26 +10,21 @@ export const OM_SELF_COMPACT_WARNING = "om.self-compact.warning";
 export const OM_EMBEDDINGS_INDEXED = "om.embeddings.indexed";
 
 /**
- * Per-consolidation cost snapshot. pi's session cost covers only the main
- * session; observer/reflector/dropper runs are billed separately and are
- * summed here so the transcript shows the true total.
+ * One worker cost snapshot per consolidation run. pi tracks the main
+ * conversation's cost; the observer/reflector/dropper agent loops are billed
+ * separately and only this records them.
  */
-export const OM_SESSION_COST = "om.session.cost";
+export const OM_WORKER_COST = "om.worker.cost";
 
-export interface SessionCostReport {
-	/** ISO timestamp of the report. */
+export interface WorkerCostReport {
+	/** ISO timestamp of the run. */
 	at: string;
-	/** Cost pi reports for the session (assistant and summary usage). */
-	sessionCost: number;
-	/** Worker cost accrued during this consolidation run. */
-	runCost: number;
-	/** Worker cost accrued by every run this session. */
-	workerCost: number;
-	/** sessionCost + workerCost. */
-	totalCost: number;
-	sessionTokens: number;
-	runTokens: number;
-	workerTokens: number;
+	/** Worker cost accrued during this run. */
+	cost: number;
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
 	totalTokens: number;
 }
 

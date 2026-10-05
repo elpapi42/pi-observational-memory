@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { sessionCostFromEntries } from "../src/session-cost.js";
+import { OM_WORKER_COST } from "../src/session-ledger/types.js";
 import {
 	WorkerUsageAccumulator,
 	addWorkerUsage,
 	deltaWorkerUsage,
+	workerCostFromEntries,
 	workerUsageFromMessage,
 } from "../src/worker-usage.js";
 
@@ -64,18 +65,20 @@ describe("WorkerUsageAccumulator", () => {
 	});
 });
 
-describe("sessionCostFromEntries", () => {
-	it("sums assistant message usage and top-level entry usage", () => {
-		const totals = sessionCostFromEntries([
-			{ type: "message", message: message(1, 100) },
-			{ type: "compaction", usage: { input: 5, totalTokens: 5, cost: { total: 0.25 } } },
-			{ type: "custom", customType: "om.session.cost", data: {} },
+describe("workerCostFromEntries", () => {
+	it("sums cost from worker cost entries across the given entries", () => {
+		const total = workerCostFromEntries([
+			{ type: "custom", customType: OM_WORKER_COST, data: { cost: 0.25 } },
+			{ type: "custom", customType: OM_WORKER_COST, data: { cost: 1.5 } },
+			{ type: "custom", customType: "om.observations.recorded", data: { cost: 99 } },
+			{ type: "message", message: message(99) },
+			null,
+			"x",
 		]);
-		expect(totals.cost).toBeCloseTo(1.25);
-		expect(totals.totalTokens).toBe(105);
+		expect(total).toBeCloseTo(1.75);
 	});
 
-	it("ignores entries it cannot read", () => {
-		expect(sessionCostFromEntries([null, 1, "x", {}]).cost).toBe(0);
+	it("ignores entries without a numeric cost", () => {
+		expect(workerCostFromEntries([{ customType: OM_WORKER_COST, data: {} }])).toBe(0);
 	});
 });

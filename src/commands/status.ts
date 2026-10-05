@@ -4,7 +4,7 @@ import { reflectionPoolMetrics } from "../agents/reflection-dropper/pool.js";
 import { resolveCompactAfterTokens, resolveObserveAfterTokens, resolveReflectAfterTokens } from "../config.js";
 import type { IndexStatus, SessionEmbeddings } from "../embeddings.js";
 import type { Runtime } from "../runtime.js";
-import { EMPTY_WORKER_USAGE } from "../worker-usage.js";
+import { workerCostFromEntries } from "../worker-usage.js";
 import {
 	diffProjection,
 	foldLedger,
@@ -127,14 +127,16 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime, embedd
 			if (indexStatus) lines.push(...recallIndexLines(indexStatus));
 
 			// pi tracks the main conversation's cost in its footer. Worker runs are
-			// billed on the same provider but are invisible to pi, so only those are
-			// reported here.
-			const workerCost = runtime.workerUsage?.snapshot() ?? EMPTY_WORKER_USAGE;
-			lines.push(
-				"",
-				"── Cost ──",
-				`Workers (memory runs, not counted by Pi): $${workerCost.cost.toFixed(4)} · ${workerCost.totalTokens.toLocaleString()} tokens`,
-			);
+			// billed on the same provider but invisible to pi. pi sums its session
+			// cost over every entry in the session file, not just the current branch,
+			// so the worker entries are summed the same way. Partial test doubles
+			// expose only getBranch, so fall back to it.
+			const sessionEntries =
+				typeof ctx.sessionManager.getEntries === "function"
+					? (ctx.sessionManager.getEntries() as unknown[])
+					: (entries as unknown[]);
+			const workerCost = workerCostFromEntries(sessionEntries);
+			lines.push("", `Worker cost: $${workerCost.toFixed(4)}`);
 
 			if (runtime.consolidationInFlight || runtime.compactInFlight || runtime.compactHookInFlight) {
 				lines.push("", "── In flight ──");

@@ -19,7 +19,7 @@ import {
 	OM_OBSERVATIONS_RECORDED,
 	OM_REFLECTIONS_DROPPED,
 	OM_REFLECTIONS_RECORDED,
-	OM_SESSION_COST,
+	OM_WORKER_COST,
 	buildObservationsDroppedData,
 	buildObservationsRecordedData,
 	buildReflectionsDroppedData,
@@ -38,10 +38,9 @@ import {
 	type Entry,
 	type Observation,
 	type Reflection,
-	type SessionCostReport,
 	type V3MemoryCustomType,
+	type WorkerCostReport,
 } from "../session-ledger/index.js";
-import { sessionCostFromEntries } from "../session-cost.js";
 import { EMPTY_WORKER_USAGE, deltaWorkerUsage, type WorkerUsageTotals } from "../worker-usage.js";
 
 type ResolvedModel = Extract<ResolveResult, { ok: true }>;
@@ -104,47 +103,35 @@ function appendEntry(pi: ExtensionAPI, customType: string, data: unknown): void 
 }
 
 /**
- * Persist a cost snapshot after every consolidation run.
+ * Persist one worker cost snapshot per consolidation run.
  *
- * `sessionCost` is what pi shows in its footer. `workerCost` is the spend of
- * the observer/reflector/dropper agent loops, which pi never sees because they
- * call the provider outside the session. `runCost` isolates the run that just
- * finished. Appending is best-effort: a reporting failure must not fail the run.
+ * pi tracks the main conversation's cost; the observer/reflector/dropper agent
+ * loops are billed separately and only this records them. Only runs that made
+ * worker calls append an entry. Best-effort: a reporting failure must not fail
+ * the run.
  */
-function appendSessionCostReport(
+function appendWorkerCostReport(
 	pi: ExtensionAPI,
 	runtime: Runtime,
-	ctx: ConsolidationCtx,
 	usageBefore: WorkerUsageTotals,
 ): void {
 	try {
 		const workerAfter = runtime.workerUsage?.snapshot() ?? EMPTY_WORKER_USAGE;
 		const run = deltaWorkerUsage(workerAfter, usageBefore);
-		const session = sessionCostFromEntries(ctx.sessionManager.getBranch() as unknown[]);
-		const report: SessionCostReport = {
+		if (run.cost === 0 && run.totalTokens === 0) return;
+		const report: WorkerCostReport = {
 			at: new Date().toISOString(),
-			sessionCost: session.cost,
-			runCost: run.cost,
-			workerCost: workerAfter.cost,
-			totalCost: session.cost + workerAfter.cost,
-			sessionTokens: session.totalTokens,
-			runTokens: run.totalTokens,
-			workerTokens: workerAfter.totalTokens,
-			totalTokens: session.totalTokens + workerAfter.totalTokens,
+			cost: run.cost,
+			input: run.input,
+			output: run.output,
+			cacheRead: run.cacheRead,
+			cacheWrite: run.cacheWrite,
+			totalTokens: run.totalTokens,
 		};
-		// Nothing to report before the first billed call, and no point spamming an
-		// entry for a run that neither spent nor moved tokens.
-		if (report.sessionCost === 0 && report.workerCost === 0 && report.sessionTokens === 0 && report.workerTokens === 0) {
-			return;
-		}
-		appendEntry(pi, OM_SESSION_COST, report);
-		debugLog("session_cost.appended", {
-			sessionCost: report.sessionCost,
-			workerCost: report.workerCost,
-			runCost: report.runCost,
-		});
+		appendEntry(pi, OM_WORKER_COST, report);
+		debugLog("worker_cost.appended", { cost: report.cost, totalTokens: report.totalTokens });
 	} catch (error) {
-		debugLog("session_cost.error", {
+		debugLog("worker_cost.error", {
 			errorMessage: error instanceof Error ? error.message : String(error),
 		});
 	}
@@ -546,8 +533,8 @@ export async function runConsolidationPipeline(
 	try {
 		await runConsolidationStages(pi, runtime, ctx, options);
 	} finally {
-		// Runs on every exit, including aborts, so the snapshot never goes missing.
-		appendSessionCostReport(pi, runtime, ctx, usageBefore);
+		// Runs on every exit, including aborts, so a run's cost is never lost.
+		appendWorkerCostReport(pi, runtime, usageBefore);
 	}
 }
 

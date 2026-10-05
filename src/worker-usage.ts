@@ -7,6 +7,8 @@
  * This accumulates it so the consolidation pipeline can report a true total.
  */
 
+import { OM_WORKER_COST } from "./session-ledger/types.js";
+
 export interface WorkerUsageTotals {
 	input: number;
 	output: number;
@@ -117,4 +119,24 @@ export class WorkerUsageAccumulator {
 	reset(): void {
 		this.totals = { ...EMPTY };
 	}
+}
+
+/**
+ * Sum worker cost from a session's entries.
+ *
+ * pi aggregates its session cost over every entry in the session file, not
+ * just the current branch, so worker cost is summed the same way. Unknown
+ * entries and entries without a numeric cost are ignored.
+ */
+export function workerCostFromEntries(entries: readonly unknown[]): number {
+	let cost = 0;
+	for (const entry of entries) {
+		if (typeof entry !== "object" || entry === null) continue;
+		const typed = entry as { customType?: unknown; data?: unknown };
+		if (typed.customType !== OM_WORKER_COST) continue;
+		if (typeof typed.data !== "object" || typed.data === null) continue;
+		const value = (typed.data as { cost?: unknown }).cost;
+		if (typeof value === "number" && Number.isFinite(value)) cost += value;
+	}
+	return cost;
 }
