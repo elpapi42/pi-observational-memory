@@ -10,6 +10,7 @@ import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { truncateRecordContent } from "../../serialize.js";
 import { REFLECTOR_SYSTEM } from "./prompts.js";
 import { estimateStringTokens } from "../../tokens.js";
+import type { WorkerUsageAccumulator } from "../../worker-usage.js";
 import { reflectionToSummaryLine, type Observation, type Reflection } from "../../session-ledger/index.js";
 import {
 	coverageTierForObservation,
@@ -42,6 +43,8 @@ interface RunReflectorArgs {
 	thinkingLevel?: ModelThinkingLevel;
 	modelRegistry?: StreamableModelRegistry;
 	streamSimple?: WorkerStreamSimple;
+	/** Accumulates this run's provider usage; pi does not see worker calls. */
+	usage?: WorkerUsageAccumulator;
 }
 
 const RecordReflectionsSchema = Type.Object({
@@ -219,6 +222,7 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 		resolveWorkerStreamSimple(model, args.modelRegistry, args.streamSimple),
 	);
 	for await (const event of stream) {
+		args.usage?.addEvent(event);
 		// Tool execution collects records.
 		logAgentStreamError("reflector", event);
 	}

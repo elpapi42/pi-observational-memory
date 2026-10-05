@@ -1,6 +1,7 @@
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { type Config, DEFAULTS, loadConfig, type MemoryStage, resolveConfiguredModel } from "./config.js";
 import { debugLog } from "./debug-log.js";
+import { WorkerUsageAccumulator } from "./worker-usage.js";
 
 export type ResolveResult =
 	| {
@@ -125,6 +126,8 @@ export class Runtime {
 	lastReflectorError: string | undefined;
 	lastReflectionDropperError: string | undefined;
 	lastDropperError: string | undefined;
+	/** Token/cost totals for worker agent loops, which pi's session cost does not include. */
+	workerUsage = new WorkerUsageAccumulator();
 	/** provider -> epoch ms of the last availability re-check (see `recheckProviderCredential`). */
 	availabilityRecheckedAt = new Map<string, number>();
 	/** Deliberate-empty backoff (#23): skip observer re-fires over the same span until enough new tokens arrive. */

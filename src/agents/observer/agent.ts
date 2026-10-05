@@ -10,6 +10,7 @@ import { OBSERVER_SYSTEM } from "./prompts.js";
 import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
 import type { Observation, Relevance } from "../../session-ledger/index.js";
 import { observationLineTokenCount } from "../../tokens.js";
+import type { WorkerUsageAccumulator } from "../../worker-usage.js";
 
 interface RunObserverArgs {
 	model: Model<any>;
@@ -28,6 +29,8 @@ interface RunObserverArgs {
 	thinkingLevel?: ModelThinkingLevel;
 	modelRegistry?: StreamableModelRegistry;
 	streamSimple?: WorkerStreamSimple;
+	/** Accumulates this run's provider usage; pi does not see worker calls. */
+	usage?: WorkerUsageAccumulator;
 }
 
 const RelevanceSchema = Type.Union([
@@ -223,6 +226,7 @@ ${conversation}`;
 	);
 	let streamError: { stopReason: string; errorMessage?: string } | undefined;
 	for await (const event of stream) {
+		args.usage?.addEvent(event);
 		// Drain events; the tool's execute already collects records.
 		logAgentStreamError("observer", event);
 		// Watch for a terminal API/stream failure so it is not conflated with

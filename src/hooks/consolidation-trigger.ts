@@ -19,6 +19,7 @@ import {
 	OM_OBSERVATIONS_RECORDED,
 	OM_REFLECTIONS_DROPPED,
 	OM_REFLECTIONS_RECORDED,
+	OM_SESSION_COST,
 	buildObservationsDroppedData,
 	buildObservationsRecordedData,
 	buildReflectionsDroppedData,
@@ -37,8 +38,11 @@ import {
 	type Entry,
 	type Observation,
 	type Reflection,
+	type SessionCostReport,
 	type V3MemoryCustomType,
 } from "../session-ledger/index.js";
+import { sessionCostFromEntries } from "../session-cost.js";
+import { EMPTY_WORKER_USAGE, deltaWorkerUsage, type WorkerUsageTotals } from "../worker-usage.js";
 
 type ResolvedModel = Extract<ResolveResult, { ok: true }>;
 
@@ -97,6 +101,53 @@ function sourceEntriesAfter(entries: Entry[], index: number): Entry[] {
 
 function appendEntry(pi: ExtensionAPI, customType: string, data: unknown): void {
 	pi.appendEntry(customType, data);
+}
+
+/**
+ * Persist a cost snapshot after every consolidation run.
+ *
+ * `sessionCost` is what pi shows in its footer. `workerCost` is the spend of
+ * the observer/reflector/dropper agent loops, which pi never sees because they
+ * call the provider outside the session. `runCost` isolates the run that just
+ * finished. Appending is best-effort: a reporting failure must not fail the run.
+ */
+function appendSessionCostReport(
+	pi: ExtensionAPI,
+	runtime: Runtime,
+	ctx: ConsolidationCtx,
+	usageBefore: WorkerUsageTotals,
+): void {
+	try {
+		const workerAfter = runtime.workerUsage?.snapshot() ?? EMPTY_WORKER_USAGE;
+		const run = deltaWorkerUsage(workerAfter, usageBefore);
+		const session = sessionCostFromEntries(ctx.sessionManager.getBranch() as unknown[]);
+		const report: SessionCostReport = {
+			at: new Date().toISOString(),
+			sessionCost: session.cost,
+			runCost: run.cost,
+			workerCost: workerAfter.cost,
+			totalCost: session.cost + workerAfter.cost,
+			sessionTokens: session.totalTokens,
+			runTokens: run.totalTokens,
+			workerTokens: workerAfter.totalTokens,
+			totalTokens: session.totalTokens + workerAfter.totalTokens,
+		};
+		// Nothing to report before the first billed call, and no point spamming an
+		// entry for a run that neither spent nor moved tokens.
+		if (report.sessionCost === 0 && report.workerCost === 0 && report.sessionTokens === 0 && report.workerTokens === 0) {
+			return;
+		}
+		appendEntry(pi, OM_SESSION_COST, report);
+		debugLog("session_cost.appended", {
+			sessionCost: report.sessionCost,
+			workerCost: report.workerCost,
+			runCost: report.runCost,
+		});
+	} catch (error) {
+		debugLog("session_cost.error", {
+			errorMessage: error instanceof Error ? error.message : String(error),
+		});
+	}
 }
 
 function mergeReflections(existing: Reflection[], additional: Reflection[]): Reflection[] {
@@ -491,6 +542,21 @@ export async function runConsolidationPipeline(
 	ctx: ConsolidationCtx,
 	options: ConsolidationOptions = {},
 ): Promise<void> {
+	const usageBefore = runtime.workerUsage?.snapshot() ?? EMPTY_WORKER_USAGE;
+	try {
+		await runConsolidationStages(pi, runtime, ctx, options);
+	} finally {
+		// Runs on every exit, including aborts, so the snapshot never goes missing.
+		appendSessionCostReport(pi, runtime, ctx, usageBefore);
+	}
+}
+
+async function runConsolidationStages(
+	pi: ExtensionAPI,
+	runtime: Runtime,
+	ctx: ConsolidationCtx,
+	options: ConsolidationOptions = {},
+): Promise<void> {
 	const resolver = makeModelResolver(runtime, ctx);
 	const force = options.force === true;
 
@@ -644,6 +710,7 @@ async function runObserverStage(
 			priorObservations,
 			chunk,
 			allowedSourceEntryIds: sourceEntryIds,
+			usage: runtime.workerUsage,
 			maxTurns: runtime.config.agentMaxTurns,
 			maxOutputTokens: runtime.config.agentMaxTokens,
 			thinkingLevel: workerThinkingLevel(runtime, worker),
@@ -718,6 +785,7 @@ async function runReflectorStage(
 		env: worker.env,
 		reflections: folded.activeReflections,
 		droppedReflectionIds: folded.droppedReflectionIds,
+		usage: runtime.workerUsage,
 		observations: folded.activeObservations,
 		maxTurns: runtime.config.agentMaxTurns,
 		maxOutputTokens: runtime.config.agentMaxTokens,
@@ -805,6 +873,7 @@ async function runReflectionDropperStage(
 		observationsById: folded.observationsById,
 		droppedObservationIds: folded.droppedObservationIds,
 		targetTokens: runtime.config.reflectionsPoolTargetTokens,
+		usage: runtime.workerUsage,
 		maxTurns: runtime.config.agentMaxTurns,
 		maxOutputTokens: runtime.config.agentMaxTokens,
 		thinkingLevel: workerThinkingLevel(runtime, worker),
@@ -933,6 +1002,7 @@ async function runDropperStage(
 			reflections: reflectionsForDropper,
 			observations: folded.activeObservations,
 			targetTokens: runtime.config.observationsPoolTargetTokens,
+			usage: runtime.workerUsage,
 			maxTurns: runtime.config.agentMaxTurns,
 			maxOutputTokens: runtime.config.agentMaxTokens,
 			thinkingLevel: workerThinkingLevel(runtime, worker),

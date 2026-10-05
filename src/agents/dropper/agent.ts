@@ -8,6 +8,7 @@ import { logAgentStreamError } from "../stream-errors.js";
 import { resolveWorkerStreamSimple, type StreamableModelRegistry, type WorkerStreamSimple } from "../worker-stream.js";
 import { reflectionToSummaryLine, type Observation, type Reflection } from "../../session-ledger/index.js";
 import { DROPPER_SYSTEM } from "./prompts.js";
+import type { WorkerUsageAccumulator } from "../../worker-usage.js";
 import {
 	REFLECTION_COVERAGE_DROP_RANK,
 	coverageTierForObservation,
@@ -53,6 +54,8 @@ interface RunDropperArgs {
 	thinkingLevel?: ModelThinkingLevel;
 	modelRegistry?: StreamableModelRegistry;
 	streamSimple?: WorkerStreamSimple;
+	/** Accumulates this run's provider usage; pi does not see worker calls. */
+	usage?: WorkerUsageAccumulator;
 	/**
 	 * Receives what the model actually asked to drop, before the budget and the
 	 * coverage/relevance/age sort in `selectDropCandidates` cut it down.
@@ -284,6 +287,7 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 		resolveWorkerStreamSimple(model, args.modelRegistry, args.streamSimple),
 	);
 	for await (const event of stream) {
+		args.usage?.addEvent(event);
 		// Tool execution collects candidate ids.
 		logAgentStreamError("dropper", event);
 	}

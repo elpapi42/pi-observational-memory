@@ -11,13 +11,35 @@ import { registerRecallIndexing } from "./hooks/recall-indexing.js";
 import { registerSelfCompact } from "./hooks/self-compact.js";
 import { SessionEmbeddings } from "./embeddings.js";
 import { Runtime } from "./runtime.js";
-import { OM_EMBEDDINGS_INDEXED } from "./session-ledger/index.js";
+import { OM_EMBEDDINGS_INDEXED, OM_SESSION_COST, type SessionCostReport } from "./session-ledger/index.js";
 import { registerRecallTool } from "./tools/recall-observation.js";
+import { Text } from "@earendil-works/pi-tui";
+
+/**
+ * One line per consolidation run: pi's session cost, the worker cost pi does
+ * not see, the running total, and what this run added.
+ */
+function formatSessionCost(
+	report: SessionCostReport,
+	theme: { fg: (color: any, text: string) => string },
+): string {
+	const money = (value: number) => `$${value.toFixed(4)}`;
+	const parts = [
+		theme.fg("muted", `session ${money(report.sessionCost)}`),
+		theme.fg("warning", `workers ${money(report.workerCost)}`),
+		theme.fg("accent", `total ${money(report.totalCost)}`),
+	];
+	if (report.runCost > 0) parts.push(theme.fg("dim", `+${money(report.runCost)} this run`));
+	return `Observational memory cost: ${parts.join(" · ")}`;
+}
 
 export default function observationalMemory(pi: ExtensionAPI) {
 	const runtime = new Runtime();
 
 	registerConsolidationTrigger(pi, runtime);
+	pi.registerEntryRenderer<SessionCostReport>(OM_SESSION_COST, (entry, _options, theme) =>
+		entry.data === undefined ? undefined : new Text(formatSessionCost(entry.data, theme), 0, 0),
+	);
 	registerSelfCompact(pi, runtime);
 	registerCompactionTrigger(pi, runtime);
 	registerCompactionHook(pi, runtime);

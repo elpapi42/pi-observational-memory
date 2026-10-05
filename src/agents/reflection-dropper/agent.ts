@@ -8,6 +8,7 @@ import { logAgentStreamError } from "../stream-errors.js";
 import { resolveWorkerStreamSimple, type StreamableModelRegistry, type WorkerStreamSimple } from "../worker-stream.js";
 import { observationToSummaryLine, type Observation, type Reflection } from "../../session-ledger/index.js";
 import { REFLECTION_DROPPER_SYSTEM } from "./prompts.js";
+import type { WorkerUsageAccumulator } from "../../worker-usage.js";
 import {
 	evidenceForReflection,
 	reflectionEvidenceMap,
@@ -49,6 +50,8 @@ interface RunReflectionDropperArgs {
 	thinkingLevel?: ModelThinkingLevel;
 	modelRegistry?: StreamableModelRegistry;
 	streamSimple?: WorkerStreamSimple;
+	/** Accumulates this run's provider usage; pi does not see worker calls. */
+	usage?: WorkerUsageAccumulator;
 	/**
 	 * Receives what the model asked to drop, before the budget and the
 	 * orphan-count/recency sort in `selectReflectionDropCandidates` cut it down,
@@ -267,6 +270,7 @@ export async function runReflectionDropper(args: RunReflectionDropperArgs): Prom
 		resolveWorkerStreamSimple(model, args.modelRegistry, args.streamSimple),
 	);
 	for await (const event of stream) {
+		args.usage?.addEvent(event);
 		// Tool execution collects candidate ids.
 		logAgentStreamError("reflection_dropper", event);
 	}
