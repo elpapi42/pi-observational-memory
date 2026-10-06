@@ -147,6 +147,39 @@ describe("V3 recall tool", () => {
 		expect(both.result.details?.status).toBe("invalid_id");
 	});
 
+	it("collapses memory to ids and reveals observation text on expand", async () => {
+		const obs = observation("aaaaaaaaaaaa", { content: "User likes tea.", sourceEntryIds: ["raw-1"] });
+		const entries = [rawMessage("raw-1", "I like tea."), observationsRecordedEntry("om-obs", { observations: [obs], coversUpToId: "raw-1" })];
+
+		const { result } = await execute("aaaaaaaaaaaa", entries);
+		const collapsed = formatRecallRenderedResultForTui(result as any, false);
+		const expanded = formatRecallRenderedResultForTui(result as any, true);
+
+		expect(collapsed).toContain("✓ success");
+		expect(collapsed).toContain("1 observation");
+		expect(collapsed).toContain("1 entry");
+		expect(collapsed).toContain("aaaaaaaaaaaa");
+		expect(collapsed).not.toContain("User likes tea.");
+		expect(expanded).toContain("User likes tea.");
+	});
+
+	it("shows scores when collapsed and full hit text when expanded", async () => {
+		const entries = [
+			rawMessage("abcd1234", "The deploy failed because the S3 bucket policy denied PutObject."),
+			rawMessage("abcd5678", "Recent turn."),
+			compactionEntry("cmp-1", { firstKeptEntryId: "abcd5678" }),
+		];
+
+		const { result } = await execute({ query: "bucket policy" }, entries);
+		const collapsed = formatRecallSearchResultForTui(result.details as any, false);
+		const expanded = formatRecallSearchResultForTui(result.details as any, true);
+
+		expect(collapsed).toContain("· lexical");
+		expect(collapsed).toContain("score ");
+		expect(collapsed).not.toContain("denied PutObject");
+		expect(expanded).toContain("denied PutObject");
+	});
+
 	it("renders dropped reflections as recallable but dropped", async () => {
 		const obs = observation("aaaaaaaaaaaa", { content: "User likes tea.", sourceEntryIds: ["raw-1"] });
 		const ref = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { content: "User likes tea." });

@@ -92,7 +92,7 @@ export type RecallSearchDetails = {
 	mode: "search";
 	query: string;
 	semantic: boolean;
-	hits: Array<Pick<SearchHit, "kind" | "id" | "score">>;
+	hits: SearchHit[];
 	/** Set on partial results while the query waits for documents to be embedded. */
 	indexing?: { done: number; total: number };
 };
@@ -357,7 +357,7 @@ export function formatRecallHeaderForTui(details: RecallObservationToolDetails):
 	const observations = observationCountForHeader(details);
 	if (observations > 0) parts.push(plural(observations, "observation"));
 	const sources = sourceEntriesFromDetails(details);
-	if (sources.length > 0) parts.push(plural(sources.length, "source"));
+	if (sources.length > 0) parts.push(plural(sources.length, "entry", "entries"));
 	const tokens = sources.reduce((sum, source) => sum + source.tokens, 0);
 	if (tokens > 0) parts.push(tokenSummary(tokens));
 	if (details.partial && details.status !== "ok") parts.push(details.status.replace(/_/g, " "));
@@ -385,13 +385,16 @@ function sourceMetadataLine(source: RecallSourceEntryDetails): string {
 	return alignedRow("✓ source", `${source.timestamp} [${sourceTag(source)}]`, tokenSummary(source.tokens));
 }
 
-function observationLine(observation: ObservationDetails): string {
-	const status = observation.status === "dropped" ? " dropped" : "";
-	return alignedRow("✓ observation", `${observation.timestamp} [${observation.relevance}]${status}`, observation.content);
+function observationLine(observation: ObservationDetails, expanded: boolean): string {
+	const status = observation.status === "dropped" ? " [dropped]" : "";
+	const row = alignedRow("✓ observation", `${observation.id}${status} ${observation.timestamp} [${observation.relevance}]`, "");
+	return expanded ? `${row}\n${indentContent(observation.content)}` : row;
 }
 
-function reflectionLine(reflection: ReflectionDetails): string {
-	return alignedRow("✓ reflection", reflection.status === "dropped" ? "dropped" : "", reflection.content);
+function reflectionLine(reflection: ReflectionDetails, expanded: boolean): string {
+	const status = reflection.status === "dropped" ? " [dropped]" : "";
+	const row = alignedRow("✓ reflection", `${reflection.id}${status}`, "");
+	return expanded ? `${row}\n${indentContent(reflection.content)}` : row;
 }
 
 function noteLine(kind: string, text: string): string {
@@ -416,9 +419,9 @@ function pushSourceLines(lines: string[], sources: RecallSourceEntryDetails[], e
 	}
 }
 
-function memoryRows(details: RecallObservationToolDetails): string[] {
-	if (isObservationOnly(details)) return details.matches.map((match) => observationLine(match.observation));
-	return [...details.reflections.map((reflection) => reflectionLine(reflection)), ...details.observations.map((observation) => observationLine(observation.observation))];
+function memoryRows(details: RecallObservationToolDetails, expanded: boolean): string[] {
+	if (isObservationOnly(details)) return details.matches.map((match) => observationLine(match.observation, expanded));
+	return [...details.reflections.map((reflection) => reflectionLine(reflection, expanded)), ...details.observations.map((observation) => observationLine(observation.observation, expanded))];
 }
 
 function noteRows(details: RecallObservationToolDetails, sources: RecallSourceEntryDetails[]): string[] {
@@ -449,14 +452,14 @@ export function formatRecallResultForTui(result: AgentToolResult<RecallObservati
 	}
 	const sources = sourceEntriesFromDetails(details);
 	const lines: string[] = [];
-	const rows = memoryRows(details);
+	const rows = memoryRows(details, expanded);
 	const notes = noteRows(details, sources);
 	lines.push(...rows);
 	if (rows.length > 0 && notes.length > 0) lines.push("");
 	lines.push(...notes);
 	if ((rows.length > 0 || notes.length > 0) && sources.length > 0) lines.push("");
 	pushSourceLines(lines, sources, expanded);
-	if (!expanded && sources.some((source) => source.content)) lines.push("", "(Ctrl+O to expand)");
+	if (!expanded && (rows.length > 0 || sources.some((source) => source.content))) lines.push("", "(Ctrl+O to expand)");
 	return lines.join("\n").trimEnd();
 }
 
@@ -521,7 +524,7 @@ async function searchResult(
 	};
 	const vector = vectorScores ? await vectorScores(sessionId, entries, docs, query, { signal, onProgress }) : undefined;
 	const hits = topHits(docs, vector ? fuseScores(lexical, vector) : lexical, SEARCH_LIMIT);
-	const details: RecallSearchDetails = { mode: "search", query, semantic: vector !== undefined, hits: hits.map(({ kind, id, score }) => ({ kind, id, score })) };
+	const details: RecallSearchDetails = { mode: "search", query, semantic: vector !== undefined, hits };
 	const text = hits.length === 0
 		? `No matches for "${query}".`
 		: `${hits.map((hit) => searchHitText(hit, query)).join("\n")}\n\nPass an id to recall for full evidence.`;
@@ -538,11 +541,16 @@ function entryResult(entries: Entry[], entryId: string) {
 	return textResult(rendered, { ...emptyDetails("ok", entryId, ""), message: undefined, sourceEntries: [sourceEntryDetails(entry, true)] });
 }
 
-export function formatRecallSearchResultForTui(details: RecallSearchDetails): string {
+export function formatRecallSearchResultForTui(details: RecallSearchDetails, expanded = false): string {
 	if (details.indexing) return `\n… embedding ${details.indexing.done.toLocaleString()} / ${details.indexing.total.toLocaleString()} documents before searching`;
 	if (details.hits.length === 0) return `\n× no matches for "${details.query}"`;
-	const rows = details.hits.map((hit) => alignedRow(`✓ ${hit.kind}`, hit.id, `score ${hit.score.toFixed(3)}`));
-	return `\n✓ ${plural(details.hits.length, "match", "matches")}${details.semantic ? " · semantic" : ""}\n\n${rows.join("\n")}`;
+	const header = `\n✓ ${plural(details.hits.length, "match", "matches")}${details.semantic ? " · semantic" : " · lexical"}`;
+	if (!expanded) {
+		const rows = details.hits.map((hit) => alignedRow(`✓ ${hit.kind}`, hit.id, `score ${hit.score.toFixed(3)}`));
+		return `${header}\n\n${rows.join("\n")}`;
+	}
+	const blocks = details.hits.map((hit) => `${alignedRow(`✓ ${hit.kind}`, `${hit.id} score ${hit.score.toFixed(3)}`, "")}\n${indentContent(hit.text)}`);
+	return `${header}\n\n${blocks.join("\n\n")}`;
 }
 
 export const createRecallTool = (vectorScores?: VectorScorer) => defineTool({
@@ -569,7 +577,7 @@ export const createRecallTool = (vectorScores?: VectorScorer) => defineTool({
 	},
 	renderResult(result, options) {
 		const details = result.details as RecallToolDetails | undefined;
-		if (isSearchDetails(details)) return new Text(formatRecallSearchResultForTui(details), 0, 0);
+		if (isSearchDetails(details)) return new Text(formatRecallSearchResultForTui(details, options.expanded), 0, 0);
 		return new Text(formatRecallRenderedResultForTui(result as AgentToolResult<RecallObservationToolDetails>, options.expanded), 0, 0);
 	},
 	async execute(_toolCallId, params, signal, onUpdate, ctx): Promise<AgentToolResult<RecallToolDetails>> {

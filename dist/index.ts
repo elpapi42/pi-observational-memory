@@ -6069,7 +6069,7 @@ function formatRecallHeaderForTui(details) {
   const observations = observationCountForHeader(details);
   if (observations > 0) parts.push(plural2(observations, "observation"));
   const sources = sourceEntriesFromDetails(details);
-  if (sources.length > 0) parts.push(plural2(sources.length, "source"));
+  if (sources.length > 0) parts.push(plural2(sources.length, "entry", "entries"));
   const tokens = sources.reduce((sum, source) => sum + source.tokens, 0);
   if (tokens > 0) parts.push(tokenSummary(tokens));
   if (details.partial && details.status !== "ok") parts.push(details.status.replace(/_/g, " "));
@@ -6092,12 +6092,17 @@ function sourceTag(source) {
 function sourceMetadataLine(source) {
   return alignedRow("\u2713 source", `${source.timestamp} [${sourceTag(source)}]`, tokenSummary(source.tokens));
 }
-function observationLine(observation) {
-  const status = observation.status === "dropped" ? " dropped" : "";
-  return alignedRow("\u2713 observation", `${observation.timestamp} [${observation.relevance}]${status}`, observation.content);
+function observationLine(observation, expanded) {
+  const status = observation.status === "dropped" ? " [dropped]" : "";
+  const row = alignedRow("\u2713 observation", `${observation.id}${status} ${observation.timestamp} [${observation.relevance}]`, "");
+  return expanded ? `${row}
+${indentContent(observation.content)}` : row;
 }
-function reflectionLine(reflection) {
-  return alignedRow("\u2713 reflection", reflection.status === "dropped" ? "dropped" : "", reflection.content);
+function reflectionLine(reflection, expanded) {
+  const status = reflection.status === "dropped" ? " [dropped]" : "";
+  const row = alignedRow("\u2713 reflection", `${reflection.id}${status}`, "");
+  return expanded ? `${row}
+${indentContent(reflection.content)}` : row;
 }
 function noteLine(kind, text) {
   return alignedRow("\u2022 note", `[${kind}]`, text);
@@ -6117,9 +6122,9 @@ function pushSourceLines(lines, sources, expanded) {
     }
   }
 }
-function memoryRows(details) {
-  if (isObservationOnly(details)) return details.matches.map((match) => observationLine(match.observation));
-  return [...details.reflections.map((reflection) => reflectionLine(reflection)), ...details.observations.map((observation) => observationLine(observation.observation))];
+function memoryRows(details, expanded) {
+  if (isObservationOnly(details)) return details.matches.map((match) => observationLine(match.observation, expanded));
+  return [...details.reflections.map((reflection) => reflectionLine(reflection, expanded)), ...details.observations.map((observation) => observationLine(observation.observation, expanded))];
 }
 function noteRows(details, sources) {
   const notes = [];
@@ -6148,14 +6153,14 @@ function formatRecallResultForTui(result, expanded) {
   }
   const sources = sourceEntriesFromDetails(details);
   const lines = [];
-  const rows = memoryRows(details);
+  const rows = memoryRows(details, expanded);
   const notes = noteRows(details, sources);
   lines.push(...rows);
   if (rows.length > 0 && notes.length > 0) lines.push("");
   lines.push(...notes);
   if ((rows.length > 0 || notes.length > 0) && sources.length > 0) lines.push("");
   pushSourceLines(lines, sources, expanded);
-  if (!expanded && sources.some((source) => source.content)) lines.push("", "(Ctrl+O to expand)");
+  if (!expanded && (rows.length > 0 || sources.some((source) => source.content))) lines.push("", "(Ctrl+O to expand)");
   return lines.join("\n").trimEnd();
 }
 function formatRecallCallForTui(id) {
@@ -6198,7 +6203,7 @@ async function searchResult(entries, query, sessionId, vectorScores, signal, onU
   };
   const vector = vectorScores ? await vectorScores(sessionId, entries, docs, query, { signal, onProgress }) : void 0;
   const hits = topHits(docs, vector ? fuseScores(lexical, vector) : lexical, SEARCH_LIMIT);
-  const details = { mode: "search", query, semantic: vector !== void 0, hits: hits.map(({ kind, id, score }) => ({ kind, id, score })) };
+  const details = { mode: "search", query, semantic: vector !== void 0, hits };
   const text = hits.length === 0 ? `No matches for "${query}".` : `${hits.map((hit) => searchHitText(hit, query)).join("\n")}
 
 Pass an id to recall for full evidence.`;
@@ -6213,16 +6218,24 @@ function entryResult(entries, entryId) {
   }
   return textResult(rendered, { ...emptyDetails("ok", entryId, ""), message: void 0, sourceEntries: [sourceEntryDetails(entry, true)] });
 }
-function formatRecallSearchResultForTui(details) {
+function formatRecallSearchResultForTui(details, expanded = false) {
   if (details.indexing) return `
 \u2026 embedding ${details.indexing.done.toLocaleString()} / ${details.indexing.total.toLocaleString()} documents before searching`;
   if (details.hits.length === 0) return `
 \xD7 no matches for "${details.query}"`;
-  const rows = details.hits.map((hit) => alignedRow(`\u2713 ${hit.kind}`, hit.id, `score ${hit.score.toFixed(3)}`));
-  return `
-\u2713 ${plural2(details.hits.length, "match", "matches")}${details.semantic ? " \xB7 semantic" : ""}
+  const header = `
+\u2713 ${plural2(details.hits.length, "match", "matches")}${details.semantic ? " \xB7 semantic" : " \xB7 lexical"}`;
+  if (!expanded) {
+    const rows = details.hits.map((hit) => alignedRow(`\u2713 ${hit.kind}`, hit.id, `score ${hit.score.toFixed(3)}`));
+    return `${header}
 
 ${rows.join("\n")}`;
+  }
+  const blocks = details.hits.map((hit) => `${alignedRow(`\u2713 ${hit.kind}`, `${hit.id} score ${hit.score.toFixed(3)}`, "")}
+${indentContent(hit.text)}`);
+  return `${header}
+
+${blocks.join("\n\n")}`;
 }
 var createRecallTool = (vectorScores) => defineTool2({
   name: RECALL_OBSERVATION_TOOL_NAME,
@@ -6246,7 +6259,7 @@ var createRecallTool = (vectorScores) => defineTool2({
   },
   renderResult(result, options) {
     const details = result.details;
-    if (isSearchDetails(details)) return new Text3(formatRecallSearchResultForTui(details), 0, 0);
+    if (isSearchDetails(details)) return new Text3(formatRecallSearchResultForTui(details, options.expanded), 0, 0);
     return new Text3(formatRecallRenderedResultForTui(result, options.expanded), 0, 0);
   },
   async execute(_toolCallId, params, signal, onUpdate, ctx) {
