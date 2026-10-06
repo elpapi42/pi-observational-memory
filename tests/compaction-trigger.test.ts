@@ -10,7 +10,7 @@ import {
 	type TestEntry,
 } from "./fixtures/session.js";
 
-function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensMode?: "calibrated" | "ratio"; compactAfterTokensRatio?: number; passive?: boolean; compactInFlight?: boolean; piAutoCompactionEnabled?: boolean } = {}) {
+function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensMode?: "calibrated" | "ratio"; compactAfterTokensRatio?: number; passive?: boolean; compactInFlight?: boolean; compactInFlightSession?: string; piAutoCompactionEnabled?: boolean } = {}) {
 	let handler: ((event: unknown, ctx: unknown) => void) | undefined;
 	const pi = {
 		on: vi.fn((name: string, cb: typeof handler) => {
@@ -28,6 +28,7 @@ function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensM
 			piAutoCompactionEnabled: args.piAutoCompactionEnabled ?? true,
 		},
 		compactInFlight: args.compactInFlight ?? false,
+		compactInFlightSession: args.compactInFlightSession,
 		observerPromise: new Promise(() => {}),
 		reflectDropPromise: new Promise(() => {}),
 	};
@@ -40,12 +41,15 @@ function agentSettled() {
 	return { type: "agent_settled" };
 }
 
-function fakeCtx(branches: TestEntry[][], overrides: Record<string, unknown> = {}) {
+function fakeCtx(branches: TestEntry[][], overrides: Record<string, unknown> = {}, sessionId?: string) {
 	let branchIndex = 0;
 	const getBranch = vi.fn(() => branches[Math.min(branchIndex++, branches.length - 1)]);
 	return {
 		cwd: "/tmp/project",
-		sessionManager: { getBranch },
+		sessionManager: {
+			getBranch,
+			...(sessionId === undefined ? {} : { getSessionId: () => sessionId }),
+		},
 		hasUI: true,
 		ui: { notify: vi.fn() },
 		isIdle: vi.fn(() => true),
@@ -126,6 +130,33 @@ describe("V3 compaction trigger", () => {
 
 		expect(ctx.sessionManager.getBranch).not.toHaveBeenCalled();
 		expect(ctx.compact).not.toHaveBeenCalled();
+	});
+
+	it("keeps the in-flight flag when the session generation is unchanged", async () => {
+		const { handler } = captureHandler({ compactInFlight: true, compactInFlightSession: "session-1" });
+		const ctx = fakeCtx([dueBranch], {}, "session-1");
+
+		handler(agentSettled(), ctx);
+		await vi.runAllTimersAsync();
+
+		expect(ctx.sessionManager.getBranch).not.toHaveBeenCalled();
+		expect(ctx.compact).not.toHaveBeenCalled();
+	});
+
+	it("discards a stale in-flight flag after session replacement", async () => {
+		const { handler, runtime } = captureHandler({ compactInFlight: true, compactInFlightSession: "session-1" });
+		const ctx = fakeCtx([dueBranch], {}, "session-2");
+
+		handler(agentSettled(), ctx);
+		expect(runtime.compactInFlight).toBe(true);
+		expect(runtime.compactInFlightSession).toBe("session-2");
+		await vi.runAllTimersAsync();
+
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Observational memory: discarded stale in-flight compaction from a replaced session",
+			"info",
+		);
 	});
 
 	it("does not await observer or reflect/drop promises before compacting", async () => {

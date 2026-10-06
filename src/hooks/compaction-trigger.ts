@@ -38,7 +38,23 @@ export function maybeTriggerCompaction(runtime: Runtime, ctx: CompactionTriggerC
 	{
 		runtime.ensureConfig(ctx.cwd);
 		if (runtime.config.passive === true) return;
-		if (runtime.compactInFlight) return;
+
+		// Session generation for the in-flight flag: when the captured ctx goes
+		// stale (session replacement/reload), a started compaction's
+		// onComplete/onError callbacks are tied to the old session and never
+		// fire, which would leave compactInFlight stuck true. Keying the flag
+		// to the session lets a replaced session discard the stale flag
+		// instead of disabling proactive compaction for the process lifetime.
+		const sessionIdentity = ctx.sessionManager?.getSessionId?.() ?? ctx.sessionManager?.getSessionFile?.();
+		if (runtime.compactInFlight) {
+			if (sessionIdentity === runtime.compactInFlightSession) return;
+			runtime.compactInFlight = false;
+			runtime.compactInFlightSession = undefined;
+			if (ctx.hasUI) ctx.ui.notify(
+				"Observational memory: discarded stale in-flight compaction from a replaced session",
+				"info",
+			);
+		}
 
 		const entries = ctx.sessionManager?.getBranch?.() as Entry[] | undefined;
 		if (!entries) return;
@@ -57,11 +73,17 @@ export function maybeTriggerCompaction(runtime: Runtime, ctx: CompactionTriggerC
 			"info",
 		);
 
+		const clearInFlight = () => {
+			runtime.compactInFlight = false;
+			runtime.compactInFlightSession = undefined;
+		};
+
 		runtime.compactInFlight = true;
+		runtime.compactInFlightSession = sessionIdentity;
 		setTimeout(() => {
 			try {
 				if (!ctx.isIdle()) {
-					runtime.compactInFlight = false;
+					clearInFlight();
 					if (hasUI) ui?.notify(
 						"Observational memory: compaction deferred — agent became busy before compaction",
 						"info",
@@ -70,12 +92,12 @@ export function maybeTriggerCompaction(runtime: Runtime, ctx: CompactionTriggerC
 				}
 				const currentEntries = ctx.sessionManager?.getBranch?.() as Entry[] | undefined;
 				if (!currentEntries) {
-					runtime.compactInFlight = false;
+					clearInFlight();
 					return;
 				}
 				const currentProgress = compactionProgress(runtime, currentEntries);
 				if (currentProgress < threshold) {
-					runtime.compactInFlight = false;
+					clearInFlight();
 					if (hasUI) ui?.notify(
 						"Observational memory: compaction skipped — another compaction already ran before deferred compaction",
 						"info",
@@ -84,11 +106,11 @@ export function maybeTriggerCompaction(runtime: Runtime, ctx: CompactionTriggerC
 				}
 				ctx.compact({
 					onComplete: () => {
-						runtime.compactInFlight = false;
+						clearInFlight();
 						if (hasUI) ui?.notify("Observational memory: compaction complete", "info");
 					},
 					onError: (error: { message: string }) => {
-						runtime.compactInFlight = false;
+						clearInFlight();
 						if (error.message === "Compaction cancelled") {
 							// We already notified the user with the real reason before returning { cancel: true }.
 							return;
@@ -97,7 +119,7 @@ export function maybeTriggerCompaction(runtime: Runtime, ctx: CompactionTriggerC
 					},
 				});
 			} catch (error) {
-				runtime.compactInFlight = false;
+				clearInFlight();
 				const msg = error instanceof Error ? error.message : String(error);
 				if (hasUI) ui?.notify(`Observational memory: compact threw: ${msg}`, "error");
 			}

@@ -116,6 +116,8 @@ export class Runtime {
 	/** Aborts the in-flight consolidation run's model calls (see `consolidateWhenIdle`). */
 	consolidationAbortController: AbortController | undefined;
 	compactInFlight = false;
+	/** Session generation (session id, falling back to session file) that owns `compactInFlight`; a replaced session discards the stale flag. */
+	compactInFlightSession: string | undefined;
 	compactHookInFlight = false;
 	resolveFailureNotified = false;
 	lastObserverError: string | undefined;
