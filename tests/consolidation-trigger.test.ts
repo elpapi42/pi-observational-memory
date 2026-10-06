@@ -632,7 +632,7 @@ describe("V3 consolidation trigger", () => {
 			entries,
 			observeAfterTokens: 999,
 			observationsPoolTargetTokens: 5,
-			systemOneDropper: { mode: "primary", endpoint: "http://localhost:8080", apiKeyEnv: "TEST_KEY", vetoThreshold: 0.15, dropThreshold: 0.75 },
+			systemOneDropper: { mode: "primary", provider: "local-jev", vetoThreshold: 0.15, dropThreshold: 0.75 },
 		});
 
 		fire();
@@ -661,7 +661,7 @@ describe("V3 consolidation trigger", () => {
 			entries,
 			observeAfterTokens: 999,
 			observationsPoolTargetTokens: 5,
-			systemOneDropper: { mode: "off", endpoint: "http://localhost:8080" },
+			systemOneDropper: { mode: "off", provider: "local-jev" },
 		});
 
 		fire();
@@ -691,7 +691,7 @@ describe("V3 consolidation trigger", () => {
 			entries,
 			observeAfterTokens: 999,
 			observationsPoolTargetTokens: 5,
-			systemOneDropper: { mode: "shadow", endpoint: "http://localhost:8080", apiKeyEnv: "TEST_KEY", vetoThreshold: 0.15, dropThreshold: 0.75 },
+			systemOneDropper: { mode: "shadow", provider: "local-jev", vetoThreshold: 0.15, dropThreshold: 0.75 },
 		});
 
 		fire();
@@ -730,7 +730,7 @@ describe("V3 consolidation trigger", () => {
 			entries,
 			observeAfterTokens: 999,
 			observationsPoolTargetTokens: 5,
-			systemOneDropper: { mode: "shadow", endpoint: "http://localhost:8080", vetoThreshold: 0.15, dropThreshold: 0.75 },
+			systemOneDropper: { mode: "shadow", provider: "local-jev", vetoThreshold: 0.15, dropThreshold: 0.75 },
 		});
 
 		fire();
@@ -755,7 +755,7 @@ describe("V3 consolidation trigger", () => {
 			entries,
 			observeAfterTokens: 999,
 			observationsPoolTargetTokens: 5,
-			systemOneDropper: { mode: "shadow", endpoint: "http://localhost:8080", vetoThreshold: 0.15, dropThreshold: 0.75 },
+			systemOneDropper: { mode: "shadow", provider: "local-jev", vetoThreshold: 0.15, dropThreshold: 0.75 },
 		});
 
 		fire();
@@ -779,7 +779,7 @@ describe("V3 consolidation trigger", () => {
 			entries,
 			observeAfterTokens: 999,
 			observationsPoolTargetTokens: 5,
-			systemOneDropper: { mode: "shadow", endpoint: "http://localhost:8080", vetoThreshold: 0.15, dropThreshold: 0.75 },
+			systemOneDropper: { mode: "shadow", provider: "local-jev", vetoThreshold: 0.15, dropThreshold: 0.75 },
 		});
 
 		fire();
@@ -1333,7 +1333,7 @@ describe("V3 reflection dropper stage", () => {
 			entries,
 			observeAfterTokens: 999,
 			reflectionsPoolTargetTokens: 5,
-			systemOneDropper: { mode: "shadow", endpoint: "http://localhost:8080", vetoThreshold: 0.15, dropThreshold: 0.75 },
+			systemOneDropper: { mode: "shadow", provider: "local-jev", vetoThreshold: 0.15, dropThreshold: 0.75 },
 		});
 
 		fire();

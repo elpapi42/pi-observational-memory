@@ -83,11 +83,10 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `recallEmbeddings.model` | string | `Xenova/bge-small-en-v1.5` | transformers.js feature-extraction model id. |
 | `recallEmbeddings.pooling` | `cls` \| `mean` | `cls` | Pooling the model was trained with. |
 | `recallEmbeddings.queryPrefix` | string | BGE retrieval prefix | Text prepended to queries, as the model's recipe requires. |
-| `systemOneDropper` | object | unset | Routes the dropper stage to a System One decision endpoint instead of the tool-calling LLM dropper. |
-| `systemOneDropper.mode` | `off` \| `shadow` \| `primary` | `shadow` | `shadow` scores without deciding, `primary` lets the endpoint decide, `off` makes the block inert. |
-| `systemOneDropper.endpoint` | string | `https://api.typesafe.ai` | Base URL; `/v1/systemone` is appended. |
-| `systemOneDropper.model` | string | `jev-latest` | Sent as the request's `model` field. |
-| `systemOneDropper.apiKeyEnv` | string | `TYPESAFE_API_KEY` | Environment variable holding the bearer token. Omitted from the request when unset. |
+| `systemOneDropper` | object | unset | Routes the dropper stage to a classifier model instead of the tool-calling LLM dropper. |
+| `systemOneDropper.mode` | `off` \| `shadow` \| `primary` | `shadow` | `shadow` scores without deciding, `primary` lets the classifier decide, `off` makes the block inert. |
+| `systemOneDropper.provider` | string | `local-jev` | Classifier provider to call. pi-jev registers `local-jev` for its open-jev endpoint. |
+| `systemOneDropper.model` | string | the provider's only model | Classifier model id within the provider. |
 | `systemOneDropper.vetoThreshold` | number in [0, 1] | `0.15` | Keep the observation when the preservation-floor probability reaches this. |
 | `systemOneDropper.dropThreshold` | number in [0, 1] | `0.75` | Minimum combined drop probability before an observation becomes a candidate. |
 | `systemOneDropper.maxQuestionsPerRequest` | positive integer | `250` | Questions per request; larger pools fan out across several requests. |
@@ -290,35 +289,36 @@ Changing `model` rebuilds the index, because stored vectors are tied to the mode
 
 Unset by default, which leaves the dropper on the tool-calling LLM path.
 
+The block reaches a System One classifier through pi's model registry: it calls `ctx.modelRegistry.classify()` on the provider named by `provider`, defaulting to pi-jev's `local-jev`. The endpoint URL, model and key are owned by whoever registered that provider, not by this block, so point pi-jev's `pi-jev` settings at the server and leave this block to the thresholds.
+
 ### Modes
 
-A configured block defaults to `shadow`, which is the mode you want first. The endpoint scores every active observation, the LLM dropper still decides, and both land in the drop-score log. Nothing about which observations get dropped changes, so it is safe to leave on while you gather data. If the endpoint is unreachable, scoring is skipped and the run proceeds normally.
+A configured block defaults to `shadow`, which is the mode you want first. The classifier scores every active observation, the LLM dropper still decides, and both land in the drop-score log. Nothing about which observations get dropped changes, so it is safe to leave on while you gather data. If no classifier model is registered, scoring is skipped and the run proceeds normally.
 
-`primary` hands the decision to the endpoint. Move to it once the exported scores show the endpoint agreeing with the LLM dropper often enough to trust.
+`primary` hands the decision to the classifier. Move to it once the exported scores show it agreeing with the LLM dropper often enough to trust.
 
-`off` keeps your endpoint and threshold tuning in the file while falling back entirely to the LLM dropper.
+`off` keeps your thresholds in the file while falling back entirely to the LLM dropper.
 
-The dropper is the one memory stage that generates nothing: it returns a subset of the active observation ids. That makes it a fit for a System One decision model, which evaluates typed questions against a state in a single non-autoregressive pass and returns calibrated probabilities instead of text. Point this at TypeSafe's Jev, or at any server implementing `POST /v1/systemone`, such as a local [open-jev](https://github.com/daseinlabs/open-jev).
+The dropper is the one memory stage that generates nothing: it returns a subset of the active observation ids. That makes it a fit for a System One decision model, which evaluates typed questions against a state in a single non-autoregressive pass and returns calibrated probabilities instead of text. Any pi classifier provider works; pi-jev's registers TypeSafe's Jev or a local [open-jev](https://github.com/daseinlabs/open-jev) server.
 
 ```json
 {
   "observational-memory": {
     "systemOneDropper": {
-      "endpoint": "https://api.typesafe.ai",
-      "model": "jev-latest",
-      "apiKeyEnv": "TYPESAFE_API_KEY"
+      "mode": "shadow",
+      "provider": "local-jev"
     }
   }
 }
 ```
 
-A local endpoint usually needs no key, so leave `apiKeyEnv` pointing at an unset variable:
+Name a `model` only when the provider exposes more than one classifier:
 
 ```json
 {
   "observational-memory": {
     "systemOneDropper": {
-      "endpoint": "http://localhost:8000",
+      "provider": "local-jev",
       "model": "gemma-3-4b-it"
     }
   }
@@ -331,13 +331,13 @@ Each active observation gets five questions, all evaluated against one state car
 
 | Signal | Type | Asks |
 | --- | --- | --- |
-| `floor` | noul | Is this the only place carrying a user constraint, concrete completion, identifier, exact error, decision, date, open blocker, or non-standard term? |
-| `redundant` | noul | Is its durable meaning already captured by a reflection with equivalent fidelity? |
-| `superseded` | noul | Does a later observation clearly replace it? |
-| `lowSignal` | noul | Is it a routine acknowledgement or progress update with nothing actionable? |
+| `floor` | bool | Is this the only place carrying a user constraint, concrete completion, identifier, exact error, decision, date, open blocker, or non-standard term? |
+| `redundant` | bool | Is its durable meaning already captured by a reflection with equivalent fidelity? |
+| `superseded` | bool | Does a later observation clearly replace it? |
+| `lowSignal` | bool | Is it a routine acknowledgement or progress update with nothing actionable? |
 | `safety` | score | How safe is it to remove, on a three-level rubric? |
 
-`floor` is a hard veto at `vetoThreshold`. Survivors are scored as `max(redundant, superseded, lowSignal) × safety`, so an observation must both look removable for a concrete reason and be judged safe overall. Anything at or above `dropThreshold` becomes a candidate, ranked by that probability, and then passes through the same budget and coverage/relevance/age tie-breaks the LLM dropper uses. An observation the endpoint did not fully answer is never dropped.
+`floor` is a hard veto at `vetoThreshold`. Survivors are scored as `max(redundant, superseded, lowSignal) × safety`, so an observation must both look removable for a concrete reason and be judged safe overall. Anything at or above `dropThreshold` becomes a candidate, ranked by that probability, and then passes through the same budget and coverage/relevance/age tie-breaks the LLM dropper uses. An observation the classifier did not fully answer is never dropped.
 
 The two thresholds are deliberately asymmetric. Losing a user constraint costs far more than keeping one redundant line, so `vetoThreshold` sits low: a 15% chance an observation uniquely carries something important is enough to keep it. Raise `dropThreshold` if the pool is being pruned too eagerly; raise `vetoThreshold` if it is barely pruned at all.
 

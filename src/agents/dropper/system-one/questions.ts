@@ -1,6 +1,6 @@
 import type { Observation, Reflection } from "../../../session-ledger/index.js";
 import { coverageTierForObservation, type ReflectionCoverageTier } from "../coverage.js";
-import type { SystemOneAnswer, SystemOneQuestion } from "./client.js";
+import type { ClassifierAnswer, ClassifierQuestion } from "./classifier.js";
 
 /**
  * The five signals the LLM dropper weighs in prose, asked as independent typed
@@ -86,10 +86,10 @@ function about(observationId: string, question: string): Record<string, unknown>
 	return { observation_id: observationId, question: `Consider the entry in \`observations\` whose id is \`observation_id\`. ${question}` };
 }
 
-export function buildQuestions(observationId: string): Record<string, SystemOneQuestion> {
+export function buildQuestions(observationId: string): Record<string, ClassifierQuestion> {
 	return {
 		[questionKey(observationId, "floor")]: {
-			type: "noul",
+			type: "bool",
 			instructions: about(
 				observationId,
 				`Is it the only place in \`observations\` and \`reflections\` that carries any of the following: ${PRESERVATION_FLOOR_ITEMS.join("; ")}?`,
@@ -100,7 +100,7 @@ export function buildQuestions(observationId: string): Record<string, SystemOneQ
 			},
 		},
 		[questionKey(observationId, "redundant")]: {
-			type: "noul",
+			type: "bool",
 			instructions: about(
 				observationId,
 				"Is its durable meaning already captured by one of the entries in `reflections` with equivalent fidelity?",
@@ -111,7 +111,7 @@ export function buildQuestions(observationId: string): Record<string, SystemOneQ
 			},
 		},
 		[questionKey(observationId, "superseded")]: {
-			type: "noul",
+			type: "bool",
 			instructions: about(
 				observationId,
 				"Does a later entry in `observations` clearly replace it, making its state obsolete?",
@@ -122,7 +122,7 @@ export function buildQuestions(observationId: string): Record<string, SystemOneQ
 			},
 		},
 		[questionKey(observationId, "lowSignal")]: {
-			type: "noul",
+			type: "bool",
 			instructions: about(
 				observationId,
 				"Is it a routine tool acknowledgement or a low-signal progress update that records no decision, constraint, exact error, or user-specific fact?",
@@ -140,11 +140,11 @@ export function buildQuestions(observationId: string): Record<string, SystemOneQ
 	};
 }
 
-function answerValue(answer: SystemOneAnswer | undefined): number | undefined {
+function answerValue(answer: ClassifierAnswer | undefined): number | undefined {
 	if (!answer) return undefined;
-	if (answer.type === "noul") return Number.isFinite(answer.noul) ? answer.noul : undefined;
+	if (answer.type === "bool") return Number.isFinite(answer.probability) ? answer.probability : undefined;
 	if (answer.type === "score" && Number.isFinite(answer.score)) {
-		// Normalize the rubric level onto [0, 1] so it composes with the nouls.
+		// Normalize the rubric level onto [0, 1] so it composes with the bools.
 		return answer.score / (SAFETY_LEVELS.length - 1);
 	}
 	return undefined;
@@ -155,7 +155,7 @@ function answerValue(answer: SystemOneAnswer | undefined): number | undefined {
  * or unusable answer are omitted, so an incomplete response can never produce
  * a drop from partial evidence.
  */
-export function collectSignals(answers: Record<string, SystemOneAnswer>): Map<string, ObservationSignals> {
+export function collectSignals(answers: Record<string, ClassifierAnswer>): Map<string, ObservationSignals> {
 	const partial = new Map<string, Partial<ObservationSignals>>();
 	for (const [key, answer] of Object.entries(answers)) {
 		const parsed = parseQuestionKey(key);

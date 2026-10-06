@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { runDropper } from "../agents/dropper/agent.js";
 import { runSystemOneDropper, scoreObservations } from "../agents/dropper/system-one/agent.js";
+import type { ClassifierRegistry } from "../agents/dropper/system-one/classifier.js";
 import { dropProbability, type ObservationSignals } from "../agents/dropper/system-one/questions.js";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { appendDropScores, appendReflectionDropScores, type DropScoreRow, type ReflectionDropRow } from "../drop-scores.js";
@@ -955,9 +956,11 @@ async function runDropperStage(
 	);
 	const systemOne = runtime.config.systemOneDropper;
 	const mode = systemOne?.mode ?? "off";
+	// The classifier model is resolved inside the agent, so a missing provider
+	// surfaces as a clear error rather than a silently skipped stage.
 	const systemOneArgs = systemOne && {
 		config: systemOne,
-		apiKey: process.env[systemOne.apiKeyEnv],
+		registry: ctx.modelRegistry as ClassifierRegistry,
 		reflections: reflectionsForDropper,
 		observations: folded.activeObservations,
 		targetTokens: runtime.config.observationsPoolTargetTokens,

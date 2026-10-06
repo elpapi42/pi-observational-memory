@@ -118,11 +118,10 @@ export type SystemOneMode = (typeof SYSTEM_ONE_MODES)[number];
 
 export interface SystemOneDropperConfig {
 	mode: SystemOneMode;
-	/** Base URL; `/v1/systemone` is appended. */
-	endpoint: string;
-	model: string;
-	/** Environment variable holding the bearer token. Local endpoints may not need one. */
-	apiKeyEnv: string;
+	/** Classifier provider registered by another extension. Defaults to pi-jev's. */
+	provider: string;
+	/** Classifier model id within the provider; defaults to the provider's only model. */
+	model?: string;
 	/**
 	 * Keep the observation when P(uniquely carries a preservation-floor item)
 	 * reaches this. Deliberately low: losing a user constraint costs far more
@@ -140,12 +139,10 @@ export interface SystemOneDropperConfig {
 }
 
 export const SYSTEM_ONE_DROPPER_DEFAULTS: Readonly<SystemOneDropperConfig> = {
-	// Scoring without deciding is the safe default for a newly configured
-	// endpoint: it produces calibration data without changing any drop.
+	// Scoring without deciding is the safe default: it produces calibration data
+	// without changing any drop.
 	mode: "shadow",
-	endpoint: "https://api.typesafe.ai",
-	model: "jev-latest",
-	apiKeyEnv: "TYPESAFE_API_KEY",
+	provider: "local-jev",
 	vetoThreshold: 0.15,
 	dropThreshold: 0.75,
 	maxQuestionsPerRequest: 250,
@@ -510,15 +507,13 @@ function probabilityOrUndefined(value: unknown): number | undefined {
  */
 export function normalizeSystemOneDropper(value: unknown): SystemOneDropperConfig | undefined {
 	if (!isRecord(value)) return undefined;
-	const endpoint = nonEmptyString(value.endpoint) ?? SYSTEM_ONE_DROPPER_DEFAULTS.endpoint;
 	const mode = (SYSTEM_ONE_MODES as readonly unknown[]).includes(value.mode)
 		? value.mode as SystemOneMode
 		: SYSTEM_ONE_DROPPER_DEFAULTS.mode;
 	return {
 		mode,
-		endpoint: endpoint.replace(/\/+$/, ""),
-		model: nonEmptyString(value.model) ?? SYSTEM_ONE_DROPPER_DEFAULTS.model,
-		apiKeyEnv: nonEmptyString(value.apiKeyEnv) ?? SYSTEM_ONE_DROPPER_DEFAULTS.apiKeyEnv,
+		provider: nonEmptyString(value.provider) ?? SYSTEM_ONE_DROPPER_DEFAULTS.provider,
+		model: nonEmptyString(value.model),
 		vetoThreshold: probabilityOrUndefined(value.vetoThreshold) ?? SYSTEM_ONE_DROPPER_DEFAULTS.vetoThreshold,
 		dropThreshold: probabilityOrUndefined(value.dropThreshold) ?? SYSTEM_ONE_DROPPER_DEFAULTS.dropThreshold,
 		maxQuestionsPerRequest: positiveIntegerOrUndefined(value.maxQuestionsPerRequest)

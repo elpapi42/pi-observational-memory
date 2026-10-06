@@ -9,7 +9,8 @@ import {
 } from "../coverage.js";
 import { observationPoolMetrics } from "../pool.js";
 import { selectDropCandidates } from "../agent.js";
-import { evaluateSystemOne, type FetchImpl, type SystemOneAnswer, type SystemOneQuestion } from "./client.js";
+import type { ClassifierAnswer, ClassifierQuestion, ClassifierRegistry } from "./classifier.js";
+import { resolveClassifier } from "./classifier.js";
 import {
 	SIGNAL_KEYS,
 	buildQuestions,
@@ -21,12 +22,12 @@ import {
 
 export interface RunSystemOneDropperArgs {
 	config: SystemOneDropperConfig;
-	apiKey?: string;
+	/** pi's model registry; the classifier is resolved from `config.provider`/`model`. */
+	registry?: ClassifierRegistry;
 	reflections: Reflection[];
 	observations: Observation[];
 	targetTokens: number;
 	signal?: AbortSignal;
-	fetchImpl?: FetchImpl;
 }
 
 /**
@@ -59,35 +60,31 @@ export interface SystemOneScores {
  * the LLM dropper still owns the decision.
  */
 export async function scoreObservations(args: RunSystemOneDropperArgs): Promise<SystemOneScores> {
-	const { config, apiKey, reflections, observations, signal } = args;
+	const { config, registry, reflections, observations, signal } = args;
+	const classifier = resolveClassifier(registry, config, config.requestTimeoutMs);
+	if (!classifier) {
+		const target = config.model ? `${config.provider}/${config.model}` : config.provider;
+		throw new Error(`no classifier model registered for ${target}`);
+	}
 	const coverageById = reflectionCoverageMap(observations, reflections);
 	const state = buildState(observations, reflections, coverageById);
 	const chunks = chunkObservations(observations, config.maxQuestionsPerRequest);
-	const answers: Record<string, SystemOneAnswer> = {};
+	const answers: Record<string, ClassifierAnswer> = {};
 	let inputTokens = 0;
 
 	for (const [index, chunk] of chunks.entries()) {
-		const questions: Record<string, SystemOneQuestion> = {};
+		const questions: Record<string, ClassifierQuestion> = {};
 		for (const observation of chunk) Object.assign(questions, buildQuestions(observation.id));
-		const response = await evaluateSystemOne({
-			endpoint: config.endpoint,
-			model: config.model,
-			apiKey,
-			state,
-			questions,
-			timeoutMs: config.requestTimeoutMs,
-			signal,
-			fetchImpl: args.fetchImpl,
-		});
+		const response = await classifier(state, questions, signal);
 		Object.assign(answers, response.answers);
-		inputTokens += response.usage?.input_tokens ?? 0;
+		inputTokens += response.usage?.input ?? 0;
 		debugLog("dropper.system_one.request", {
 			chunkIndex: index,
 			chunkCount: chunks.length,
 			observationCount: chunk.length,
 			questionCount: Object.keys(questions).length,
 			answerCount: Object.keys(response.answers).length,
-			model: response.model,
+			model: `${config.provider}${config.model ? `/${config.model}` : ""}`,
 		});
 	}
 
@@ -109,7 +106,7 @@ export async function runSystemOneDropper(args: RunSystemOneDropperArgs): Promis
 	const metrics = observationPoolMetrics(observations, targetTokens);
 	const coverageById = reflectionCoverageMap(observations, reflections);
 	debugLog("dropper.system_one.start", {
-		endpoint: config.endpoint,
+		provider: config.provider,
 		model: config.model,
 		activeObservationCount: observations.length,
 		reflectionCount: reflections.length,
