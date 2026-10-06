@@ -69,7 +69,7 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | Setting | Type | Default | What it controls |
 | --- | ---: | ---: | --- |
 | `observeAfterTokens` | positive integer | `10000` | Raw/source token threshold for observer runs. |
-| `reflectAfterTokens` | positive integer | `20000` | Raw/source token threshold for reflector runs; successful reflection creates dropper maintenance opportunities. |
+| `reflectAfterTokens` | positive integer | `20000` | Reflection cadence: the reflector counts observed source tokens since the latest reflection marker, and the reflection dropper uses it as the interval since its last maintenance pass. |
 | `observerChunkMaxTokens` | positive integer | derived; minimum `256` | Maximum estimated tokens sent to one observer run. Unset: 20% of the resolved memory model's context window, or `60000` when unknown. |
 | `compactAfterTokens` | positive integer | `81000` | Estimated source-entry threshold for proactive auto-compaction, counted after the latest compaction boundary and only up to the observation frontier. |
 | `compactionMaxRetainedTokens` | positive integer | derived | Maximum estimated source tokens the compaction hook may keep in context when it retains entries the observer has not reached yet. Unset: half of the active session model's context window, or `60000` when unknown. |
@@ -198,7 +198,7 @@ Default: `8000`.
 
 This bounds the durable layer. Reflections are re-rendered into every compacted context, so without a target they accumulate for the life of a session and become a permanent tax on every context after compaction.
 
-The reflection dropper runs when the reflector clock is due and folded active reflection tokens are over this target. It deliberately does not require same-run reflector output: reflections go stale exactly when the session moves to new work, which is when the reflector has nothing new to record.
+The reflection dropper runs on its own clock: folded active reflection tokens are over this target and enough source has accumulated since the last maintenance pass, or a reflective run just added to the pool. It deliberately does not require same-run reflector output: reflections go stale exactly when the session moves to new work, which is when the reflector has nothing new to record.
 
 Pool tokens are measured from the rendered line (`[id] content`), not the stored `tokenCount`, because the id prefix is part of what every future context pays for.
 

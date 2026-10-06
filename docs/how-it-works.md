@@ -186,7 +186,7 @@ Reflect/drop also runs on `turn_end`, but only when the observer is not due.
 2. Skip if `passive` is true.
 3. Skip if observer or reflect/drop work is already in flight.
 4. Skip if observer progress has reached `observeAfterTokens`.
-5. Check the reflector raw-token clock against `reflectAfterTokens`.
+5. Check the reflector observed-token clock against `reflectAfterTokens`.
 6. Resolve the model only for stages that are ready to run.
 7. Fold current ledger state.
 8. If reflector is due and observation coverage exists, run the reflector over active observations and active reflections. Each active observation line is annotated with current reflection coverage (`none`, `partial`, or `strong`) so the reflector can review uncovered durable facts without treating coverage as a quota.

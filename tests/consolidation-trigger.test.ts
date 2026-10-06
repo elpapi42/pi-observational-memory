@@ -1364,7 +1364,7 @@ describe("V3 reflection dropper stage", () => {
 	const obsB = observation("bbbbbbbbbbbb", { sourceEntryIds: ["raw-2"], tokenCount: 10 });
 	const refA = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
 
-	it("runs the reflection dropper on a due reflector clock even when the reflector records nothing", async () => {
+	it("runs the reflection dropper on its own clock even when the reflector records nothing", async () => {
 		mockAgents.runReflectionDropper.mockResolvedValueOnce(["eeeeeeeeeeee"]);
 		const entries = [
 			textCustomMessage("raw-1", "aaaaaaaa"),
@@ -1377,7 +1377,7 @@ describe("V3 reflection dropper stage", () => {
 		fire();
 		await runLaunchedWork();
 
-		expect(mockAgents.runReflector).toHaveBeenCalled();
+		expect(mockAgents.runReflector).not.toHaveBeenCalled();
 		expect(mockAgents.runReflectionDropper).toHaveBeenCalledWith(expect.objectContaining({
 			reflections: [refA],
 			observations: [obsA],
@@ -1498,6 +1498,7 @@ describe("V3 reflection dropper stage", () => {
 			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
 			reflectionsRecordedEntry("om-ref", { reflections: [refA], coversUpToId: "raw-1" }),
 			textCustomMessage("raw-2", "bbbbbbbb"),
+			observationsRecordedEntry("om-obs-b", { observations: [obsB], coversUpToId: "raw-2" }),
 		];
 		const { fire, runLaunchedWork, pi } = setup({
 			entries,
@@ -1510,7 +1511,7 @@ describe("V3 reflection dropper stage", () => {
 		await runLaunchedWork();
 
 		expect(mockAgents.runDropper).toHaveBeenCalledWith(expect.objectContaining({ reflections: [newRef] }));
-		expect(pi.appendEntry.mock.calls.at(-1)).toEqual([OM_OBSERVATIONS_DROPPED, { observationIds: ["aaaaaaaaaaaa"], coversUpToId: "raw-1" }]);
+		expect(pi.appendEntry.mock.calls.at(-1)).toEqual([OM_OBSERVATIONS_DROPPED, { observationIds: ["aaaaaaaaaaaa"], coversUpToId: "raw-2" }]);
 	});
 
 	it("shows the reflector active reflections and passes tombstoned ids as duplicates", async () => {
@@ -1521,6 +1522,7 @@ describe("V3 reflection dropper stage", () => {
 			reflectionsRecordedEntry("om-ref", { reflections: [refA, survivor], coversUpToId: "raw-1" }),
 			reflectionsDroppedEntry("om-ref-drop", { reflectionIds: ["eeeeeeeeeeee"], coversUpToId: "om-ref" }),
 			textCustomMessage("raw-2", "bbbbbbbb"),
+			observationsRecordedEntry("om-obs-b", { observations: [obsB], coversUpToId: "raw-2" }),
 		];
 		const { fire, runLaunchedWork } = setup({ entries, observeAfterTokens: 999, reflectionsPoolTargetTokens: 1_000 });
 
@@ -1542,6 +1544,7 @@ describe("V3 reflection dropper stage", () => {
 			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
 			reflectionsRecordedEntry("om-ref", { reflections: [refA], coversUpToId: "raw-1" }),
 			textCustomMessage("raw-2", "bbbbbbbb"),
+			observationsRecordedEntry("om-obs-b", { observations: [obsB], coversUpToId: "raw-2" }),
 		];
 		const { fire, runLaunchedWork, runtime, pi } = setup({
 			entries,

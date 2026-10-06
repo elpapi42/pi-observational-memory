@@ -88,7 +88,7 @@ It reads active observations and active reflections, then appends durable new re
 
 ### Reflection dropper
 
-The reflection dropper keeps the durable layer bounded. It runs when the reflector clock is due and the folded active reflection pool is over `reflectionsPoolTargetTokens`. Unlike the observation dropper, it does not require same-run reflector output: reflections go stale exactly when the session moves to new work, which is when the reflector has nothing new to record.
+The reflection dropper keeps the durable layer bounded. It runs on its own clock: the folded active reflection pool is over `reflectionsPoolTargetTokens` and enough source has accumulated since the last maintenance pass, or a reflective run just added to the pool. Unlike the observation dropper, it does not require same-run reflector output: reflections go stale exactly when the session moves to new work, which is when the reflector has nothing new to record.
 
 It can only drop active reflection ids; it cannot edit, merge, or replace them. Reflections carry no timestamp, so each candidate is annotated with deterministic evidence derived from its supporting observations: last evidence time (the newest supporting observation, including dropped ones), active and dropped support counts, and orphan risk. Orphan risk counts supporting observations that were already dropped from active memory and are cited by no other active reflection; dropping such a reflection would remove that meaning from active memory entirely. Code ranks orphan-free candidates first, then older evidence, and caps the run at a pool-derived maximum.
 

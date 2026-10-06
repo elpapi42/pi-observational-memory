@@ -382,8 +382,18 @@ function rawTokensSinceCoverage(entries, customType) {
 function rawTokensSinceObservationCoverage(entries) {
   return rawTokensSinceCoverage(entries, OM_OBSERVATIONS_RECORDED);
 }
-function rawTokensSinceReflectionCoverage(entries) {
-  return rawTokensSinceCoverage(entries, OM_REFLECTIONS_RECORDED);
+function observedTokensSinceReflectionCoverage(entries) {
+  const reflectionIndex = latestCoverageIndex(entries, OM_REFLECTIONS_RECORDED);
+  const observationIndex = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
+  if (observationIndex <= reflectionIndex) return 0;
+  let total = 0;
+  for (let i = reflectionIndex + 1; i <= observationIndex; i++) {
+    if (isSourceEntry(entries[i])) total += estimateEntryTokens(entries[i]);
+  }
+  return total;
+}
+function rawTokensSinceReflectionDropCoverage(entries) {
+  return rawTokensSinceCoverage(entries, OM_REFLECTIONS_DROPPED);
 }
 function findLastCompactionIndex(entries) {
   for (let i = entries.length - 1; i >= 0; i--) {
@@ -3540,7 +3550,13 @@ function sessionContextWindow(ctx) {
   return typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : void 0;
 }
 function anyStageDue(entries, runtime, currentTokens, contextWindow) {
-  return stageDue(entries, runtime, currentTokens, OM_OBSERVATIONS_RECORDED, rawTokensSinceObservationCoverage, resolveObserveAfterTokens(runtime.config, contextWindow)) || stageDue(entries, runtime, currentTokens, OM_REFLECTIONS_RECORDED, rawTokensSinceReflectionCoverage, resolveReflectAfterTokens(runtime.config, contextWindow));
+  return stageDue(entries, runtime, currentTokens, OM_OBSERVATIONS_RECORDED, rawTokensSinceObservationCoverage, resolveObserveAfterTokens(runtime.config, contextWindow)) || stageDue(entries, runtime, currentTokens, OM_REFLECTIONS_RECORDED, observedTokensSinceReflectionCoverage, resolveReflectAfterTokens(runtime.config, contextWindow)) || reflectionDropperDue(entries, runtime, currentTokens, contextWindow);
+}
+function reflectionDropperDue(entries, runtime, currentTokens, contextWindow) {
+  const folded = foldLedger(entries);
+  const metrics = reflectionPoolMetrics(folded.activeReflections, runtime.config.reflectionsPoolTargetTokens);
+  if (!metrics.ready) return false;
+  return stageDue(entries, runtime, currentTokens, OM_REFLECTIONS_DROPPED, rawTokensSinceReflectionDropCoverage, resolveReflectAfterTokens(runtime.config, contextWindow));
 }
 function shouldNotifyWorker(runtime, ctx) {
   return runtime.config.showWorkerNotifications && ctx.hasUI;
@@ -3851,7 +3867,7 @@ async function runConsolidationStages(pi, runtime, ctx, options = {}) {
   runtime.consolidationPhase = "reflection-dropper";
   let reflectionDropResult = { sameRunDroppedReflectionIds: [] };
   try {
-    reflectionDropResult = await runReflectionDropperStage(pi, runtime, ctx, resolver, reflectorResult.due);
+    reflectionDropResult = await runReflectionDropperStage(pi, runtime, ctx, resolver, reflectorResult.sameRunReflections, force);
   } catch (error) {
     debugLog("reflection_dropper.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "reflection-dropper", error) });
   }
@@ -3998,19 +4014,19 @@ async function runObserverStage(pi, runtime, ctx, resolver, force) {
 }
 async function runReflectorStage(pi, runtime, ctx, resolver, force) {
   const entries = ctx.sessionManager.getBranch();
-  const reflectionTokens = stageTokens(entries, OM_REFLECTIONS_RECORDED, realContextTokens(ctx), rawTokensSinceReflectionCoverage);
-  if (!force && reflectionTokens < resolveReflectAfterTokens(runtime.config, sessionContextWindow(ctx))) return { outcome: "continue", due: false, sameRunReflections: [] };
+  const reflectionTokens = stageTokens(entries, OM_REFLECTIONS_RECORDED, realContextTokens(ctx), observedTokensSinceReflectionCoverage);
+  if (!force && reflectionTokens < resolveReflectAfterTokens(runtime.config, sessionContextWindow(ctx))) return { outcome: "continue", sameRunReflections: [] };
   const observationCoverageId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED);
-  if (!observationCoverageId) return { outcome: "continue", due: true, sameRunReflections: [] };
+  if (!observationCoverageId) return { outcome: "continue", sameRunReflections: [] };
   if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
     `Observational memory: reflector running (~${reflectionTokens.toLocaleString()} tokens)`,
     "info"
   );
   const resolved = await resolver.resolve("reflector");
-  if (!resolved) return { outcome: "abort", due: true, sameRunReflections: [] };
+  if (!resolved) return { outcome: "abort", sameRunReflections: [] };
   if (wasAborted(runtime)) {
     debugLog("reflector.aborted", {});
-    return { outcome: "abort", due: true, sameRunReflections: [] };
+    return { outcome: "abort", sameRunReflections: [] };
   }
   const folded = foldLedger(entries);
   const reflections = await runStageWithFallback(ctx, "reflector", resolved, resolver, (worker) => {
@@ -4037,24 +4053,19 @@ async function runReflectorStage(pi, runtime, ctx, resolver, force) {
   }, consolidationSignal(runtime));
   if (wasAborted(runtime)) {
     debugLog("reflector.aborted", {});
-    return { outcome: "abort", due: true, sameRunReflections: [] };
+    return { outcome: "abort", sameRunReflections: [] };
   }
-  if (!reflections) return { outcome: "continue", due: true, sameRunReflections: [] };
+  if (!reflections) return { outcome: "continue", sameRunReflections: [] };
   const data = buildReflectionsRecordedData(reflections, observationCoverageId);
-  if (!data) return { outcome: "continue", due: true, sameRunReflections: [] };
+  if (!data) return { outcome: "continue", sameRunReflections: [] };
   appendEntry(pi, OM_REFLECTIONS_RECORDED, data);
   return {
     outcome: "continue",
-    due: true,
     sameRunReflections: reflections,
     effectiveReflectionCoverageId: data.coversUpToId
   };
 }
-async function runReflectionDropperStage(pi, runtime, ctx, resolver, reflectorDue) {
-  if (!reflectorDue) {
-    debugLog("reflection_dropper.reflector_not_due", {});
-    return { sameRunDroppedReflectionIds: [] };
-  }
+async function runReflectionDropperStage(pi, runtime, ctx, resolver, sameRunReflections, force) {
   const entries = ctx.sessionManager.getBranch();
   const folded = foldLedger(entries);
   const metrics = reflectionPoolMetrics(folded.activeReflections, runtime.config.reflectionsPoolTargetTokens);
@@ -4067,6 +4078,18 @@ async function runReflectionDropperStage(pi, runtime, ctx, resolver, reflectorDu
       activeReflectionCount: metrics.activeReflectionCount,
       maxDropsAllowed: metrics.maxDropsAllowed
     });
+    return { sameRunDroppedReflectionIds: [] };
+  }
+  const reflectionDropTokens = rawTokensSinceReflectionDropCoverage(entries);
+  if (!force && sameRunReflections.length === 0 && !stageDue(
+    entries,
+    runtime,
+    realContextTokens(ctx),
+    OM_REFLECTIONS_DROPPED,
+    rawTokensSinceReflectionDropCoverage,
+    resolveReflectAfterTokens(runtime.config, sessionContextWindow(ctx))
+  )) {
+    debugLog("reflection_dropper.not_due", { reflectionDropTokens });
     return { sameRunDroppedReflectionIds: [] };
   }
   const coversUpToId = latestCoverageMarkerId(entries, OM_REFLECTIONS_RECORDED);
@@ -4577,7 +4600,7 @@ function registerStatusCommand(pi, runtime, embeddings) {
         ]
       );
       const obsProgress = rawTokensSinceObservationCoverage(entries);
-      const reflectionProgress = rawTokensSinceReflectionCoverage(entries);
+      const reflectionProgress = observedTokensSinceReflectionCoverage(entries);
       const compactionProgress2 = compactionProgress(runtime, entries);
       const unobservedSinceCompaction = Math.max(0, rawTokensSinceLastCompaction(entries) - observedTokensSinceLastCompaction(entries));
       const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : void 0;
@@ -4597,7 +4620,7 @@ function registerStatusCommand(pi, runtime, embeddings) {
         "",
         "\u2500\u2500 Activity \u2500\u2500",
         `Next observation: ~${obsProgress.toLocaleString()} / ${observeThreshold.toLocaleString()} tokens (${pct(obsProgress, observeThreshold)}%)`,
-        `Next reflection:  ~${reflectionProgress.toLocaleString()} / ${reflectThreshold.toLocaleString()} raw/source tokens (${pct(reflectionProgress, reflectThreshold)}%)`,
+        `Next reflection:  ~${reflectionProgress.toLocaleString()} / ${reflectThreshold.toLocaleString()} observed tokens (${pct(reflectionProgress, reflectThreshold)}%)`,
         `Next compaction:  ~${compactionProgress2.toLocaleString()} / ${compactThreshold.toLocaleString()} ${progressLabel(runtime)} source tokens (${pct(compactionProgress2, compactThreshold)}%)`,
         `Observer backlog: ~${unobservedSinceCompaction.toLocaleString()} unobserved source tokens since the compaction boundary`,
         `Visible observation pool: ~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} tokens (${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%)`,

@@ -35,8 +35,9 @@ import {
 	latestCoverageMarkerId,
 	observationToSummaryLine,
 	realTokensSinceAnchor,
+	observedTokensSinceReflectionCoverage,
 	rawTokensSinceObservationCoverage,
-	rawTokensSinceReflectionCoverage,
+	rawTokensSinceReflectionDropCoverage,
 	reflectionToSummaryLine,
 	type Entry,
 	type Observation,
@@ -79,13 +80,6 @@ type StageOutcome = "continue" | "abort";
 
 type ReflectorStageResult = {
 	outcome: StageOutcome;
-	/**
-	 * Whether the reflector clock was due this run, regardless of whether the
-	 * reflector produced output. The reflection dropper runs on this signal:
-	 * "the session moved on" is exactly the case where the reflector has nothing
-	 * new to say while stale reflections keep occupying the pool.
-	 */
-	due: boolean;
 	sameRunReflections: Reflection[];
 	effectiveReflectionCoverageId?: string;
 };
@@ -204,7 +198,27 @@ function sessionContextWindow(ctx: ConsolidationCtx): number | undefined {
 
 function anyStageDue(entries: Entry[], runtime: Runtime, currentTokens: number | undefined, contextWindow: number | undefined): boolean {
 	return stageDue(entries, runtime, currentTokens, OM_OBSERVATIONS_RECORDED, rawTokensSinceObservationCoverage, resolveObserveAfterTokens(runtime.config, contextWindow))
-		|| stageDue(entries, runtime, currentTokens, OM_REFLECTIONS_RECORDED, rawTokensSinceReflectionCoverage, resolveReflectAfterTokens(runtime.config, contextWindow));
+		|| stageDue(entries, runtime, currentTokens, OM_REFLECTIONS_RECORDED, observedTokensSinceReflectionCoverage, resolveReflectAfterTokens(runtime.config, contextWindow))
+		|| reflectionDropperDue(entries, runtime, currentTokens, contextWindow);
+}
+
+/**
+ * The reflection dropper's own clock, independent of the reflector: the active
+ * reflection pool is over target and enough source has accumulated since the
+ * last maintenance pass. Tying maintenance to the reflector clock either
+ * over-fires the reflector while the observer drains a backlog, or starves the
+ * pool while the reflector has nothing new to record.
+ */
+function reflectionDropperDue(
+	entries: Entry[],
+	runtime: Runtime,
+	currentTokens: number | undefined,
+	contextWindow: number | undefined,
+): boolean {
+	const folded = foldLedger(entries);
+	const metrics = reflectionPoolMetrics(folded.activeReflections, runtime.config.reflectionsPoolTargetTokens);
+	if (!metrics.ready) return false;
+	return stageDue(entries, runtime, currentTokens, OM_REFLECTIONS_DROPPED, rawTokensSinceReflectionDropCoverage, resolveReflectAfterTokens(runtime.config, contextWindow));
 }
 
 function shouldNotifyWorker(runtime: Runtime, ctx: ConsolidationCtx): boolean {
@@ -650,7 +664,7 @@ async function runConsolidationStages(
 	runtime.consolidationPhase = "reflection-dropper";
 	let reflectionDropResult: ReflectionDropperStageResult = { sameRunDroppedReflectionIds: [] };
 	try {
-		reflectionDropResult = await runReflectionDropperStage(pi, runtime, ctx, resolver, reflectorResult.due);
+		reflectionDropResult = await runReflectionDropperStage(pi, runtime, ctx, resolver, reflectorResult.sameRunReflections, force);
 	} catch (error) {
 		debugLog("reflection_dropper.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "reflection-dropper", error) });
 	}
@@ -842,21 +856,21 @@ async function runReflectorStage(
 	force: boolean,
 ): Promise<ReflectorStageResult> {
 	const entries = ctx.sessionManager.getBranch() as Entry[];
-	const reflectionTokens = stageTokens(entries, OM_REFLECTIONS_RECORDED, realContextTokens(ctx), rawTokensSinceReflectionCoverage);
-	if (!force && reflectionTokens < resolveReflectAfterTokens(runtime.config, sessionContextWindow(ctx))) return { outcome: "continue", due: false, sameRunReflections: [] };
+	const reflectionTokens = stageTokens(entries, OM_REFLECTIONS_RECORDED, realContextTokens(ctx), observedTokensSinceReflectionCoverage);
+	if (!force && reflectionTokens < resolveReflectAfterTokens(runtime.config, sessionContextWindow(ctx))) return { outcome: "continue", sameRunReflections: [] };
 
 	const observationCoverageId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED);
-	if (!observationCoverageId) return { outcome: "continue", due: true, sameRunReflections: [] };
+	if (!observationCoverageId) return { outcome: "continue", sameRunReflections: [] };
 
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
 		`Observational memory: reflector running (~${reflectionTokens.toLocaleString()} tokens)`,
 		"info",
 	);
 	const resolved = await resolver.resolve("reflector");
-	if (!resolved) return { outcome: "abort", due: true, sameRunReflections: [] };
+	if (!resolved) return { outcome: "abort", sameRunReflections: [] };
 	if (wasAborted(runtime)) {
 		debugLog("reflector.aborted", {});
-		return { outcome: "abort", due: true, sameRunReflections: [] };
+		return { outcome: "abort", sameRunReflections: [] };
 	}
 
 	const folded = foldLedger(entries);
@@ -884,16 +898,15 @@ async function runReflectorStage(
 	}, consolidationSignal(runtime));
 	if (wasAborted(runtime)) {
 		debugLog("reflector.aborted", {});
-		return { outcome: "abort", due: true, sameRunReflections: [] };
+		return { outcome: "abort", sameRunReflections: [] };
 	}
-	if (!reflections) return { outcome: "continue", due: true, sameRunReflections: [] };
+	if (!reflections) return { outcome: "continue", sameRunReflections: [] };
 
 	const data = buildReflectionsRecordedData(reflections, observationCoverageId);
-	if (!data) return { outcome: "continue", due: true, sameRunReflections: [] };
+	if (!data) return { outcome: "continue", sameRunReflections: [] };
 	appendEntry(pi, OM_REFLECTIONS_RECORDED, data);
 	return {
 		outcome: "continue",
-		due: true,
 		sameRunReflections: reflections,
 		effectiveReflectionCoverageId: data.coversUpToId,
 	};
@@ -902,22 +915,19 @@ async function runReflectorStage(
 /**
  * Prune the active reflection pool back toward `reflectionsPoolTargetTokens`.
  *
- * Gated on the reflector clock being due rather than on the reflector having
- * produced output: reflections go stale exactly when the session moves to new
- * work, which is when the reflector has nothing new to record.
+ * Runs on its own clock rather than the reflector's: reflections go stale
+ * exactly when the session moves on, which is when the reflector has nothing
+ * new to record. The gate is pool pressure plus source tokens since the last
+ * maintenance pass, or a reflective run that just added to the pool.
  */
 async function runReflectionDropperStage(
 	pi: ExtensionAPI,
 	runtime: Runtime,
 	ctx: ConsolidationCtx,
 	resolver: ModelResolver,
-	reflectorDue: boolean,
+	sameRunReflections: Reflection[],
+	force: boolean,
 ): Promise<ReflectionDropperStageResult> {
-	if (!reflectorDue) {
-		debugLog("reflection_dropper.reflector_not_due", {});
-		return { sameRunDroppedReflectionIds: [] };
-	}
-
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const folded = foldLedger(entries);
 	const metrics = reflectionPoolMetrics(folded.activeReflections, runtime.config.reflectionsPoolTargetTokens);
@@ -930,6 +940,22 @@ async function runReflectionDropperStage(
 			activeReflectionCount: metrics.activeReflectionCount,
 			maxDropsAllowed: metrics.maxDropsAllowed,
 		});
+		return { sameRunDroppedReflectionIds: [] };
+	}
+	const reflectionDropTokens = rawTokensSinceReflectionDropCoverage(entries);
+	if (
+		!force
+		&& sameRunReflections.length === 0
+		&& !stageDue(
+			entries,
+			runtime,
+			realContextTokens(ctx),
+			OM_REFLECTIONS_DROPPED,
+			rawTokensSinceReflectionDropCoverage,
+			resolveReflectAfterTokens(runtime.config, sessionContextWindow(ctx)),
+		)
+	) {
+		debugLog("reflection_dropper.not_due", { reflectionDropTokens });
 		return { sameRunDroppedReflectionIds: [] };
 	}
 
