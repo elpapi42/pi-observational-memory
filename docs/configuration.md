@@ -47,6 +47,14 @@ The extension loads config once for its runtime. After changing settings, restar
       "id": "deepseek-v4.1-flash",
       "thinking": "low"
     },
+    "modelMap": [
+      { "match": "claude-bridge/*", "model": "$model:low" },
+      { "match": "claude-bridge/*", "stages": ["reflector"], "model": "$model:medium" }
+    ],
+    "selfCompact": {
+      "enabled": true,
+      "warnAt": [{ "match": "*", "warnAt": [{ "type": "ratio", "value": 0.25 }] }]
+    },
     "showWorkerNotifications": true,
     "passive": false,
     "debugLog": false
@@ -77,8 +85,12 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `fallbackModel.provider` | string | unset | Provider name in Pi's model registry. Required when `fallbackModel` is set. |
 | `fallbackModel.id` | string | unset | Model id in Pi's model registry. Required when `fallbackModel` is set. |
 | `fallbackModel.thinking` | enum | unset; falls back to `model.thinking` then `low` | Optional reasoning/thinking level used when the fallback is active. |
+| `modelMap` | array of entries | `[]` | Routes the memory-worker model by the active session model. First match wins; otherwise `model` (or the session model) is used. |
+| `modelMap[].match` | string glob | unset | Glob over the active session `"<provider>/<id>"`. Does not match on thinking level. |
+| `modelMap[].model` | string | unset | `"<provider>/<id>[:<thinking>]"`, with `$provider`, `$id`, `$model`, and `$thinking` substitutions from the session model. Required. |
+| `modelMap[].stages` | array of stage names | all stages | Narrows the entry to `observer`, `reflector`, `reflection-dropper`, and/or `dropper`. |
 | `selfCompact.enabled` | boolean | `false` | Gives the agent the `compact_context` tool so it can compact at a breakpoint it chooses. |
-| `selfCompact.warnAt` | array of thresholds | `[]` | Context-usage levels at which the agent is asked to call `compact_context`. Same number or `{ type, value }` forms as other thresholds. |
+| `selfCompact.warnAt` | array of rules | `[]` | Warning rules, each `{ match, warnAt }`. `match` is a glob over the active session `"<provider>/<id>"` with an optional trailing `":<thinking>"` predicate. First match wins; no match means no warnings, so add a `"*"` rule as the global default. Values are the same number or `{ type, value }` forms as other thresholds. |
 | `recallEmbeddings.enabled` | boolean | `false` | Adds local semantic ranking to `recall` queries. |
 | `recallEmbeddings.model` | string | `Xenova/bge-small-en-v1.5` | transformers.js feature-extraction model id. |
 | `recallEmbeddings.pooling` | `cls` \| `mean` | `cls` | Pooling the model was trained with. |
@@ -253,6 +265,41 @@ If the fallback advertises a smaller context window than the primary, the observ
 
 `provider` and `id` must both be non-empty strings, exactly as for `model`. A `fallbackModel` identical to the effective primary memory model — the configured `model` when it resolves, otherwise the session model — is rejected as a misconfiguration. A fallback that also fails leaves the existing skip/fail-safe behavior intact: no memory is invented, coverage does not advance, and the failure is surfaced (worker failure notification, `/om:status`, debug log).
 
+## `modelMap`
+
+Default: `[]`.
+
+Routes the memory-worker model by the active session model. Each entry's `match` is a glob (`*` and `?` wildcards) against the session's `"<provider>/<id>"`. The first matching entry wins; if none match, `model` (or the session model) is used. `match` never filters on thinking level.
+
+`model` is `"<provider>/<id>[:<thinking>]"`. Only the final `:`-separated segment is read as a thinking level, and only when it is valid, so ids that contain colons (`synthetic/syn:large:text`, OpenRouter's `:free`) are preserved. Valid levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
+
+A `model` may reuse parts of the active session model instead of repeating them:
+
+| Token | Replaced with |
+| --- | --- |
+| `$provider` | the session model's provider |
+| `$id` | the session model's id |
+| `$model` | `<provider>/<id>` of the session model |
+| `$thinking` | the session thinking level |
+
+An unresolved `$thinking` drops its `:` separator and leaves the worker thinking unset. Any other unresolved `$token` invalidates the entry, so a misconfigured rule never routes a worker to a literal `$provider` model.
+
+An entry may set `stages` to any of `observer`, `reflector`, `reflection-dropper`, `dropper`, so the cheap extraction stages and the expensive distillation stage can use different models and thinking levels. An entry without `stages` serves every stage, so order a stage-specific entry before the general one. A misspelled stage list is rejected rather than widened to every stage.
+
+```json
+{
+  "observational-memory": {
+    "modelMap": [
+      { "match": "claude-bridge/*", "model": "$model:low" },
+      { "match": "claude-bridge/*", "stages": ["reflector"], "model": "$model:medium" },
+      { "match": "synthetic/syn:large:*", "model": "synthetic/syn:small:text" }
+    ]
+  }
+}
+```
+
+The first rule pins claude-bridge workers to `low` thinking whatever the session uses, and the second pins only the reflector to `medium`. The third routes a large session model to a smaller worker.
+
 ## `selfCompact`
 
 Default: `{ "enabled": false }`.
@@ -261,7 +308,9 @@ When enabled, the agent gets a `compact_context` tool. Calling it ends the curre
 
 Input that arrives before the compaction starts cancels it. Proactive `compactAfterTokens` compaction keeps working as a backstop.
 
-`warnAt` asks the agent to compact as context fills. Each threshold is compared with Pi's live context usage, which includes the system prompt and tool schemas, unlike `compactAfterTokens`. Each level is sent once per compaction cycle. The highest level asks the agent to finish the current step and then compact before starting new work. Lower levels ask it to finish a nearly done task first, and otherwise compact at the next clean breakpoint. A warning raised mid-run is steered into the current run. One raised after the final reply is attached to your next prompt instead of starting a turn. Warnings are not treated as session content by the observer. After any compaction, including a manual `/compact`, warnings from the earlier cycle stay in the session but are hidden from the model. Warnings saved by older versions count as stale.
+`warnAt` asks the agent to compact as context fills. It is a first-match-wins list of `{ match, warnAt }` rules. `match` is a glob over the active session `"<provider>/<id>"`, optionally with a trailing `":<thinking>"` predicate such as `"anthropic/claude-opus-*:high"`. When no rule matches, no warnings are emitted, so include a `"*"` rule as the global default. This lets a high-thinking session warn earlier than a low-thinking one.
+
+Each selected threshold is compared with Pi's live context usage, which includes the system prompt and tool schemas, unlike `compactAfterTokens`. Each level is sent once per compaction cycle. The highest level asks the agent to finish the current step and then compact before starting new work. Lower levels ask it to finish a nearly done task first, and otherwise compact at the next clean breakpoint. A warning raised mid-run is steered into the current run. One raised after the final reply is attached to your next prompt instead of starting a turn. Warnings are not treated as session content by the observer. After any compaction, including a manual `/compact`, warnings from the earlier cycle stay in the session but are hidden from the model. Warnings saved by older versions count as stale.
 
 ```json
 {
@@ -269,7 +318,10 @@ Input that arrives before the compaction starts cancels it. Proactive `compactAf
     "compactAfterTokens": { "type": "ratio", "value": 0.35 },
     "selfCompact": {
       "enabled": true,
-      "warnAt": [{ "type": "ratio", "value": 0.2 }, { "type": "ratio", "value": 0.28 }]
+      "warnAt": [
+        { "match": "*:high", "warnAt": [{ "type": "ratio", "value": 0.2 }, { "type": "ratio", "value": 0.28 }] },
+        { "match": "*", "warnAt": [{ "type": "ratio", "value": 0.35 }, { "type": "ratio", "value": 0.45 }] }
+      ]
     }
   }
 }

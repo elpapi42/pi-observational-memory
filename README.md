@@ -335,14 +335,29 @@ Set `showWorkerNotifications` to `false` to hide routine worker start and comple
 {
   "observational-memory": {
     "modelMap": [
-      { "match": "claude-bridge/claude-opus-*", "provider": "claude-bridge", "id": "claude-sonnet-5" },
-      { "match": "synthetic/syn:large:*", "provider": "synthetic", "id": "syn:small:text" }
+      { "match": "claude-bridge/claude-opus-*", "model": "claude-bridge/claude-sonnet-5" },
+      { "match": "synthetic/syn:large:*", "model": "synthetic/syn:small:text" }
     ]
   }
 }
 ```
 
-Each entry may also set `thinking`.
+`model` is `"<provider>/<id>[:<thinking>]"`. The thinking suffix is the last `:`-separated segment and only counts when it is a valid level, so model ids containing colons (`syn:large:text`, OpenRouter's `:free`) are preserved.
+
+A `model` may reuse parts of the active session model with substitutions: `$provider`, `$id`, `$model` (the full `<provider>/<id>`), and `$thinking` (the session thinking level). This lets one rule pin worker thinking without retyping the model:
+
+```json
+{
+  "observational-memory": {
+    "modelMap": [
+      { "match": "claude-bridge/*", "model": "$model:low" },
+      { "match": "claude-bridge/*", "stages": ["reflector"], "model": "$model:medium" }
+    ]
+  }
+}
+```
+
+With `$thinking` and no known session thinking, the `:` separator is dropped and the worker thinking stays unset. Any other unresolved `$token` invalidates the entry.
 
 An entry may set `stages` to narrow it to any of `observer`, `reflector`, `reflection-dropper`, `dropper`, so the cheap extraction stages and the expensive distillation stage can use different models. An entry without `stages` serves every stage, so order a stage-specific entry before the general one:
 
@@ -351,8 +366,8 @@ An entry may set `stages` to narrow it to any of `observer`, `reflector`, `refle
   "observational-memory": {
     "reflectAfterTokens": 50000,
     "modelMap": [
-      { "match": "*", "stages": ["reflector"], "provider": "claude-bridge", "id": "claude-sonnet-5", "thinking": "high" },
-      { "match": "*", "provider": "synthetic", "id": "syn:small:text" }
+      { "match": "*", "stages": ["reflector"], "model": "claude-bridge/claude-sonnet-5:high" },
+      { "match": "*", "model": "synthetic/syn:small:text" }
     ]
   }
 }

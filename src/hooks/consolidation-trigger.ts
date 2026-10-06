@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { runDropper } from "../agents/dropper/agent.js";
 import { runSystemOneDropper, scoreObservations } from "../agents/dropper/system-one/agent.js";
 import type { ClassifierRegistry } from "../agents/dropper/system-one/classifier.js";
@@ -63,6 +64,8 @@ export type ConsolidationCtx = {
 	ui?: { notify: (message: string, type?: "warning" | "info" | "error") => void };
 	model: unknown;
 	modelRegistry: any;
+	/** Active session thinking level, used for `$thinking` substitution in `modelMap`. */
+	thinkingLevel?: ModelThinkingLevel;
 	getContextUsage?: () => { tokens?: number | null; contextWindow?: number } | undefined;
 	sessionManager: {
 		getBranch: () => unknown;
@@ -272,6 +275,7 @@ function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): ModelResolv
 				hasUI: ctx.hasUI,
 				ui: ctx.ui,
 				stage,
+				thinkingLevel: ctx.thinkingLevel,
 			});
 			cache.set(stage, resolved);
 		}
@@ -300,6 +304,7 @@ function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): ModelResolv
 			hasUI: ctx.hasUI,
 			ui: ctx.ui,
 			stage,
+			thinkingLevel: ctx.thinkingLevel,
 		};
 		const result = await resolveFallbackModel.call(runtime, resolvedCtx);
 		if (!result.ok) {
@@ -509,6 +514,7 @@ function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: Conso
 		ui: ctx.ui,
 		model: ctx.model,
 		modelRegistry: ctx.modelRegistry,
+		thinkingLevel: ctx.thinkingLevel,
 		getContextUsage: ctx.getContextUsage,
 		sessionManager: ctx.sessionManager,
 	};

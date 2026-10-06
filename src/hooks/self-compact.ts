@@ -1,8 +1,8 @@
-import { Type } from "@earendil-works/pi-ai";
+import { Type, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 
-import { resolveTokenThreshold } from "../config.js";
+import { resolveTokenThreshold, resolveWarnAt } from "../config.js";
 import type { Runtime } from "../runtime.js";
 import { OM_SELF_COMPACT_WARNING, type Entry } from "../session-ledger/index.js";
 
@@ -100,11 +100,16 @@ export function registerSelfCompact(pi: ExtensionAPI, runtime: Runtime): void {
 	});
 
 	pi.on("turn_end", (event, ctx: ExtensionContext) => {
-		const { enabled, warnAt } = runtime.config.selfCompact;
-		if (!enabled || warnAt.length === 0 || runtime.selfCompactPending) return;
+		const { enabled } = runtime.config.selfCompact;
+		if (!enabled || runtime.config.selfCompact.warnAt.length === 0 || runtime.selfCompactPending) return;
 		const usage = ctx.getContextUsage();
 		if (!usage || usage.tokens === null) return;
 		const tokens = usage.tokens;
+		// `thinkingLevel` is optional and only present on newer Pi hosts; reading it structurally
+		// keeps this independent of the host version. Absent, `:thinking` rules simply never match.
+		const thinkingLevel = (ctx as { thinkingLevel?: ModelThinkingLevel }).thinkingLevel;
+		const warnAt = resolveWarnAt(runtime.config, ctx.model, thinkingLevel);
+		if (warnAt.length === 0) return;
 		// A ratio without a known window never fires.
 		const thresholds = warnAt.map((threshold) => resolveTokenThreshold(threshold, usage.contextWindow, Infinity));
 		const level = thresholds.filter((threshold) => tokens >= threshold).length;

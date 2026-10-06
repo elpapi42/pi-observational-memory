@@ -29,6 +29,20 @@ single place that applies Pi's auth acceptance rule — both the primary and fal
 it. Do not make the fallback mandatory: with none configured, the previous skip/fail-safe behavior
 must be byte-for-byte unchanged (covered by `tests/runtime.test.ts` and `tests/consolidation-trigger.test.ts`).
 
+## Model routing and warning rules (`modelMap`, `selfCompact.warnAt`)
+
+Both selectors are resolved in `src/config.ts` and share `parseMatchSelector`: only the final
+`:`-separated segment counts as a thinking level, and only when it is a valid level, so model ids
+containing colons (`syn:large:text`, `:free`) stay intact. `resolveModelString` handles the
+`modelMap[].model` field (`"<provider>/<id>[:<thinking>]"`) with `$provider`, `$id`, `$model`, and
+`$thinking` substitutions from the session model; an unresolved `$thinking` drops its separator,
+and any other leftover token invalidates the entry. `modelMap[].match` globs only the session
+`<provider>/<id>` and never filters on thinking. `selfCompact.warnAt` is a first-match-wins rule
+list with an optional `:thinking` predicate and no implicit global rule — no match means no
+warnings. Session thinking is read from `ExtensionContext.thinkingLevel` and plumbed through
+`ResolveCtx.thinkingLevel` and `ConsolidationCtx.thinkingLevel`; it feeds `$thinking` substitution
+and warnAt matching only. Tests: `tests/config.test.ts`, `tests/self-compact.test.ts`.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

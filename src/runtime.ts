@@ -104,6 +104,8 @@ export interface ResolveCtx {
 	hasUI: boolean;
 	ui?: { notify: Notify };
 	stage?: MemoryStage;
+	/** Active session thinking level, used for `$thinking` substitution in `modelMap`. */
+	thinkingLevel?: ModelThinkingLevel;
 }
 
 export interface LaunchCtx {
@@ -176,7 +178,7 @@ export class Runtime {
 	/** The `modelMap` match or `config.model` when it resolves in Pi's registry, otherwise the session model. */
 	private async resolvePrimaryModel(ctx: ResolveCtx): Promise<ResolveResult> {
 		let model = ctx.model;
-		const configured = resolveConfiguredModel(this.config, ctx.model, ctx.stage);
+		const configured = resolveConfiguredModel(this.config, ctx.model, ctx.stage, ctx.thinkingLevel);
 		let thinking = configured?.thinking;
 		if (configured) {
 			const found = ctx.modelRegistry.find(configured.provider, configured.id);
@@ -208,7 +210,7 @@ export class Runtime {
 		// re-run the exact failure instead of adding a second chance. The effective
 		// primary is the configured model when it resolves, else the session model,
 		// matching `resolvePrimaryModel`.
-		const configured = resolveConfiguredModel(this.config, ctx.model, ctx.stage);
+		const configured = resolveConfiguredModel(this.config, ctx.model, ctx.stage, ctx.thinkingLevel);
 		const configuredResolved = configured
 			? (ctx.modelRegistry.find(configured.provider, configured.id) as { provider?: string; id?: string } | undefined)
 			: undefined;

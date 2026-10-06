@@ -7,7 +7,8 @@ import {
 	SELF_COMPACT_TOOL_NAME,
 } from "../src/hooks/self-compact.js";
 
-function setup(warnAt: unknown[] = []) {
+function setup(options: { warnAt?: unknown[]; model?: unknown; thinkingLevel?: string } = {}) {
+	const { warnAt = [], model = { provider: "test", id: "model" }, thinkingLevel } = options;
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
 	let tool: any;
 	const pi = {
@@ -30,6 +31,8 @@ function setup(warnAt: unknown[] = []) {
 	const ctx = {
 		cwd: "/tmp/project",
 		hasUI: false,
+		model,
+		thinkingLevel,
 		isIdle: vi.fn(() => true),
 		compact: vi.fn(),
 		getContextUsage: () => usage,
@@ -127,7 +130,9 @@ describe("self-compact", () => {
 	});
 
 	it("warns once per threshold per compaction cycle, attaching idle warnings to the next prompt", () => {
-		const { pi, turnEnd, branch } = setup([{ type: "ratio", value: 0.2 }, { type: "ratio", value: 0.28 }]);
+		const { pi, turnEnd, branch } = setup({
+			warnAt: [{ match: "*", warnAt: [{ type: "ratio", value: 0.2 }, { type: "ratio", value: 0.28 }] }],
+		});
 		const warnings = () => pi.sendMessage.mock.calls.map(([message, options]: any[]) => [message.details.level, options.deliverAs]);
 
 		turnEnd(19_000);
@@ -169,7 +174,7 @@ describe("self-compact", () => {
 	});
 
 	it("does not let a stale warning delivered after compaction suppress a new one", () => {
-		const { pi, turnEnd, branch } = setup([{ type: "ratio", value: 0.2 }]);
+		const { pi, turnEnd, branch } = setup({ warnAt: [{ match: "*", warnAt: [{ type: "ratio", value: 0.2 }] }] });
 		turnEnd(21_000, []);
 		branch.push({ type: "compaction", id: "cmp-1" });
 		// The queued warning lands in the branch after the compaction, still tagged with the old cycle.
@@ -181,5 +186,25 @@ describe("self-compact", () => {
 		turnEnd(21_000);
 		expect(pi.sendMessage).toHaveBeenCalledTimes(2);
 		expect(pi.sendMessage.mock.calls[1][0].details).toEqual({ level: 1, cycle: "cmp-1" });
+	});
+
+	it("selects warnAt rules by session model and thinking level", () => {
+		const { pi, turnEnd } = setup({
+			model: { provider: "anthropic", id: "claude-opus-5" },
+			thinkingLevel: "high",
+			warnAt: [
+				{ match: "anthropic/claude-opus-*:high", warnAt: [{ type: "ratio", value: 0.1 }] },
+				{ match: "*", warnAt: [{ type: "ratio", value: 0.5 }] },
+			],
+		});
+		turnEnd(11_000);
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+		expect(pi.sendMessage.mock.calls[0][0].details.level).toBe(1);
+	});
+
+	it("emits no warning when no warnAt rule matches", () => {
+		const { pi, turnEnd } = setup({ warnAt: [{ match: "other/*", warnAt: [{ type: "ratio", value: 0.1 }] }] });
+		turnEnd(50_000);
+		expect(pi.sendMessage).not.toHaveBeenCalled();
 	});
 });

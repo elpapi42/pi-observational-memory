@@ -9,7 +9,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 	getAgentDir: () => mock.agentDir,
 }));
 
-import { DEFAULTS, loadConfig, readEnvConfig, resolveCompactAfterTokens, resolveConfiguredModel } from "../src/config.js";
+import { DEFAULTS, loadConfig, parseMatchSelector, readEnvConfig, resolveCompactAfterTokens, resolveConfiguredModel, resolveModelString, resolveWarnAt } from "../src/config.js";
 
 function writeJson(path: string, value: unknown) {
 	mkdirSync(join(path, ".."), { recursive: true });
@@ -60,16 +60,24 @@ describe("V3 config", () => {
 		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
 	});
 
-	it("parses selfCompact and drops malformed warning thresholds", () => {
+	it("parses selfCompact warning rules and drops malformed ones", () => {
 		writeJson(join(agentDir, "settings.json"), {
 			"observational-memory": {
-				selfCompact: { enabled: true, warnAt: [{ type: "ratio", value: 0.2 }, 50_000, "bad", { type: "ratio", value: 2 }] },
+				selfCompact: {
+					enabled: true,
+					warnAt: [
+						{ match: "*", warnAt: [{ type: "ratio", value: 0.2 }, 50_000, "bad", { type: "ratio", value: 2 }] },
+						"nope",
+						{ warnAt: [{ type: "ratio", value: 0.3 }] },
+						{ match: "other/*", warnAt: "nope" },
+					],
+				},
 			},
 		});
 
 		expect(loadConfig(cwd, {}).selfCompact).toEqual({
 			enabled: true,
-			warnAt: [{ type: "ratio", value: 0.2 }, 50_000],
+			warnAt: [{ match: "*", warnAt: [{ type: "ratio", value: 0.2 }, 50_000] }],
 		});
 	});
 
@@ -327,32 +335,30 @@ describe("V3 config", () => {
 
 		it("routes by glob against the active model's provider/id key", () => {
 			const config = withMap([
-				{ match: "claude-bridge/*", provider: "claude-bridge", id: "sonnet" },
-				{ match: "*", provider: "synthetic", id: "small" },
+				{ match: "claude-bridge/*", model: "claude-bridge/sonnet" },
+				{ match: "*", model: "synthetic/small" },
 			]);
 			expect(resolveConfiguredModel(config, { provider: "claude-bridge", id: "opus-5" })).toEqual({
 				provider: "claude-bridge",
 				id: "sonnet",
-				thinking: undefined,
 			});
 			expect(resolveConfiguredModel(config, { provider: "openai", id: "gpt" })).toEqual({
 				provider: "synthetic",
 				id: "small",
-				thinking: undefined,
 			});
 		});
 
 		it("falls back to the static model config when nothing matches", () => {
 			const fallback = { provider: "anthropic", id: "memory" };
-			const config = withMap([{ match: "claude-bridge/*", provider: "x", id: "y" }], fallback);
+			const config = withMap([{ match: "claude-bridge/*", model: "x/y" }], fallback);
 			expect(resolveConfiguredModel(config, { provider: "openai", id: "gpt" })).toBe(fallback);
 			expect(resolveConfiguredModel(config, undefined)).toBe(fallback);
 		});
 
 		it("routes stages independently and lets unrestricted entries serve any stage", () => {
 			const config = withMap([
-				{ match: "*", stages: ["reflector"], provider: "anthropic", id: "big", thinking: "high" },
-				{ match: "*", provider: "synthetic", id: "small" },
+				{ match: "*", stages: ["reflector"], model: "anthropic/big:high" },
+				{ match: "*", model: "synthetic/small" },
 			]);
 			const active = { provider: "claude-bridge", id: "opus-5" };
 			expect(resolveConfiguredModel(config, active, "reflector")).toEqual({
@@ -364,13 +370,24 @@ describe("V3 config", () => {
 				expect(resolveConfiguredModel(config, active, stage)).toEqual({
 					provider: "synthetic",
 					id: "small",
-					thinking: undefined,
 				});
 			}
 		});
 
+		it("substitutes session model fields into an entry's model reference", () => {
+			const config = withMap([{ match: "claude-bridge/*", model: "$provider/z-ai/glm-5.3-flash:$thinking" }]);
+			expect(
+				resolveConfiguredModel(config, { provider: "claude-bridge", id: "opus-5" }, undefined, "high"),
+			).toEqual({ provider: "claude-bridge", id: "z-ai/glm-5.3-flash", thinking: "high" });
+
+			const keepModel = withMap([{ match: "claude-bridge/*", stages: ["observer"], model: "$model:low" }]);
+			expect(
+				resolveConfiguredModel(keepModel, { provider: "claude-bridge", id: "opus-5" }, "observer", "max"),
+			).toEqual({ provider: "claude-bridge", id: "opus-5", thinking: "low" });
+		});
+
 		it("skips stage-restricted entries when no stage is given", () => {
-			const config = withMap([{ match: "*", stages: ["reflector"], provider: "anthropic", id: "big" }]);
+			const config = withMap([{ match: "*", stages: ["reflector"], model: "anthropic/big" }]);
 			expect(resolveConfiguredModel(config, { provider: "openai", id: "gpt" })).toBeUndefined();
 		});
 
@@ -378,21 +395,21 @@ describe("V3 config", () => {
 			writeJson(join(agentDir, "settings.json"), {
 				"observational-memory": {
 					modelMap: [
-						{ match: "*", stages: ["bogus"], provider: "anthropic", id: "big" },
-						{ match: "*", stages: ["observer", "bogus", "observer"], provider: "synthetic", id: "small" },
+						{ match: "*", stages: ["bogus"], model: "anthropic/big" },
+						{ match: "*", stages: ["observer", "bogus", "observer"], model: "synthetic/small" },
 					],
 				},
 			});
 			expect(loadConfig(cwd, {}).modelMap).toEqual([
-				{ match: "*", stages: ["observer"], provider: "synthetic", id: "small" },
+				{ match: "*", stages: ["observer"], model: "synthetic/small" },
 			]);
 		});
 		it("routes the reflection dropper as its own stage", () => {
 			writeJson(join(agentDir, "settings.json"), {
 				"observational-memory": {
 					modelMap: [
-						{ match: "*", stages: ["reflection-dropper"], provider: "anthropic", id: "big" },
-						{ match: "*", provider: "synthetic", id: "small" },
+						{ match: "*", stages: ["reflection-dropper"], model: "anthropic/big" },
+						{ match: "*", model: "synthetic/small" },
 					],
 				},
 			});
@@ -402,13 +419,63 @@ describe("V3 config", () => {
 			expect(resolveConfiguredModel(config, active, "reflection-dropper")).toEqual({
 				provider: "anthropic",
 				id: "big",
-				thinking: undefined,
 			});
 			expect(resolveConfiguredModel(config, active, "dropper")).toEqual({
 				provider: "synthetic",
 				id: "small",
-				thinking: undefined,
 			});
+		});
+	});
+
+	describe("parseMatchSelector", () => {
+		it("keeps non-level suffixes and strips only a trailing thinking level", () => {
+			expect(parseMatchSelector("synthetic/syn:large:text")).toEqual({ glob: "synthetic/syn:large:text" });
+			expect(parseMatchSelector("synthetic/syn:free")).toEqual({ glob: "synthetic/syn:free" });
+			expect(parseMatchSelector("synthetic/syn:large:high")).toEqual({ glob: "synthetic/syn:large", thinking: "high" });
+			expect(parseMatchSelector("*:high")).toEqual({ glob: "*", thinking: "high" });
+		});
+	});
+
+	describe("resolveModelString", () => {
+		it("parses a literal provider/id/thinking reference", () => {
+			expect(resolveModelString("openai/gpt-5:low", {})).toEqual({ provider: "openai", id: "gpt-5", thinking: "low" });
+			expect(resolveModelString("opencode-go/deepseek-v4.1-flash", {})).toEqual({
+				provider: "opencode-go",
+				id: "deepseek-v4.1-flash",
+			});
+		});
+
+		it("drops an unresolved $thinking separator and rejects other leftovers", () => {
+			expect(resolveModelString("$model:$thinking", { provider: "p", id: "m" })).toEqual({ provider: "p", id: "m" });
+			expect(resolveModelString("$provider/m:high", {})).toBeUndefined();
+			expect(resolveModelString("nope", {})).toBeUndefined();
+		});
+	});
+
+	describe("resolveWarnAt", () => {
+		const config = {
+			...DEFAULTS,
+			selfCompact: {
+				enabled: true,
+				warnAt: [
+					{ match: "anthropic/claude-opus-*:high", warnAt: [{ type: "ratio", value: 0.1 }] },
+					{ match: "anthropic/*", warnAt: [{ type: "ratio", value: 0.3 }] },
+				],
+			},
+		} as any;
+
+		it("selects the first rule matching model and thinking level", () => {
+			expect(resolveWarnAt(config, { provider: "anthropic", id: "claude-opus-5" }, "high")).toEqual([
+				{ type: "ratio", value: 0.1 },
+			]);
+			expect(resolveWarnAt(config, { provider: "anthropic", id: "claude-opus-5" }, "low")).toEqual([
+				{ type: "ratio", value: 0.3 },
+			]);
+		});
+
+		it("returns no rules when nothing matches", () => {
+			expect(resolveWarnAt(config, { provider: "openai", id: "gpt" }, "high")).toEqual([]);
+			expect(resolveWarnAt(config, undefined)).toEqual([]);
 		});
 	});
 

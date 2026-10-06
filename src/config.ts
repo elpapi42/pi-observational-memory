@@ -54,17 +54,36 @@ export const MEMORY_STAGE_VALUES: readonly MemoryStage[] = ["observer", "reflect
  * `match` is a glob (`*` and `?` wildcards) tested against the active session
  * model's `"<provider>/<id>"` key. The first entry in `modelMap` whose
  * `match` matches wins; if none match, `model` (or the session model) is used.
+ * `match` never carries a thinking-level predicate: worker thinking is chosen
+ * by the `model` field.
  *
  * `stages` narrows an entry to specific stages, so cheap extraction work and
  * expensive distillation can route to different models. Omit it to apply the
  * entry to every stage.
+ *
+ * `model` is `"<provider>/<id>[:<thinking>]"` and may use substitutions drawn
+ * from the active session model: `$provider`, `$id`, `$model` (the full
+ * `<provider>/<id>`), and `$thinking` (the session thinking level). The
+ * thinking suffix is the last `:`-delimited segment and only counts when it is
+ * a valid level, so ids containing colons are preserved.
  */
 export interface ModelMapEntry {
 	match: string;
 	stages?: MemoryStage[];
-	provider: string;
-	id: string;
-	thinking?: ModelThinkingLevel;
+	model: string;
+}
+
+/**
+ * A glob-matched warning rule.
+ *
+ * `match` is tested against the active session model's `"<provider>/<id>"`
+ * key, optionally with a trailing `":<thinking>"` predicate, for example
+ * `"anthropic/claude-opus-*:high"`. The first matching rule wins; when none
+ * match, no warnings are emitted. Use `"*"` as a catch-all default.
+ */
+export interface WarnAtRule {
+	match: string;
+	warnAt: (number | TokenThreshold)[];
 }
 
 /**
@@ -74,7 +93,7 @@ export interface ModelMapEntry {
  */
 export interface SelfCompactConfig {
 	enabled: boolean;
-	warnAt: (number | TokenThreshold)[];
+	warnAt: WarnAtRule[];
 }
 
 /**
@@ -287,6 +306,29 @@ export function resolveCompactAfterTokens(config: Config, contextWindow: number 
 	return resolveConfigThreshold(config.compactAfterTokens, contextWindow, THRESHOLD_FALLBACKS.compactAfterTokens);
 }
 
+/**
+ * Select the warning thresholds for the active session model.
+ *
+ * `selfCompact.warnAt` is a first-match-wins rule list. A rule's `match` is a
+ * glob over `"<provider>/<id>"` with an optional trailing `":<thinking>"`
+ * predicate. When no rule matches, no warnings are emitted, so a `"*"` rule is
+ * the explicit global default.
+ */
+export function resolveWarnAt(
+	config: Config,
+	activeModel: unknown,
+	sessionThinking?: ModelThinkingLevel,
+): (number | TokenThreshold)[] {
+	const key = activeModelKey(activeModel);
+	if (!key) return [];
+	for (const rule of config.selfCompact.warnAt) {
+		const selector = parseMatchSelector(rule.match);
+		if (selector.thinking !== undefined && selector.thinking !== sessionThinking) continue;
+		if (globToRegExp(selector.glob).test(key)) return rule.warnAt;
+	}
+	return [];
+}
+
 export const THINKING_LEVEL_VALUES: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 /** Observer chunk cap used when no config is set and the model's context window is unknown. */
@@ -411,17 +453,15 @@ function normalizeStages(value: unknown): MemoryStage[] | undefined {
 function normalizeModelMapEntry(value: unknown): ModelMapEntry | undefined {
 	if (!isRecord(value)) return undefined;
 	const match = nonEmptyString(value.match);
-	const provider = nonEmptyString(value.provider);
-	const id = nonEmptyString(value.id);
-	if (!match || !provider || !id) return undefined;
-	const entry: ModelMapEntry = { match, provider, id };
+	const model = nonEmptyString(value.model);
+	if (!match || !model || !model.includes("/")) return undefined;
+	const entry: ModelMapEntry = { match, model };
 	// A present-but-unusable `stages` rejects the entry rather than widening it to
 	// every stage: a misspelled stage would otherwise silently route the costly
 	// reflector model to observer and dropper too.
 	const stages = normalizeStages(value.stages);
 	if (value.stages !== undefined && !stages) return undefined;
 	if (stages) entry.stages = stages;
-	if (isThinkingLevel(value.thinking)) entry.thinking = value.thinking;
 	return entry;
 }
 
@@ -441,6 +481,55 @@ function globToRegExp(glob: string): RegExp {
 }
 
 /**
+ * Split a selector into its glob part and an optional exact thinking-level
+ * predicate. Only the final `:`-delimited segment counts, so a model id such as
+ * `synthetic/syn:large:text` and a suffix like `:free` stay part of the glob.
+ */
+export function parseMatchSelector(selector: string): { glob: string; thinking?: ModelThinkingLevel } {
+	const lastColon = selector.lastIndexOf(":");
+	if (lastColon !== -1) {
+		const suffix = selector.slice(lastColon + 1);
+		if (isThinkingLevel(suffix)) return { glob: selector.slice(0, lastColon), thinking: suffix };
+	}
+	return { glob: selector };
+}
+
+/**
+ * Resolve a `"<provider>/<id>[:<thinking>]"` model reference, substituting
+ * `$provider`, `$id`, `$model`, and `$thinking` from the active session model.
+ *
+ * An unresolved `$thinking` drops its `:` separator, leaving thinking unset. Any
+ * other leftover `$token` makes the reference invalid, so a rule that cannot be
+ * resolved never routes a worker to a literal `$provider` model id.
+ */
+export function resolveModelString(
+	model: string,
+	session: { provider?: string; id?: string; thinking?: ModelThinkingLevel },
+): ConfiguredModel | undefined {
+	let text = model.trim();
+	if (!text) return undefined;
+	if (session.provider !== undefined) text = text.replaceAll("$provider", session.provider);
+	if (session.id !== undefined) text = text.replaceAll("$id", session.id);
+	if (session.provider !== undefined && session.id !== undefined) {
+		text = text.replaceAll("$model", `${session.provider}/${session.id}`);
+	}
+	if (session.thinking !== undefined) text = text.replaceAll("$thinking", session.thinking);
+	else text = text.replace(/:\$thinking/g, "").replace(/\$thinking/g, "");
+	if (text.includes("$provider") || text.includes("$id") || text.includes("$model") || text.includes("$thinking")) {
+		return undefined;
+	}
+	const parsed = parseMatchSelector(text);
+	const slash = parsed.glob.indexOf("/");
+	if (slash <= 0 || slash === parsed.glob.length - 1) return undefined;
+	const provider = parsed.glob.slice(0, slash);
+	const id = parsed.glob.slice(slash + 1);
+	if (!provider || !id) return undefined;
+	const resolved: ConfiguredModel = { provider, id };
+	if (parsed.thinking !== undefined) resolved.thinking = parsed.thinking;
+	return resolved;
+}
+
+/**
  * Build the `"<provider>/<id>"` key used to match `modelMap` entries against
  * the active session model. Returns undefined if the model lacks either field.
  */
@@ -457,29 +546,48 @@ export function activeModelKey(model: unknown): string | undefined {
  * whose `stages` admits `stage`, falling back to the static `model` config if
  * none match. An entry without `stages` applies to every stage; a caller
  * without a `stage` only matches unrestricted entries.
+ *
+ * `sessionThinking` feeds `$thinking` substitution in an entry's `model`; it is
+ * not a routing filter.
  */
 export function resolveConfiguredModel(
 	config: Config,
 	activeModel: unknown,
 	stage?: MemoryStage,
+	sessionThinking?: ModelThinkingLevel,
 ): ConfiguredModel | undefined {
 	const key = activeModelKey(activeModel);
 	if (key) {
+		const slash = key.indexOf("/");
+		const session = {
+			provider: key.slice(0, slash),
+			id: key.slice(slash + 1),
+			thinking: sessionThinking,
+		};
 		for (const entry of config.modelMap) {
 			if (entry.stages && (!stage || !entry.stages.includes(stage))) continue;
-			if (globToRegExp(entry.match).test(key)) {
-				return { provider: entry.provider, id: entry.id, thinking: entry.thinking };
-			}
+			if (!globToRegExp(entry.match).test(key)) continue;
+			const resolved = resolveModelString(entry.model, session);
+			if (resolved) return resolved;
 		}
 	}
 	return config.model;
 }
 
-/** Malformed `warnAt` entries are dropped individually; a non-object block is ignored. */
+/** A malformed rule is dropped; thresholds inside a rule are dropped individually. */
+function normalizeWarnAtRule(value: unknown): WarnAtRule | undefined {
+	if (!isRecord(value)) return undefined;
+	const match = nonEmptyString(value.match);
+	if (!match || !Array.isArray(value.warnAt)) return undefined;
+	const warnAt = value.warnAt.map(parseTokenThreshold).filter((threshold) => threshold !== undefined);
+	return { match, warnAt };
+}
+
+/** Malformed `warnAt` rules are dropped individually; a non-object block is ignored. */
 export function normalizeSelfCompact(value: unknown): SelfCompactConfig | undefined {
 	if (!isRecord(value)) return undefined;
 	const warnAt = Array.isArray(value.warnAt)
-		? value.warnAt.map(parseTokenThreshold).filter((threshold) => threshold !== undefined)
+		? value.warnAt.map(normalizeWarnAtRule).filter((rule): rule is WarnAtRule => rule !== undefined)
 		: [];
 	return { enabled: value.enabled === true, warnAt };
 }
