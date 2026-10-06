@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-	coverageSafeFirstKeptEntryId,
 	earlierCoverageMarkerId,
 	entryIndexById,
 	isSourceEntry,
@@ -189,40 +188,5 @@ describe("session-ledger V3 progress helpers", () => {
 
 		expect(rawTokensAfterIndex(entries, 0)).toBe(0);
 		expect(isSourceEntry(entries[1])).toBe(false);
-	});
-});
-
-describe("coverageSafeFirstKeptEntryId", () => {
-	const toolResult = (id: string) => rawMessage(id, "", { message: { role: "toolResult", content: [{ type: "text", text: "rrrr" }] } });
-	const observed = (id: string, coversUpToId: string) =>
-		observationsRecordedEntry(id, { observations: [observation("aaaaaaaaaaaa")], coversUpToId });
-
-	it("keeps unobserved entries by cutting at the nearest safe entry before them", () => {
-		const entries = [
-			textCustomMessage("raw-1", "aaaa"),
-			rawMessage("call-1", "bbbb", { message: { role: "assistant", content: [{ type: "text", text: "bbbb" }] } }),
-			observed("om-1", "raw-1"),
-			toolResult("result-1"),
-			textCustomMessage("raw-2", "cccc"),
-			textCustomMessage("raw-3", "dddd"),
-		];
-
-		expect(coverageSafeFirstKeptEntryId(entries, "raw-3", 1_000)).toBe("call-1");
-	});
-
-	it("keeps the proposed cut when coverage reaches it, the tail is too large, or an earlier compaction is in the way", () => {
-		const covered = [textCustomMessage("raw-1", "aaaa"), textCustomMessage("raw-2", "bbbb"), observed("om-1", "raw-2"), textCustomMessage("raw-3", "cccc")];
-		expect(coverageSafeFirstKeptEntryId(covered, "raw-3", 1_000)).toBe("raw-3");
-
-		const lagging = [textCustomMessage("raw-1", "a".repeat(400)), observed("om-1", "missing"), textCustomMessage("raw-2", "bbbb")];
-		expect(coverageSafeFirstKeptEntryId(lagging, "raw-2", 50)).toBe("raw-2");
-
-		const behindCompaction = [
-			textCustomMessage("raw-1", "aaaa"),
-			compactionEntry("cmp-1", { firstKeptEntryId: "raw-1" }),
-			toolResult("result-1"),
-			textCustomMessage("raw-2", "bbbb"),
-		];
-		expect(coverageSafeFirstKeptEntryId(behindCompaction, "raw-2", 1_000)).toBe("raw-2");
 	});
 });

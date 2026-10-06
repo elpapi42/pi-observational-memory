@@ -44,6 +44,8 @@ describe("V3 config", () => {
 			reflectionsPoolTargetTokens: 8000,
 			agentMaxTurns: 16,
 			agentMaxTokens: 32000,
+			compactionCatchUpMaxChunks: 2,
+			consolidateWhenIdle: false,
 			showWorkerNotifications: true,
 			modelMap: [],
 			selfCompact: { enabled: false, warnAt: [] },
@@ -56,6 +58,7 @@ describe("V3 config", () => {
 			passive: false,
 			debugLog: false,
 			modelMap: [],
+			piAutoCompactionEnabled: true,
 		});
 		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
 	});
@@ -494,5 +497,13 @@ describe("V3 config", () => {
 			"observational-memory": { reflectionsPoolTargetTokens: "many" },
 		});
 		expect(loadConfig(cwd, {}).reflectionsPoolTargetTokens).toBe(8000);
+	});
+
+	it("reads Pi's compaction.enabled, project over global", () => {
+		writeJson(join(agentDir, "settings.json"), { compaction: { enabled: false } });
+		expect(loadConfig(cwd, {}).piAutoCompactionEnabled).toBe(false);
+
+		writeJson(join(cwd, ".pi", "settings.json"), { compaction: { enabled: true } });
+		expect(loadConfig(cwd, {}).piAutoCompactionEnabled).toBe(true);
 	});
 });

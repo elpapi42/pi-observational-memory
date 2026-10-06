@@ -5,7 +5,7 @@ import { registerExportDropsCommand } from "./commands/export-drops.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerViewCommand } from "./commands/view.js";
 import { registerCompactionHook } from "./hooks/compaction-hook.js";
-import { registerCompactionTrigger } from "./hooks/compaction-trigger.js";
+import { maybeTriggerCompaction, registerCompactionTrigger } from "./hooks/compaction-trigger.js";
 import { registerConsolidationTrigger } from "./hooks/consolidation-trigger.js";
 import { registerRecallIndexing } from "./hooks/recall-indexing.js";
 import { registerSelfCompact } from "./hooks/self-compact.js";
@@ -26,7 +26,9 @@ function formatWorkerCost(
 export default function observationalMemory(pi: ExtensionAPI) {
 	const runtime = new Runtime();
 
-	registerConsolidationTrigger(pi, runtime);
+	registerConsolidationTrigger(pi, runtime, {
+		afterIdleConsolidation: (ctx) => maybeTriggerCompaction(runtime, ctx as Parameters<typeof maybeTriggerCompaction>[1]),
+	});
 	pi.registerEntryRenderer<WorkerCostReport>(OM_WORKER_COST, (entry, _options, theme) =>
 		entry.data === undefined ? undefined : new Text(formatWorkerCost(entry.data, theme), 0, 0),
 	);

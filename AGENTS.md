@@ -43,6 +43,13 @@ warnings. Session thinking is read from `ExtensionContext.thinkingLevel` and plu
 `ResolveCtx.thinkingLevel` and `ConsolidationCtx.thinkingLevel`; it feeds `$thinking` substitution
 and warnAt matching only. Tests: `tests/config.test.ts`, `tests/self-compact.test.ts`.
 
+## Prebuilt extension entry
+
+`pi.extensions` loads the committed prebuilt module at `dist/index.ts`, so `src/` edits need
+`npm run build` before committing; CI rebuilds the module and fails when `dist/` is stale (a base
+branch that moved and changed `src/` also needs a merge + rebuild). Keep the output's `.ts`
+extension and the host packages external — `scripts/build.js` explains why.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
@@ -56,4 +63,8 @@ When updating this file, preserve this bar for all agents and keep entries conci
 - Pi exposes aggregate active-context usage, not exact token attribution for an entry or entry-ID range. Its exported range-capable estimator uses a character heuristic, so provider context cannot replace raw-entry counting without changing semantics.
 - Pi context pressure and compactable history are separate conditions. Extension-requested `ctx.compact()` can fail before `session_before_compact` when Pi finds no removable range, while Pi-native compaction handles this path separately.
 - `firstKeptEntryId` is a retention boundary, not a zero-progress boundary. Retained source entries can already exceed `compactAfterTokens`, so cadence changes must test consecutive post-success turns and distinguish successful repetition from failed-attempt backoff.
+- Compaction must never discard source entries observation coverage has not reached. The proactive trigger counts observed tokens only (`observedTokensSinceLastCompaction`), and `session_before_compact` either moves `firstKeptEntryId` back to the turn containing the first unobserved entry (folding through the coverage marker, within `compactionMaxRetainedTokens`) or declines ownership so Pi's native summarizer runs. Pi honors an extension-supplied `firstKeptEntryId`; keep it on a valid cut point (user/assistant message, never a tool result) so no tool result is orphaned. Observer/reflector due-checks take the larger of the raw uncovered backlog and the provider delta: the delta alone starves coverage that fell behind a compaction.
+- `consolidateWhenIdle` moves worker launches to `agent_settled` and aborts in-flight runs on `agent_start` via `runtime.consolidationAbortController`; stages must check `wasAborted` before recording errors or notifying, and `maybeTriggerCompaction` runs after the idle run so compaction is not starved.
+- Compaction summary size is budgeted (`renderSummaryWithBudget`, `compactionSummaryMaxTokens`); `details` still carry the full projection. Before retaining/delegating, the hook runs the observer synchronously on the unobserved gap (`compaction-catch-up.ts`, `compactionCatchUpMaxChunks`) only when coverage exists and no background consolidation is in flight; it appends coverage per recorded chunk and re-resolves the cut from a fresh `getBranch()`.
+- A moved cut has two boundaries: retention (`firstKeptEntryId`, persisted by Pi) and fold (`details.foldThroughEntryId`). `latestFullFoldBoundaryId` must use the fold boundary, or a later compaction re-applies a different set of drops/reflections. Coverage markers are positional claims: any worker that appends one must have read every source entry after the previous marker.
 <!-- opm:managed:end -->

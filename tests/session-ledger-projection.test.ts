@@ -301,3 +301,53 @@ describe("session-ledger V3 projections", () => {
 		expect(diff.reflectionsOnlyInFull).toEqual([]);
 	});
 });
+
+describe("fold boundary persisted by a moved-cut full fold (PR #81 review, issue 1)", () => {
+	// An assistant tool-call message (raw-2) with two results: raw-3 is observed,
+	// raw-4 is not. The hook retained raw text from raw-2 (a valid cut point)
+	// but folded memory, drops, and reflections through raw-3.
+	const obsA = observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-3"], tokenCount: 50 });
+	const obsB = observation("bbbbbbbbbbbb", { sourceEntryIds: ["raw-3"], tokenCount: 50 });
+	const obsC = observation("cccccccccccc", { sourceEntryIds: ["raw-5"], tokenCount: 5 });
+	const refR = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+
+	function branch(details: Record<string, unknown>) {
+		return [
+			textCustomMessage("raw-1", "aaaa"),
+			textCustomMessage("raw-2", "bbbb"),
+			textCustomMessage("raw-3", "cccc"),
+			textCustomMessage("raw-4", "dddd"),
+			observationsRecordedEntry("om-obs-1", { observations: [obsA, obsB], coversUpToId: "raw-3" }),
+			reflectionsRecordedEntry("om-ref-1", { reflections: [refR], coversUpToId: "raw-3" }),
+			observationsDroppedEntry("om-drop-1", { observationIds: ["aaaaaaaaaaaa"], coversUpToId: "raw-3" }),
+			compactionEntry("cmp-1", { firstKeptEntryId: "raw-2", details }),
+			textCustomMessage("raw-5", "eeee"),
+			observationsRecordedEntry("om-obs-2", { observations: [obsC], coversUpToId: "raw-5" }),
+		];
+	}
+
+	it("records the fold boundary in the compaction details", () => {
+		const projection = buildCompactionProjection(branch({}).slice(0, 7), "raw-3", { observationsPoolMaxTokens: 1 });
+
+		expect(projection.fullFold).toBe(true);
+		expect(projection.details.foldThroughEntryId).toBe("raw-3");
+	});
+
+	it("uses the recorded fold boundary, not the retention boundary, for later maintenance", () => {
+		const details = { ...(memoryDetails({ fullFold: true, observations: [obsB], reflections: [refR] }) as object), foldThroughEntryId: "raw-3" };
+		const entries = branch(details);
+
+		expect(latestFullFoldBoundaryId(entries)).toBe("raw-3");
+		const next = buildCompactionProjection(entries, "raw-5", { observationsPoolMaxTokens: 10_000 });
+
+		expect(next.fullFold).toBe(false);
+		expect(next.observations.map((obs) => obs.id)).toEqual(["bbbbbbbbbbbb", "cccccccccccc"]);
+		expect(next.reflections.map((ref) => ref.id)).toEqual(["eeeeeeeeeeee"]);
+	});
+
+	it("still falls back to firstKeptEntryId for older compactions without the field", () => {
+		const entries = branch(memoryDetails({ fullFold: true, observations: [obsB], reflections: [refR] }) as Record<string, unknown>);
+
+		expect(latestFullFoldBoundaryId(entries)).toBe("raw-2");
+	});
+});

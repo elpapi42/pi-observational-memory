@@ -186,6 +186,11 @@ export function latestFullFoldBoundaryId(entries: Entry[]): string | undefined {
 		if (entry.type !== "compaction") continue;
 		if (!isMemoryDetails(entry.details)) continue;
 		if (!entry.details.fullFold) continue;
+		// Prefer the recorded fold boundary: when the hook retained unobserved
+		// source, the fold went through a different entry than the retention
+		// boundary, and drops/reflections were applied through the former.
+		const foldThroughId = entry.details.foldThroughEntryId;
+		if (foldThroughId && indexes.has(foldThroughId)) return foldThroughId;
 		if (!entry.firstKeptEntryId) continue;
 		if (!indexes.has(entry.firstKeptEntryId)) continue;
 		return entry.firstKeptEntryId;
@@ -221,6 +226,7 @@ export function buildCompactionProjection(
 		fullFold,
 		observations: projection.observations,
 		reflections: projection.reflections,
+		foldThroughEntryId: firstKeptEntryId,
 	};
 
 	return {

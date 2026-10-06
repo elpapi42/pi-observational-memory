@@ -46,9 +46,11 @@ import {
 	OM_REFLECTIONS_RECORDED,
 } from "../src/session-ledger/index.js";
 import {
+	compactionEntry,
 	observation,
 	observationsDroppedEntry,
 	observationsRecordedEntry,
+	rawMessage,
 	reflection,
 	reflectionsDroppedEntry,
 	reflectionsRecordedEntry,
@@ -83,12 +85,15 @@ function setup(args: {
 	observationsPoolMaxTokens?: number;
 	observationsPoolTargetTokens?: number;
 	reflectionsPoolTargetTokens?: number;
+	workerMemoryMaxTokens?: number;
 	showWorkerNotifications?: boolean;
 	passive?: boolean;
 	consolidationInFlight?: boolean;
 	appendEntryReturnsId?: boolean;
 	sessionId?: string;
 	systemOneDropper?: Record<string, unknown>;
+	consolidateWhenIdle?: boolean;
+	afterIdleConsolidation?: (ctx: unknown) => void;
 }) {
 	let entries = [...args.entries];
 	let sessionId = args.sessionId ?? "session-1";
@@ -104,14 +109,17 @@ function setup(args: {
 		}),
 	};
 	let launchedWork: (() => Promise<void>) | undefined;
+	let resolveLaunched: (() => void) | undefined;
 	const runtime = {
 		config: {
 			showWorkerNotifications: args.showWorkerNotifications ?? true,
 			passive: args.passive ?? false,
+			consolidateWhenIdle: args.consolidateWhenIdle ?? false,
 			debugLog: false,
 			observeAfterTokens: args.observeAfterTokens ?? 1,
 			reflectAfterTokens: args.reflectAfterTokens ?? 1,
 			observerChunkMaxTokens: args.observerChunkMaxTokens,
+			workerMemoryMaxTokens: args.workerMemoryMaxTokens,
 			observationsPoolMaxTokens: args.observationsPoolMaxTokens ?? 100,
 			observationsPoolTargetTokens: args.observationsPoolTargetTokens ?? Math.floor((args.observationsPoolMaxTokens ?? 100) / 2),
 			reflectionsPoolTargetTokens: args.reflectionsPoolTargetTokens ?? 1_000,
@@ -121,6 +129,12 @@ function setup(args: {
 			systemOneDropper: args.systemOneDropper,
 		},
 		consolidationInFlight: args.consolidationInFlight ?? false,
+		consolidationAbortController: undefined as AbortController | undefined,
+		abortConsolidation: vi.fn(() => {
+			if (!runtime.consolidationInFlight || !runtime.consolidationAbortController) return false;
+			runtime.consolidationAbortController.abort();
+			return true;
+		}),
 		consolidationPhase: undefined as "observer" | "reflector" | "reflection-dropper" | "dropper" | undefined,
 		resolveFailureNotified: false,
 		lastObserverError: undefined as string | undefined,
@@ -132,8 +146,15 @@ function setup(args: {
 		resolveFallbackModel: vi.fn(async () => ({ ok: false, reason: "no fallback model configured" })),
 		launchConsolidationTask: vi.fn((_ctx, work) => {
 			runtime.consolidationInFlight = true;
+			runtime.consolidationAbortController = new AbortController();
 			launchedWork = work;
-			return Promise.resolve();
+			// Resolve when the test drives the work via runLaunchedWork().
+			return new Promise<void>((resolve) => {
+				resolveLaunched = () => {
+					runtime.consolidationInFlight = false;
+					resolve();
+				};
+			});
 		}),
 		recordConsolidationStageError: vi.fn((ctx, phase: "observer" | "reflector" | "reflection-dropper" | "dropper", error: unknown) => {
 			const message = error instanceof Error ? error.message : String(error);
@@ -145,9 +166,10 @@ function setup(args: {
 			return message;
 		}),
 	};
-	registerConsolidationTrigger(pi as any, runtime as any);
+	registerConsolidationTrigger(pi as any, runtime as any, { afterIdleConsolidation: args.afterIdleConsolidation });
 	if (!handlers.agent_start) throw new Error("agent_start consolidation handler not registered");
 	if (!handlers.turn_end) throw new Error("turn_end consolidation handler not registered");
+	if (!handlers.agent_settled) throw new Error("agent_settled consolidation handler not registered");
 	const ctx = {
 		cwd: "/tmp/project",
 		hasUI: true,
@@ -166,7 +188,14 @@ function setup(args: {
 		fire: (eventName = "turn_end") => handlers[eventName]!(undefined, ctx),
 		fireAgentStart: () => handlers.agent_start!(undefined, ctx),
 		fireTurnEnd: () => handlers.turn_end!(undefined, ctx),
-		runLaunchedWork: async () => launchedWork?.(),
+		runLaunchedWork: async () => {
+			try {
+				await launchedWork?.();
+			} finally {
+				resolveLaunched?.();
+			}
+		},
+		fireAgentSettled: () => handlers.agent_settled!(undefined, ctx),
 		addEntries: (...more: TestEntry[]) => {
 			entries = [...entries, ...more];
 		},
@@ -223,6 +252,46 @@ describe("V3 consolidation trigger", () => {
 		locked.fireTurnEnd();
 
 		expect(locked.runtime.launchConsolidationTask).not.toHaveBeenCalled();
+	});
+
+	it("launches on a due raw backlog even when provider growth since the last compaction is below the threshold", () => {
+		// Coverage stops before the latest compaction, so the provider delta is
+		// measured from the post-compaction baseline (1000 -> 1000 = 0 growth)
+		// while the uncovered raw backlog is far above observeAfterTokens.
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaaaaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+			textCustomMessage("raw-2", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+			compactionEntry("cmp-1", { firstKeptEntryId: "assistant-1" }),
+			rawMessage("assistant-1", "done", {
+				message: { role: "assistant", content: "done", stopReason: "end_turn", usage: { totalTokens: 1000 } },
+			}),
+			textCustomMessage("raw-3", "cccc"),
+		];
+		const { fireTurnEnd, runtime, ctx } = setup({ entries, observeAfterTokens: 5, reflectAfterTokens: 1000 });
+		(ctx as any).getContextUsage = () => ({ tokens: 1000, contextWindow: 65536 });
+
+		fireTurnEnd();
+
+		expect(runtime.launchConsolidationTask).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not launch when both the raw backlog and provider growth are below the threshold", () => {
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+			compactionEntry("cmp-1", { firstKeptEntryId: "assistant-1" }),
+			rawMessage("assistant-1", "done", {
+				message: { role: "assistant", content: "done", stopReason: "end_turn", usage: { totalTokens: 1000 } },
+			}),
+			textCustomMessage("raw-2", "bbbb"),
+		];
+		const { fireTurnEnd, runtime, ctx } = setup({ entries, observeAfterTokens: 5, reflectAfterTokens: 1000 });
+		(ctx as any).getContextUsage = () => ({ tokens: 1002, contextWindow: 65536 });
+
+		fireTurnEnd();
+
+		expect(runtime.launchConsolidationTask).not.toHaveBeenCalled();
 	});
 
 	it("launches from agent_start when work is due", () => {
@@ -1528,5 +1597,139 @@ describe("V3 reflection dropper stage", () => {
 		await quiet.runLaunchedWork();
 
 		expect(quiet.ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("reflection dropper running"), "info");
+	});
+});
+
+describe("consolidateWhenIdle", () => {
+	const obs = observation("cccccccccccc", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
+	const dueEntries = [textCustomMessage("raw-1", "aaaaaaaa")];
+
+	it("launches only from agent_settled", () => {
+		const { fireAgentStart, fireTurnEnd, fireAgentSettled, runtime } = setup({ entries: dueEntries, consolidateWhenIdle: true });
+
+		fireAgentStart();
+		fireTurnEnd();
+		expect(runtime.launchConsolidationTask).not.toHaveBeenCalled();
+
+		fireAgentSettled();
+		expect(runtime.launchConsolidationTask).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps the default entrypoints when disabled", () => {
+		const { fireAgentSettled, fireTurnEnd, runtime } = setup({ entries: dueEntries, consolidateWhenIdle: false });
+
+		fireAgentSettled();
+		expect(runtime.launchConsolidationTask).not.toHaveBeenCalled();
+		fireTurnEnd();
+		expect(runtime.launchConsolidationTask).toHaveBeenCalledTimes(1);
+	});
+
+	it("passes the run's abort signal to the workers", async () => {
+		mockAgents.runObserver.mockResolvedValueOnce([obs]);
+		const { fireAgentSettled, runLaunchedWork } = setup({ entries: dueEntries, consolidateWhenIdle: true, reflectAfterTokens: 999 });
+
+		fireAgentSettled();
+		await runLaunchedWork();
+
+		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({ signal: expect.any(AbortSignal) }));
+	});
+
+	it("aborts an in-flight run when the agent starts, without reporting a failure", async () => {
+		mockAgents.runObserver.mockImplementationOnce((args: { signal: AbortSignal }) => new Promise((_, reject) => {
+			if (args.signal.aborted) return reject(new Error("aborted"));
+			args.signal.addEventListener("abort", () => reject(new Error("aborted")));
+		}));
+		const { fireAgentSettled, fireAgentStart, runLaunchedWork, runtime, pi, ctx } = setup({ entries: dueEntries, consolidateWhenIdle: true, reflectAfterTokens: 999 });
+
+		fireAgentSettled();
+		const work = runLaunchedWork();
+		expect(runtime.consolidationInFlight).toBe(true);
+
+		fireAgentStart();
+		await work;
+
+		expect(runtime.abortConsolidation).toHaveBeenCalledTimes(1);
+		expect(pi.appendEntry).not.toHaveBeenCalled();
+		expect(runtime.lastObserverError).toBeUndefined();
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("failed"), "warning");
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Observational memory: memory workers paused while the agent runs (consolidateWhenIdle)",
+			"info",
+		);
+	});
+
+	it("does not retry with the fallback model when the run was aborted", async () => {
+		mockAgents.runObserver.mockImplementationOnce((args: { signal: AbortSignal }) => new Promise((_, reject) => {
+			if (args.signal.aborted) return reject(new Error("aborted"));
+			args.signal.addEventListener("abort", () => reject(new Error("aborted")));
+		}));
+		const { fireAgentSettled, fireAgentStart, runLaunchedWork, runtime, pi } = setup({ entries: dueEntries, consolidateWhenIdle: true, reflectAfterTokens: 999 });
+		runtime.resolveFallbackModel.mockResolvedValue({ ok: true, model: { provider: "opencode-go", id: "fallback" }, apiKey: "go-key" });
+
+		fireAgentSettled();
+		const work = runLaunchedWork();
+		await vi.waitFor(() => expect(mockAgents.runObserver).toHaveBeenCalledTimes(1));
+		fireAgentStart();
+		await work;
+
+		expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
+		expect(runtime.resolveFallbackModel).not.toHaveBeenCalled();
+		expect(pi.appendEntry).not.toHaveBeenCalled();
+	});
+
+	it("does not abort anything when no run is in flight", () => {
+		const { fireAgentStart, runtime, ctx } = setup({ entries: dueEntries, consolidateWhenIdle: true });
+
+		fireAgentStart();
+
+		expect(runtime.abortConsolidation).toHaveBeenCalledTimes(1);
+		expect(runtime.launchConsolidationTask).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	});
+
+	it("calls afterIdleConsolidation once the run finishes, or immediately when nothing is due", async () => {
+		mockAgents.runObserver.mockResolvedValueOnce([obs]);
+		const afterIdleConsolidation = vi.fn();
+		const { fireAgentSettled, runLaunchedWork, ctx } = setup({ entries: dueEntries, consolidateWhenIdle: true, reflectAfterTokens: 999, afterIdleConsolidation });
+
+		fireAgentSettled();
+		expect(afterIdleConsolidation).not.toHaveBeenCalled();
+		await runLaunchedWork();
+		await Promise.resolve();
+		expect(afterIdleConsolidation).toHaveBeenCalledTimes(1);
+		expect(afterIdleConsolidation).toHaveBeenCalledWith(ctx);
+
+		const idle = setup({
+			entries: [
+				textCustomMessage("raw-1", "aaaa"),
+				observationsRecordedEntry("om-obs", { observations: [obs], coversUpToId: "raw-1" }),
+			],
+			consolidateWhenIdle: true,
+			observeAfterTokens: 100,
+			reflectAfterTokens: 100,
+			afterIdleConsolidation,
+		});
+		idle.fireAgentSettled();
+		expect(afterIdleConsolidation).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe("bounded worker memory in consolidation", () => {
+	it("sends the observer only the newest prior memory that fits workerMemoryMaxTokens", async () => {
+		const old = [1, 2, 3].map((i) => observation(`a${i}`.padEnd(12, "a"), { sourceEntryIds: [`raw-${i}`], content: `Old ${"o".repeat(120)}` }));
+		const entries = [
+			textCustomMessage("raw-1", "a"), textCustomMessage("raw-2", "b"), textCustomMessage("raw-3", "c"),
+			observationsRecordedEntry("om-obs", { observations: old, coversUpToId: "raw-3" }),
+			textCustomMessage("raw-4", "dddddddd"),
+		];
+		mockAgents.runObserver.mockResolvedValueOnce([observation("cccccccccccc", { sourceEntryIds: ["raw-4"] })]);
+		const { fire, runLaunchedWork } = setup({ entries, reflectAfterTokens: 999, workerMemoryMaxTokens: 50 });
+
+		fire();
+		await runLaunchedWork();
+
+		const args = mockAgents.runObserver.mock.calls[0][0];
+		expect(args.priorObservations).toHaveLength(1);
+		expect(args.priorObservations[0]).toContain("[a3aaaaaaaaaa]");
 	});
 });

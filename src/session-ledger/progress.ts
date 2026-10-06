@@ -110,6 +110,25 @@ export function rawTokensSinceReflectionCoverage(entries: Entry[]): number {
 	return rawTokensSinceCoverage(entries, OM_REFLECTIONS_RECORDED);
 }
 
+/**
+ * Estimated source tokens the observer has covered since the latest reflection
+ * coverage marker: the material new reflections could draw on. Unlike
+ * {@link rawTokensSinceReflectionCoverage} it excludes source the observer has
+ * not reached yet, so a large unobserved backlog does not make the reflector
+ * due after every small observer chunk.
+ */
+export function observedTokensSinceReflectionCoverage(entries: Entry[]): number {
+	const reflectionIndex = latestCoverageIndex(entries, OM_REFLECTIONS_RECORDED);
+	const observationIndex = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
+	if (observationIndex <= reflectionIndex) return 0;
+
+	let total = 0;
+	for (let i = reflectionIndex + 1; i <= observationIndex; i++) {
+		if (isSourceEntry(entries[i])) total += estimateEntryTokens(entries[i]);
+	}
+	return total;
+}
+
 export function rawTokensSinceDropCoverage(entries: Entry[]): number {
 	return rawTokensSinceCoverage(entries, OM_OBSERVATIONS_DROPPED);
 }
@@ -225,55 +244,72 @@ export function realTokensSinceAnchor(
 	return Math.max(0, currentContextTokens);
 }
 
-// Mirrors Pi's compaction cut rule: any context message except a tool result,
-// which must stay behind its tool call.
-function isCutPointEntry(entry: Entry): boolean {
-	if (entry.type === "custom_message" || entry.type === "branch_summary") return true;
-	if (entry.type !== "message" || !isObject(entry.message)) return false;
-	return entry.message.role !== "toolResult";
-}
-
 /**
- * Pull a compaction cut back so source entries the observer has not covered
- * yet stay in the retained tail instead of vanishing until a later compaction.
- * Returns `proposedId` when nothing is unobserved before it, when no safe cut
- * exists after the previous compaction, or when the extended tail would exceed
- * `maxRetainedTokens`.
+ * Branch index where Pi's next compaction range starts: the retained boundary
+ * (`firstKeptEntryId`) of the latest compaction, the entry after that
+ * compaction when the boundary id is missing, or 0 before any compaction.
  */
-export function coverageSafeFirstKeptEntryId(
-	entries: Entry[],
-	proposedId: string,
-	maxRetainedTokens: number,
-): string {
-	const proposedIndex = entryIndexForId(entries, proposedId);
-	if (proposedIndex === -1) return proposedId;
+export function compactionRangeStartIndex(entries: Entry[]): number {
+	const compactionIndex = findLastCompactionIndex(entries);
+	if (compactionIndex === -1) return 0;
 
-	const coverageIndex = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
-	let firstUnobserved = -1;
-	for (let i = coverageIndex + 1; i < proposedIndex; i++) {
-		if (isSourceEntry(entries[i])) {
-			firstUnobserved = i;
-			break;
-		}
-	}
-	if (firstUnobserved === -1) return proposedId;
-
-	// Cutting before an earlier compaction entry would replay its summary.
-	const floor = findLastCompactionIndex(entries.slice(0, proposedIndex));
-	for (let i = firstUnobserved; i > floor; i--) {
-		if (!isCutPointEntry(entries[i])) continue;
-		return rawTokensAfterIndex(entries, i - 1) <= maxRetainedTokens ? entries[i].id : proposedId;
-	}
-	return proposedId;
+	const firstKeptIndex = entryIndexForId(entries, entries[compactionIndex].firstKeptEntryId);
+	return firstKeptIndex === -1 ? compactionIndex + 1 : firstKeptIndex;
 }
 
 export function rawTokensSinceLastCompaction(entries: Entry[]): number {
-	const compactionIndex = findLastCompactionIndex(entries);
-	if (compactionIndex === -1) return rawTokensAfterIndex(entries, -1);
+	return rawTokensAfterIndex(entries, compactionRangeStartIndex(entries) - 1);
+}
 
-	const firstKeptEntryId = entries[compactionIndex].firstKeptEntryId;
-	const firstKeptIndex = entryIndexForId(entries, firstKeptEntryId);
+/**
+ * Estimated source tokens since the latest compaction boundary that observation
+ * coverage has already reached — the span a V3 compaction can fold into memory
+ * without discarding anything the observer has not seen. Zero when coverage is
+ * missing or still behind the compaction boundary.
+ */
+export function observedTokensSinceLastCompaction(entries: Entry[]): number {
+	const start = compactionRangeStartIndex(entries);
+	const coverageIndex = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
+	if (coverageIndex < start) return 0;
 
-	if (firstKeptIndex === -1) return rawTokensAfterIndex(entries, compactionIndex);
-	return rawTokensAfterIndex(entries, firstKeptIndex - 1);
+	let total = 0;
+	for (let i = start; i <= coverageIndex; i++) {
+		if (isSourceEntry(entries[i])) total += estimateEntryTokens(entries[i]);
+	}
+	return total;
+}
+
+export type UnobservedSourceSpan = {
+	/** Branch index of the first unobserved source entry. */
+	firstIndex: number;
+	/** Branch index of the last unobserved source entry before the cut. */
+	lastIndex: number;
+	entryCount: number;
+	tokens: number;
+};
+
+/**
+ * Source entries inside the current compaction range, before `cutIndex`
+ * (exclusive), that observation coverage has not reached yet. These are the
+ * entries a compaction cutting at `cutIndex` would discard without any memory
+ * representation. Returns undefined when coverage reaches the cut.
+ */
+export function unobservedSourceSpanBefore(entries: Entry[], cutIndex: number): UnobservedSourceSpan | undefined {
+	const coverageIndex = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
+	const start = Math.max(coverageIndex + 1, compactionRangeStartIndex(entries));
+	let firstIndex = -1;
+	let lastIndex = -1;
+	let entryCount = 0;
+	let tokens = 0;
+
+	for (let i = start; i < cutIndex && i < entries.length; i++) {
+		if (!isSourceEntry(entries[i])) continue;
+		if (firstIndex === -1) firstIndex = i;
+		lastIndex = i;
+		entryCount++;
+		tokens += estimateEntryTokens(entries[i]);
+	}
+
+	if (firstIndex === -1) return undefined;
+	return { firstIndex, lastIndex, entryCount, tokens };
 }
