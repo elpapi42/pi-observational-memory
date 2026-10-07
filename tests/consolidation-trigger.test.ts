@@ -8,9 +8,17 @@ const mockAgents = vi.hoisted(() => ({
 
 vi.mock("../src/agents/observer/agent.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../src/agents/observer/agent.js")>()),
-	runObserver: mockAgents.runObserver,
+	runObserver: async (...args: unknown[]) => {
+		const result = await mockAgents.runObserver(...args);
+		return Array.isArray(result) ? { kind: "completed", records: result } : result ?? { kind: "incomplete", records: [] };
+	},
 }));
-vi.mock("../src/agents/reflector/agent.js", () => ({ runReflector: mockAgents.runReflector }));
+vi.mock("../src/agents/reflector/agent.js", () => ({
+	runReflector: async (...args: unknown[]) => {
+		const result = await mockAgents.runReflector(...args);
+		return Array.isArray(result) ? { kind: "completed", records: result } : result ?? { kind: "incomplete", records: [] };
+	},
+}));
 vi.mock("../src/agents/dropper/agent.js", () => ({ runDropper: mockAgents.runDropper }));
 
 import { ObserverStreamError } from "../src/agents/observer/agent.js";
@@ -296,7 +304,7 @@ describe("V3 consolidation trigger", () => {
 			maxTurns: 9,
 			thinkingLevel: "minimal",
 		}));
-		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [obs], coversUpToId: "raw-1" });
+		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { completion: "completed", observations: [obs], coversUpToId: "raw-1" });
 	});
 
 	it("forwards OAuth-shaped auth (headers, no apiKey) to the observer agent", async () => {
@@ -318,7 +326,7 @@ describe("V3 consolidation trigger", () => {
 			apiKey: undefined,
 			headers: { Authorization: "Bearer oauth-token" },
 		}));
-		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [obs], coversUpToId: "raw-1" });
+		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { completion: "completed", observations: [obs], coversUpToId: "raw-1" });
 	});
 
 	it("adds x-opencode-session headers for opencode-go worker models", async () => {
@@ -339,7 +347,7 @@ describe("V3 consolidation trigger", () => {
 			apiKey: "go-key",
 			headers: { "x-opencode-session": "session-abc", "x-opencode-client": "pi" },
 		}));
-		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [obs], coversUpToId: "raw-1" });
+		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { completion: "completed", observations: [obs], coversUpToId: "raw-1" });
 	});
 
 	it("merges x-opencode-session with existing auth headers and preserves them", async () => {
@@ -421,7 +429,7 @@ describe("V3 consolidation trigger", () => {
 		await runLaunchedWork();
 
 		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({ allowedSourceEntryIds: ["raw-2", "raw-3"] }));
-		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [newObs], coversUpToId: "raw-3" });
+		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { completion: "completed", observations: [newObs], coversUpToId: "raw-3" });
 	});
 
 	it("observer no-output appends nothing and does not fake observation coverage", async () => {
@@ -494,7 +502,7 @@ describe("V3 consolidation trigger", () => {
 		expect(failed.ctx.ui.notify.mock.calls[0][0]).toContain("observer failed");
 	});
 
-	it("reports deliberate empty as info, not a warning", async () => {
+	it("reports an unfinished empty observer result as info, not a warning", async () => {
 		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
 		const { fire, runLaunchedWork, ctx } = setup({ entries, reflectAfterTokens: 999 });
 
@@ -503,58 +511,21 @@ describe("V3 consolidation trigger", () => {
 
 		expect(ctx.ui.notify.mock.calls).toEqual([
 			[expect.stringMatching(/^Observational memory: observer running on ~\d+-token chunk$/), "info"],
-			["Observational memory: observer found nothing new in this chunk (coverage unchanged; will retry later)", "info"],
+			["Observational memory: observer review remains open; no records were saved", "info"],
 		]);
 	});
 
-	it("backs off observer re-fires after a deliberate empty until enough new tokens arrive", async () => {
+	it("retries unfinished empty observer work on the next eligible event", async () => {
 		const entries = [textCustomMessage("raw-1", "a".repeat(40))]; // 10 tokens
-		const { fire, runLaunchedWork, addEntries, runtime } = setup({ entries, observeAfterTokens: 10, reflectAfterTokens: 999 });
-
-		fire();
-		await runLaunchedWork();
-		expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
-		expect(runtime.observerEmptyBackoff).toEqual({
-			sessionIdentity: "session-1",
-			coverageId: undefined,
-			tokensAtEmpty: 10,
-		});
-
-		// Same span, only 5 new tokens (< observeAfterTokens more): no re-fire.
-		addEntries(textCustomMessage("raw-2", "b".repeat(20)));
-		runtime.consolidationInFlight = false;
-		fire();
-		expect(runtime.launchConsolidationTask).toHaveBeenCalledTimes(2);
-		await runLaunchedWork();
-		expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
-
-		// 10 more new tokens: backoff satisfied, observer re-fires over the grown span.
-		addEntries(textCustomMessage("raw-3", "c".repeat(40)));
-		runtime.consolidationInFlight = false;
-		mockAgents.runObserver.mockResolvedValueOnce([obsA]);
-		fire();
-		await runLaunchedWork();
-		expect(mockAgents.runObserver).toHaveBeenCalledTimes(2);
-		expect(runtime.observerEmptyBackoff).toBeUndefined();
-	});
-
-	it("does not apply deliberate-empty backoff to another session", async () => {
-		const entries = [textCustomMessage("raw-1", "a".repeat(40))];
-		const { fire, runLaunchedWork, runtime, setSessionId } = setup({
-			entries,
-			observeAfterTokens: 10,
-			reflectAfterTokens: 999,
-		});
+		const { fire, runLaunchedWork, runtime } = setup({ entries, observeAfterTokens: 10, reflectAfterTokens: 999 });
 
 		fire();
 		await runLaunchedWork();
 		expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
 
 		runtime.consolidationInFlight = false;
-		setSessionId("session-2");
 		fire();
 		await runLaunchedWork();
-
 		expect(mockAgents.runObserver).toHaveBeenCalledTimes(2);
 	});
 
@@ -573,7 +544,6 @@ describe("V3 consolidation trigger", () => {
 		);
 		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("no observations"), expect.anything());
 		expect(pi.appendEntry).not.toHaveBeenCalled();
-		expect(runtime.observerEmptyBackoff).toBeUndefined();
 		expect(mockAgents.runReflector).not.toHaveBeenCalled();
 	});
 
@@ -603,8 +573,8 @@ describe("V3 consolidation trigger", () => {
 		expect(mockAgents.runObserver).toHaveBeenCalled();
 		expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({ observations: [obsA] }));
 		expect(mockAgents.runObserver.mock.invocationCallOrder[0]).toBeLessThan(mockAgents.runReflector.mock.invocationCallOrder[0]);
-		expect(pi.appendEntry.mock.calls[0]).toEqual([OM_OBSERVATIONS_RECORDED, { observations: [obsA], coversUpToId: "raw-1" }]);
-		expect(pi.appendEntry.mock.calls[1]).toEqual([OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" }]);
+		expect(pi.appendEntry.mock.calls[0]).toEqual([OM_OBSERVATIONS_RECORDED, { completion: "completed", observations: [obsA], coversUpToId: "raw-1" }]);
+		expect(pi.appendEntry.mock.calls[1]).toEqual([OM_REFLECTIONS_RECORDED, { completion: "completed", reflections: [newRef], coversUpToId: "raw-1" }]);
 	});
 
 	it("runs reflector-only and appends non-empty reflections", async () => {
@@ -623,7 +593,7 @@ describe("V3 consolidation trigger", () => {
 
 		expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({ observations: [obsA], maxTurns: 9, thinkingLevel: "minimal" }));
 		expect(mockAgents.runDropper).not.toHaveBeenCalled();
-		expect(pi.appendEntry).toHaveBeenCalledWith(OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" });
+		expect(pi.appendEntry).toHaveBeenCalledWith(OM_REFLECTIONS_RECORDED, { completion: "completed", reflections: [newRef], coversUpToId: "raw-1" });
 	});
 
 	it("runs dropper after same-run non-empty reflector output and appends non-empty drops", async () => {
@@ -642,7 +612,7 @@ describe("V3 consolidation trigger", () => {
 
 		expect(mockAgents.runReflector).toHaveBeenCalled();
 		expect(mockAgents.runDropper).toHaveBeenCalledWith(expect.objectContaining({ reflections: [newRef], observations: [obsA] }));
-		expect(pi.appendEntry.mock.calls[0]).toEqual([OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" }]);
+		expect(pi.appendEntry.mock.calls[0]).toEqual([OM_REFLECTIONS_RECORDED, { completion: "completed", reflections: [newRef], coversUpToId: "raw-1" }]);
 		expect(pi.appendEntry.mock.calls[1]).toEqual([OM_OBSERVATIONS_DROPPED, { observationIds: ["aaaaaaaaaaaa"], coversUpToId: "raw-1" }]);
 	});
 
@@ -706,7 +676,7 @@ describe("V3 consolidation trigger", () => {
 		fire();
 		await runLaunchedWork();
 
-		expect(pi.appendEntry.mock.calls[0]).toEqual([OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-2" }]);
+		expect(pi.appendEntry.mock.calls[0]).toEqual([OM_REFLECTIONS_RECORDED, { completion: "completed", reflections: [newRef], coversUpToId: "raw-2" }]);
 		expect(pi.appendEntry.mock.calls[1]).toEqual([OM_OBSERVATIONS_DROPPED, { observationIds: ["bbbbbbbbbbbb"], coversUpToId: "raw-2" }]);
 	});
 
@@ -757,7 +727,7 @@ describe("V3 consolidation trigger", () => {
 		await runLaunchedWork();
 
 		expect(mockAgents.runDropper).toHaveBeenCalledWith(expect.objectContaining({ reflections: [newRef] }));
-		expect(pi.appendEntry.mock.calls[0]).toEqual([OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-2" }]);
+		expect(pi.appendEntry.mock.calls[0]).toEqual([OM_REFLECTIONS_RECORDED, { completion: "completed", reflections: [newRef], coversUpToId: "raw-2" }]);
 		expect(pi.appendEntry.mock.calls[1]).toEqual([OM_OBSERVATIONS_DROPPED, { observationIds: ["bbbbbbbbbbbb"], coversUpToId: "raw-2" }]);
 	});
 
@@ -821,7 +791,7 @@ describe("V3 consolidation trigger", () => {
 		await dropperFailure.runLaunchedWork();
 		expect(dropperFailure.runtime.lastDropperError).toBe("drop failed");
 		expect(dropperFailure.pi.appendEntry).toHaveBeenCalledTimes(1);
-		expect(dropperFailure.pi.appendEntry).toHaveBeenCalledWith(OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" });
+		expect(dropperFailure.pi.appendEntry).toHaveBeenCalledWith(OM_REFLECTIONS_RECORDED, { completion: "completed", reflections: [newRef], coversUpToId: "raw-1" });
 	});
 
 	describe("fallback model retry", () => {
@@ -850,7 +820,7 @@ describe("V3 consolidation trigger", () => {
 				thinkingLevel: "high",
 			}));
 			expect(runtime.resolveFallbackModel).not.toHaveBeenCalled();
-			expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [obs], coversUpToId: "raw-1" });
+			expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { completion: "completed", observations: [obs], coversUpToId: "raw-1" });
 		});
 
 		it("retries the observer once with the fallback model after a primary stream error", async () => {
@@ -874,7 +844,7 @@ describe("V3 consolidation trigger", () => {
 				apiKey: "go-key",
 				headers: { "x-opencode-session": "session-1", "x-opencode-client": "pi" },
 			}));
-			expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [obs], coversUpToId: "raw-1" });
+			expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { completion: "completed", observations: [obs], coversUpToId: "raw-1" });
 			expect(runtime.lastObserverError).toBeUndefined();
 			expect(ctx.ui.notify).toHaveBeenCalledWith(
 				expect.stringContaining("retrying with fallback model"),
@@ -900,7 +870,7 @@ describe("V3 consolidation trigger", () => {
 			fire();
 			await runLaunchedWork();
 
-			expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "go-key" }));
+			expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "go-key", observations: [obs] }));
 			expect(runtime.resolveFallbackModel).toHaveBeenCalledTimes(1);
 		});
 
@@ -944,7 +914,7 @@ describe("V3 consolidation trigger", () => {
 			await runLaunchedWork();
 
 			expect(mockAgents.runReflector).toHaveBeenCalledTimes(2);
-			expect(pi.appendEntry).toHaveBeenCalledWith(OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" });
+			expect(pi.appendEntry).toHaveBeenCalledWith(OM_REFLECTIONS_RECORDED, { completion: "completed", reflections: [newRef], coversUpToId: "raw-1" });
 		});
 
 		it("retries the dropper once with the fallback model after a primary error", async () => {
@@ -969,7 +939,7 @@ describe("V3 consolidation trigger", () => {
 			expect(runtime.lastDropperError).toBeUndefined();
 			expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("dropper failed (primary down); retrying with fallback model"), "warning");
 			expect(pi.appendEntry.mock.calls).toEqual([
-				[OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" }],
+				[OM_REFLECTIONS_RECORDED, { completion: "completed", reflections: [newRef], coversUpToId: "raw-1" }],
 				[OM_OBSERVATIONS_DROPPED, { observationIds: ["aaaaaaaaaaaa"], coversUpToId: "raw-1" }],
 			]);
 		});
@@ -1070,7 +1040,7 @@ describe("observer chunk cap", () => {
 
 		// Only the oldest entry fits under the cap; coverage advances to it, not to the backlog tail.
 		expect(mockAgents.runObserver).toHaveBeenNthCalledWith(1, expect.objectContaining({ allowedSourceEntryIds: ["raw-1"] }));
-		expect(pi.appendEntry).toHaveBeenNthCalledWith(1, OM_OBSERVATIONS_RECORDED, { observations: [first], coversUpToId: "raw-1" });
+		expect(pi.appendEntry).toHaveBeenNthCalledWith(1, OM_OBSERVATIONS_RECORDED, { completion: "completed", observations: [first], coversUpToId: "raw-1" });
 
 		// The next run continues from the advanced coverage.
 		runtime.consolidationInFlight = false;
@@ -1078,7 +1048,7 @@ describe("observer chunk cap", () => {
 		await runLaunchedWork();
 
 		expect(mockAgents.runObserver).toHaveBeenNthCalledWith(2, expect.objectContaining({ allowedSourceEntryIds: ["raw-2"] }));
-		expect(pi.appendEntry).toHaveBeenNthCalledWith(2, OM_OBSERVATIONS_RECORDED, { observations: [second], coversUpToId: "raw-2" });
+		expect(pi.appendEntry).toHaveBeenNthCalledWith(2, OM_OBSERVATIONS_RECORDED, { completion: "completed", observations: [second], coversUpToId: "raw-2" });
 	});
 
 	it("bounds one oversized tool result, preserves provenance, and continues on the next run", async () => {
@@ -1114,7 +1084,7 @@ describe("observer chunk cap", () => {
 		expect(firstCall.chunk).toContain(":TAIL");
 		expect(firstCall.chunk).toContain("middle omitted: source exceeds observer input budget");
 		expect(firstCall.chunk).not.toContain("raw-next");
-		expect(pi.appendEntry).toHaveBeenNthCalledWith(1, OM_OBSERVATIONS_RECORDED, { observations: [first], coversUpToId: "raw-huge" });
+		expect(pi.appendEntry).toHaveBeenNthCalledWith(1, OM_OBSERVATIONS_RECORDED, { completion: "completed", observations: [first], coversUpToId: "raw-huge" });
 
 		// The source id still points at the full ledger entry; the next run starts
 		// after it instead of retrying the oversized input forever.
@@ -1123,7 +1093,7 @@ describe("observer chunk cap", () => {
 		await runLaunchedWork();
 
 		expect(mockAgents.runObserver).toHaveBeenNthCalledWith(2, expect.objectContaining({ allowedSourceEntryIds: ["raw-next"] }));
-		expect(pi.appendEntry).toHaveBeenNthCalledWith(2, OM_OBSERVATIONS_RECORDED, { observations: [second], coversUpToId: "raw-next" });
+		expect(pi.appendEntry).toHaveBeenNthCalledWith(2, OM_OBSERVATIONS_RECORDED, { completion: "completed", observations: [second], coversUpToId: "raw-next" });
 	});
 
 	it("derives the cap from the resolved model's context window when not configured", async () => {

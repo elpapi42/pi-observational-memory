@@ -56,7 +56,7 @@ Rendered:
 [a1b2c3d4e5f6] User works at Acme Corp building Acme Dashboard on Next.js 15 with Supabase auth.
 ```
 
-Reflections are written by the reflector into `om.reflections.recorded` ledger entries. They should be fewer and more durable than observations; the reflector should not turn every observation into a reflection. The reflector receives each active observation with a deterministic coverage tier (`none`, `partial`, or `strong`) so it can review durable facts that are not yet preserved, but coverage is review context rather than a quota or automatic reflection rule.
+Reflections are written by the reflector into `om.reflections.recorded` ledger entries. They should be fewer and more durable than observations; the reflector should not turn every observation into a reflection. The reflector receives active observations whose first-valid input boundaries are within completed observer coverage, each with a deterministic coverage tier (`none`, `partial`, or `strong`). Coverage is review context rather than a quota or automatic reflection rule.
 
 A reflection's `supportingObservationIds` are downstream dropper coverage evidence. They should include all and only current observations whose durable meaning the reflection preserves with equivalent fidelity. False or inflated support ids can make later pruning look safer than it is.
 
@@ -70,19 +70,19 @@ Dropping does not delete history. Dropped observations remain recallable from le
 
 ### Observer
 
-The observer runs asynchronously from `turn_end` when raw/source tokens after the latest observation coverage marker reach `observeAfterTokens`. After a deliberate empty result, it waits for another `observeAfterTokens` of source tokens before retrying the uncovered range.
+The observer checks work on `agent_start` and `turn_end` when raw/source tokens after the latest completed observation marker reach `observeAfterTokens`. It receives an oldest-first chunk of raw/source entries, validates source ids, and reports an explicit completed, nothing-new, incomplete, or failed outcome.
 
-It receives an oldest-first chunk of raw/source entries, validates source ids, and appends a non-empty `om.observations.recorded` entry. Chunking targets a fixed 60,000 estimated tokens but always includes at least one entry, so a single oversized entry cannot stall coverage. If there is nothing worth recording, it writes no entry and leaves the raw range uncovered.
+Completed reviews append `om.observations.recorded` with `completion: "completed"` and `coversUpToId`; an intentional empty batch is a valid nothing-new completion. Incomplete reviews append accepted records with `completion: "incomplete"` and `inputUpToId`, but do not advance coverage. A missing tool completion, plain text, rejected work, or a later stream failure cannot certify the source range. Accepted partial records are deduplicated on retry. There is no empty-result backoff: unfinished work is eligible again whenever its configured token clock is due. Chunking targets a fixed 60,000 estimated tokens but always includes at least one entry, so a single oversized entry cannot stall coverage.
 
 ### Reflector
 
-The reflector runs in the reflect/drop lane from `turn_end` when its raw-token clock reaches `reflectAfterTokens` and the observer is not due.
+The reflector runs when its raw-token clock reaches `reflectAfterTokens`. Its active observation snapshot includes only first-valid observation records whose input boundaries resolve at or before completed observer coverage; newer partial records remain out of the review.
 
-It reads active observations and current reflections, then appends durable new reflections as `om.reflections.recorded`. Reflections must cite valid supporting observation ids. The reflector's coverage annotations describe current support state only; this first coverage-stewardship model does not repair historical coverage on existing reflections that already missed a supporting observation id.
+Completed reviews append `om.reflections.recorded` with `completion: "completed"` and `coversUpToId`, including an explicit empty no-new verdict. Accepted incomplete records use `completion: "incomplete"` and `inputUpToId` without advancing coverage. Reflections must cite valid supporting observation ids. The reflector's coverage annotations describe current support state only; this first coverage-stewardship model does not repair historical coverage on existing reflections that already missed a supporting observation id.
 
 ### Dropper
 
-The dropper runs only as post-reflection maintenance: after the reflector records non-empty same-turn reflections, the dropper may run if the folded active observation ledger is over `observationsPoolTargetTokens`. The dropper can see same-turn new reflections before deciding what to prune.
+The dropper runs only as post-reflection maintenance: after a completed same-turn review adds non-empty reflections, the dropper may run if that reviewed observation snapshot is over `observationsPoolTargetTokens`. It receives that same snapshot intersected with current active observations, plus same-turn reflections; newer partial or already-dropped records are excluded.
 
 The dropper can only drop active observation ids. It cannot rewrite or merge observations. Relevance is treated as importance/resistance rather than an absolute lock: `critical` observations are the highest-resistance candidates, but they can be dropped when the model judges that age, reflection coverage, supersession, redundancy, and semantic safety make removal from active memory safe. Its maximum drop count is computed from tokens over target converted to an approximate observation count, and the model may drop fewer or none.
 
@@ -99,24 +99,26 @@ If the projection is empty, the hook returns no extension compaction and Pi uses
 
 ## Ledger entries
 
-V3 uses three custom memory ledger entry types:
+V3 uses three custom memory ledger entry types. Completed and legacy observation/reflection records advance coverage; incomplete records retain accepted data without a progress watermark:
 
 ```ts
-om.observations.recorded: {
-  observations: Observation[];
-  coversUpToId: string;
-}
+om.observations.recorded:
+  | { completion: "completed"; observations: Observation[]; coversUpToId: string }
+  | { completion: "incomplete"; observations: [Observation, ...Observation[]]; inputUpToId: string }
+  | { observations: [Observation, ...Observation[]]; coversUpToId: string } // legacy
 
-om.reflections.recorded: {
-  reflections: Reflection[];
-  coversUpToId: string;
-}
+om.reflections.recorded:
+  | { completion: "completed"; reflections: Reflection[]; coversUpToId: string }
+  | { completion: "incomplete"; reflections: [Reflection, ...Reflection[]]; inputUpToId: string }
+  | { reflections: [Reflection, ...Reflection[]]; coversUpToId: string } // legacy
 
 om.observations.dropped: {
   observationIds: string[];
   coversUpToId: string;
 }
 ```
+
+An empty observations/reflections array is valid only on an explicit completed entry. Readers still fold valid records from incomplete entries.
 
 The compaction hook writes V3 folded details on Pi compaction entries:
 
@@ -132,9 +134,9 @@ type MemoryDetails = {
 
 Old V2 memory entry/details formats are ignored.
 
-## `coversUpToId`
+## `coversUpToId` and `inputUpToId`
 
-`coversUpToId` is a progress watermark. It tells V3 where a worker's raw/source-token progress has reached.
+`coversUpToId` is a progress watermark. On completed records it tells V3 where a worker's raw/source-token progress has reached. `inputUpToId` marks the submitted source boundary for an incomplete review and never advances that clock.
 
 It is not:
 
@@ -201,6 +203,7 @@ When upgrading from V2, update settings and start a new clean session.
 | Full memory | Full V3 ledger truth folded at branch tip or another boundary. |
 | Full fold | Compaction mode that folds observations, reflections, and drops through the boundary. |
 | Progress watermark | `coversUpToId`; marker used for raw-token progress clocks. |
+| Input boundary | `inputUpToId`; boundary stored with incomplete records for projection limits. |
 | Observer | Background agent that records observations. |
 | Reflector | Background agent that records durable reflections. |
 | Dropper | Background agent that drops active observations by id. |

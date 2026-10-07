@@ -69,16 +69,16 @@ V3 raw-token progress counts only source entries:
 
 Memory ledger entries and compaction entries do not add raw-token progress.
 
-Every V3 ledger entry has `data.coversUpToId`. That field is a progress and projection watermark. Worker clocks count raw/source tokens after the latest valid watermark for that worker's ledger type:
+Completed observation and reflection reviews carry `data.coversUpToId`; incomplete reviews carry `data.inputUpToId` and do not advance progress. Legacy observation/reflection entries without a `completion` field retain their former `coversUpToId` interpretation. Worker clocks count raw/source tokens after the latest valid completed watermark for that worker's ledger type:
 
 | Worker/trigger | Progress source |
 |---|---|
-| Observer | latest `om.observations.recorded.data.coversUpToId` |
-| Reflector | latest `om.reflections.recorded.data.coversUpToId` |
+| Observer | latest completed or legacy `om.observations.recorded.data.coversUpToId` |
+| Reflector | latest completed or legacy `om.reflections.recorded.data.coversUpToId` |
 | Dropper | latest `om.observations.dropped.data.coversUpToId` |
 | Auto-compaction | latest compaction boundary |
 
-The watermark is also used to decide whether a memory ledger entry belongs to a bounded projection. It is not provenance. Provenance lives in `sourceEntryIds` and `supportingObservationIds`.
+For bounded projections, completed and legacy records resolve their input boundary from `coversUpToId`; incomplete records resolve it from `inputUpToId`. The first-valid record for an id keeps its original boundary. A boundary is not provenance: provenance lives in `sourceEntryIds` and `supportingObservationIds`.
 
 ## Ledger data shapes
 
@@ -86,10 +86,10 @@ The watermark is also used to decide whether a memory ledger entry belongs to a 
 
 ```ts
 customType: "om.observations.recorded"
-data: {
-  observations: Observation[];
-  coversUpToId: string;
-}
+data:
+  | { completion: "completed"; observations: Observation[]; coversUpToId: string }
+  | { completion: "incomplete"; observations: [Observation, ...Observation[]]; inputUpToId: string }
+  | { observations: [Observation, ...Observation[]]; coversUpToId: string } // legacy
 ```
 
 Each observation:
@@ -105,16 +105,16 @@ type Observation = {
 }
 ```
 
-The builder rejects empty observation arrays, so no empty progress entries are written.
+Incomplete records are retained without advancing coverage. A completed empty array is an explicit "nothing new" verdict and advances `coversUpToId`; empty legacy and incomplete arrays are invalid. Readers fold valid observations from completed, incomplete, and legacy entries.
 
 ### Reflections recorded
 
 ```ts
 customType: "om.reflections.recorded"
-data: {
-  reflections: Reflection[];
-  coversUpToId: string;
-}
+data:
+  | { completion: "completed"; reflections: Reflection[]; coversUpToId: string }
+  | { completion: "incomplete"; reflections: [Reflection, ...Reflection[]]; inputUpToId: string }
+  | { reflections: [Reflection, ...Reflection[]]; coversUpToId: string } // legacy
 ```
 
 Each reflection:
@@ -128,7 +128,7 @@ type Reflection = {
 }
 ```
 
-The reflector must cite valid active observation ids.
+The reflector must cite valid active observation ids. Completed empty entries are intentional no-new-reflection reviews; incomplete entries retain accepted records but do not advance reflection coverage.
 
 ### Observations dropped
 
@@ -158,42 +158,30 @@ These details are what later visible projections read. The ledger remains the so
 
 ## Observer flow
 
-The observer trigger runs on `turn_end`.
+The observer trigger checks eligibility on `agent_start` and `turn_end`.
 
-1. Load config if needed.
-2. Skip if `passive` is true.
-3. Skip if `observerInFlight` is true.
-4. Count raw/source tokens since latest observation coverage.
-5. Skip if below `observeAfterTokens`.
-6. Honor any deliberate-empty backoff until another `observeAfterTokens` of source tokens arrive.
-7. Select the oldest size-capped chunk after the latest observation coverage marker.
-8. Serialize those source entries for the observer prompt.
-9. Resolve the memory model.
-10. Run `runObserver()` in a background task.
-11. Validate source ids returned by the model.
-12. Compute deterministic 12-character ids and per-observation token counts in code.
-13. Append `om.observations.recorded` only if at least one observation was accepted.
+1. Load config if needed and skip in passive mode or while another pass is in flight.
+2. Count raw/source tokens since the latest completed observation watermark; skip below `observeAfterTokens`.
+3. Select the oldest size-capped chunk after that watermark and serialize its source entries.
+4. Resolve the memory model and run `runObserver()` in a background task.
+5. Require a complete final assistant tool batch: every call in that batch must be the expected recording tool with a successful finalized result and `terminate: true`, followed by clean agent/stream completion.
+6. Validate source ids and compute deterministic ids and per-observation token counts in code.
+7. Persist accepted partial records with `completion: "incomplete"` and `inputUpToId`; persist completed records with `completion: "completed"` and `coversUpToId`.
 
-If no observations are generated, the worker writes no entry and does not advance coverage. A later eligible observer run will see a larger range. Deliberate empty runs back off until another `observeAfterTokens` worth of new source tokens arrives, so they do not re-fire every turn. Observer chunks target a fixed 60,000 estimated tokens, oldest-first, so an oversized uncovered span drains in slices; the oldest entry is always included even if it alone exceeds the target, preventing coverage from stalling. API/stream failures surface as `observer failed` / `observer.stream_error` rather than as an empty run.
+A valid explicit empty completed tool call writes an empty completed envelope and advances coverage. No tool call, plain text, partial batch, rejected work, or incomplete final turn does not advance coverage. Accepted records from an incomplete run are retained and deduplicated on retry. If the stream fails after accepting records, save them as incomplete, report the stage failure, and abort the rest of that pass. Without accepted records, the existing one-time fallback may retry a thrown stage failure. There is no in-memory empty-result backoff; unfinished work is eligible again when its configured token clock is due. Observer chunks target a fixed 60,000 estimated tokens, oldest-first, so an oversized uncovered span drains in slices; the oldest entry is always included even if it alone exceeds the target. API/stream failures surface as worker errors rather than as empty completion.
 
 ## Reflect/drop flow
 
-Reflect/drop also runs on `turn_end`, but only when the observer is not due.
+Reflect/drop checks the reflection raw-token clock on eligible passes, including after observer work in the same pass.
 
-1. Load config if needed.
-2. Skip if `passive` is true.
-3. Skip if observer or reflect/drop work is already in flight.
-4. Skip if observer progress has reached `observeAfterTokens`.
-5. Check the reflector raw-token clock against `reflectAfterTokens`.
-6. Resolve the model only for stages that are ready to run.
-7. Fold current ledger state.
-8. If reflector is due and observation coverage exists, run the reflector. Each active observation line is annotated with current reflection coverage (`none`, `partial`, or `strong`) so the reflector can review uncovered durable facts without treating coverage as a quota.
-9. Append non-empty `om.reflections.recorded` with `coversUpToId` set to the latest observation coverage marker. Support ids are downstream dropper coverage evidence and should include all and only observations whose durable meaning is preserved with equivalent fidelity.
-10. Only after that same-run non-empty reflection append, check whether the folded active observation pool is over `observationsPoolTargetTokens`.
-11. If over target, run the dropper with same-turn reflections available. It computes a maximum drop count from tokens over target converted to an approximate observation count and annotates active observations with reflection coverage tiers (`none`, `partial`, `strong`) for model judgment.
-12. Append non-empty `om.observations.dropped` with `coversUpToId` set to the earlier branch position of latest observation coverage and same-run reflection coverage.
+1. Skip in passive mode or while another pass is in flight; resolve the model only for stages that are due.
+2. Fold current ledger state and select active observations whose first-valid record input boundary resolves at or before the latest completed observer watermark. Partial observations beyond that watermark remain out of the reflection review.
+3. Run the reflector over that bounded snapshot, annotating records with reflection coverage tiers (`none`, `partial`, `strong`). Coverage is context, not a quota.
+4. Persist completed reflections with `coversUpToId`; persist accepted incomplete reflections with `inputUpToId`. An explicit empty completed review advances reflection coverage.
+5. Run the dropper only after a same-pass completed review adds at least one new reflection and the reviewed observation pool is over `observationsPoolTargetTokens`. Give it the same reviewed snapshot intersected with current active observations, so neither newer partial records nor observations already tombstoned can become drop candidates.
+6. Append non-empty `om.observations.dropped` with `coversUpToId` set to the earlier branch position of latest completed observation coverage and same-run reflection coverage.
 
-Reflector no-output and reflector failure skip same-turn dropper. Dropper failure does not roll back already-appended reflections.
+No-tool or incomplete reflection reviews do not advance coverage and skip the dropper. If reflection fails after accepting records, save them as incomplete, report the stage failure, and abort that pass. Dropper failure does not roll back already-appended reflections.
 
 ## Auto-compaction trigger
 
@@ -244,7 +232,7 @@ V3 uses projection helpers so commands, compaction, and recall do not each inven
 
 ### Full projection
 
-Full projection folds valid V3 observations, reflections, and drops from branch root through the requested boundary. Memory entries are included by resolving their `data.coversUpToId` marker against the boundary, not by the physical position of the `om.*` custom entry. Old V2 entries/details, invalid V3-shaped entries, and dangling coverage markers are ignored.
+Full projection folds valid V3 observations, reflections, and drops from branch root through the requested boundary. Observation/reflection records are included by resolving `data.coversUpToId` for completed/legacy entries or `data.inputUpToId` for incomplete entries against that boundary, not by the physical position of the `om.*` custom entry. Old V2 entries/details, invalid V3-shaped entries, and dangling boundaries are ignored.
 
 ### Visible projection
 
@@ -252,7 +240,7 @@ Visible projection without a boundary reads the latest V3 `om.folded` compaction
 
 ### Compaction projection
 
-When compaction runs, the projection helper decides whether this compaction is a full fold. It first builds the normal compaction projection: observations whose `coversUpToId` reaches `firstKeptEntryId`, with reflection/drop effects held stable from the latest full-fold boundary. If there is no previous full-fold boundary, normal compaction includes observations only and excludes reflections/drops. It sums that projection's active observation `tokenCount`; if the total is at or above `observationsPoolMaxTokens`, it performs a full fold through `firstKeptEntryId`, applying observations, reflections, and drops by coverage marker. Otherwise, it keeps the normal projection.
+When compaction runs, the projection helper decides whether this compaction is a full fold. It first builds the normal compaction projection: observations whose completed/legacy `coversUpToId` or incomplete `inputUpToId` reaches `firstKeptEntryId`, with reflection/drop effects held stable from the latest full-fold boundary. If there is no previous full-fold boundary, normal compaction includes observations only and excludes reflections/drops. It sums that projection's active observation `tokenCount`; if the total is at or above `observationsPoolMaxTokens`, it performs a full fold through `firstKeptEntryId`, applying observations, reflections, and drops by their resolved input/coverage boundaries. Otherwise, it keeps the normal projection.
 
 ### Diff projection
 
@@ -326,8 +314,8 @@ Recall ignores old V2 memory by construction because it indexes only V3 ledger e
 ## Error and race handling
 
 - Worker in-flight flags prevent duplicate observer or reflect/drop runs.
-- Observer priority prevents reflect/drop from advancing while source text is due for observation.
-- No-output workers append no empty ledger entries.
+- Reflection and drop inputs are bounded by completed observation coverage, so partial observation tails cannot be reviewed or pruned.
+- Incomplete workers append accepted records without advancing coverage; only an explicit completed empty result writes an empty progress entry.
 - Invalid source/support/drop ids are filtered or rejected by code.
 - Background worker errors are recorded on runtime state and surfaced in `/om:status`.
 - Compaction does not wait for background workers; it folds whatever ledger state is already present.
@@ -343,7 +331,7 @@ V3 does not use V2 state shapes. Old V2 custom memory entries, old V2 compaction
 - Pi compaction summaries represent what the agent sees.
 - Non-empty V3 compaction projections are deterministic and model-free; empty projections delegate to Pi's native summarizer.
 - Observer input is raw/source entries only.
-- `coversUpToId` is a progress/projection watermark, not provenance.
+- `coversUpToId` is a completed-review progress watermark; `inputUpToId` bounds incomplete records. Neither is provenance.
 - Kept observations and reflections are rendered without paraphrase.
 - Dropped observations remain recallable from ledger history.
 - Old V2 memory is ignored rather than migrated.

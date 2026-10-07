@@ -93,11 +93,11 @@ Invalid values are ignored. Positive-integer settings must be finite integers gr
 
 Default: `10000`.
 
-The observer runs from Pi's `turn_end` hook. It counts raw/source tokens after the latest `om.observations.recorded.data.coversUpToId` marker. When the count reaches `observeAfterTokens`, the observer receives source entries after that marker and may append a non-empty `om.observations.recorded` ledger entry.
+The observer checks work from Pi's `agent_start` and `turn_end` hooks. It counts raw/source tokens after the latest completed `om.observations.recorded.data.coversUpToId` marker. When the count reaches `observeAfterTokens`, the observer receives source entries after that marker.
 
 When Pi reports provider context usage, the observer is also due once the real context has grown by `observeAfterTokens` since the coverage marker (or since the latest compaction, when coverage is behind it). Either measure reaching the threshold launches the observer: the provider delta catches content the character heuristic undercounts, and the raw backlog keeps an observer that fell behind several compactions from starving on a small context window that Pi compacts every few thousand tokens.
 
-Lower values create smaller chunks and more frequent model calls. Higher values reduce model-call frequency but let unobserved raw conversation accumulate longer. If the observer deliberately emits no observations, no ledger entry is written; the same range remains uncovered, and the observer retries after another `observeAfterTokens` of source tokens accumulate.
+A completed review appends a `completion: "completed"` entry with `coversUpToId`; an explicit empty completed batch records a no-new verdict and advances coverage. Accepted partial records use `completion: "incomplete"` with `inputUpToId`, which does not advance the token clock. Missing tool completion or plain text leaves the range eligible for later retry. There is no empty-result backoff: unfinished work retries when its token threshold is due. Lower values create smaller chunks and more frequent model calls; higher values reduce call frequency but let unobserved raw conversation accumulate longer.
 
 ## `observerChunkMaxTokens`
 
@@ -113,7 +113,7 @@ Default: `20000`.
 
 The reflector uses this source-token threshold. Reflector progress counts source entries between the latest `om.reflections.recorded.data.coversUpToId` marker and the latest observation coverage marker — material the observer has already turned into observations. Source the observer has not reached yet does not count, so an observer draining a large backlog in small chunks does not trigger a reflector (and dropper) pass after every chunk. When Pi reports provider context usage, real context growth of `reflectAfterTokens` since the marker also makes the reflector due.
 
-The dropper no longer uses `reflectAfterTokens` as its own launch threshold. Dropper work is gated by successful reflection: after the reflector records non-empty reflections in a consolidation pass, the dropper may run if the folded active observation ledger is over `observationsPoolTargetTokens`. It can see same-turn new reflections before deciding what to prune.
+The dropper no longer uses `reflectAfterTokens` as its own launch threshold. The reflector sees active observations whose first-valid record input boundary is at or before completed observer coverage. Dropper work is gated by a completed same-pass reflection review that adds non-empty reflections; it receives that reviewed observation snapshot intersected with current active observations, plus same-turn reflections.
 
 Lower values distill reflections more often and therefore create more opportunities for post-reflection dropper maintenance. Higher values reduce reflector model calls but leave more observations between reflection and dropper opportunities.
 
@@ -146,7 +146,7 @@ Set this explicitly when the session model advertises a context window that is m
 
 Default: `20000`.
 
-This controls V3's full-fold pressure. During compaction, the extension builds the normal compaction projection: observations whose `coversUpToId` reaches the compaction boundary, with reflection/drop effects held stable from the latest full fold. If there is no previous full fold, normal compaction includes observations only. If that projection's active observation tokens are at or above `observationsPoolMaxTokens`, compaction performs a full fold through the compaction boundary and applies observations, reflections, and drops by coverage marker. Otherwise, it keeps reflection/drop effects stable from the latest full fold and projects only observations through the new boundary.
+This controls V3's full-fold pressure. During compaction, the extension builds the normal compaction projection: observations whose completed/legacy `coversUpToId` or incomplete `inputUpToId` reaches the compaction boundary, with reflection/drop effects held stable from the latest full fold. If there is no previous full fold, normal compaction includes observations only. If that projection's active observation tokens are at or above `observationsPoolMaxTokens`, compaction performs a full fold through the compaction boundary and applies observations, reflections, and drops by coverage marker. Otherwise, it keeps reflection/drop effects stable from the latest full fold and projects only observations through the new boundary.
 
 This is not the active observation dropper target and not a scheduling threshold for the reflector. Use `observationsPoolTargetTokens` for dropper active observation maintenance and `reflectAfterTokens` for reflector cadence.
 
@@ -154,7 +154,7 @@ This is not the active observation dropper target and not a scheduling threshold
 
 Default: half of `observationsPoolMaxTokens`.
 
-This controls the folded active observation target used by the dropper. If folded active observation tokens are at or below this target, the dropper has no maintenance work. If they are over target, the dropper can run only after the reflector records non-empty reflections in the same consolidation pass.
+This controls the reviewed active observation target used by the dropper. If the completed reflection snapshot is at or below this target, the dropper has no maintenance work. If it is over target, the dropper can run only after the reflector completes a review that adds non-empty reflections in the same consolidation pass.
 
 With the defaults, `observationsPoolMaxTokens` is `20000` and `observationsPoolTargetTokens` is `10000`. If the active observation pool reaches about `20000` tokens, the dropper computes a maximum count intended to move it back toward about `10000` tokens, but the model may drop fewer or none.
 
@@ -214,13 +214,13 @@ Default: `2`. Set `0` to disable.
 
 When the background observer is behind Pi's proposed cut, the hook used to either retain the unobserved tail or delegate the whole range to Pi's native summarizer. Both cost headroom: retaining keeps raw source in context, and a native summary is prose that Pi rewrites and grows on every compaction (12k tokens after a hundred rounds on a local model) and that can hit the model's output cap. Instead, when observation coverage exists, the hook now observes the gap synchronously, up to this many observer chunks, appending coverage for each recorded chunk, and then re-resolves the cut, usually landing on Pi's proposed boundary with a bounded summary.
 
-This runs inside `session_before_compact`, where Pi waits for the hook and no session request is in flight, so the memory model does not compete with the session even when both share one server. A chunk that records nothing, fails, or is aborted stops the catch-up; the remaining gap is retained or delegated as before, and nothing is appended for a failed chunk. Catch-up reads from the global observation frontier, not from the start of the retained range: a coverage marker claims every source entry before it, so unread source between the frontier and an earlier compaction boundary is included in the catch-up input rather than silently marked as observed. Catch-up is skipped while a background consolidation run is in flight and when the ledger has no observation coverage at all, so an empty memory still delegates to Pi's native summarizer without a model call.
+This runs inside `session_before_compact`, where Pi waits for the hook and no session request is in flight, so the memory model does not compete with the session even when both share one server. A completed chunk advances coverage, including an explicit completed-empty review. An incomplete or failed review keeps accepted records without advancing coverage and stops catch-up; an aborted review appends nothing. The remaining gap is retained or delegated as before. Catch-up reads from the global observation frontier, not from the start of the retained range: a coverage marker claims every source entry before it, so unread source between the frontier and an earlier compaction boundary is included in the catch-up input rather than silently marked as observed. Catch-up is skipped while a background consolidation run is in flight and when the ledger has no observation coverage at all, so an empty memory still delegates to Pi's native summarizer without a model call.
 
 ## `workerMemoryMaxTokens`
 
 Default: derived — `floor(contextWindow / 4)` of the resolved memory model, or `16000` when the context window is unknown.
 
-Each observer, reflector, and dropper request carries prior memory so the worker does not repeat itself and can relate new material to old. The ledger grows without limit on long sessions (107 reflections and 121 active observations, about 45k tokens, on one multi-day session), and sending all of it made every worker request exceed a 64k window, which in turn kept the dropper from ever shrinking the ledger. Worker prompts now carry a bounded slice: observations get at least half the budget and reflections the rest, newest first, each side reclaiming what the other leaves. The dropper receives the oldest observations that fit instead, since pruning old records is its job. With the observer chunk capped at a fifth of the window and `agentMaxTokens` as the output reservation, a worker request stays inside the window.
+Each observer, reflector, and dropper request carries prior memory so the worker does not repeat itself and can relate new material to old. The ledger grows without limit on long sessions (107 reflections and 121 active observations, about 45k tokens, on one multi-day session), and sending all of it made every worker request exceed a 64k window, which in turn kept the dropper from ever shrinking the ledger. Worker prompts now carry a bounded slice: observations get at least half the budget and reflections the rest, newest first, each side reclaiming what the other leaves. The dropper receives the oldest observations that fit instead, since pruning old records is its job. With the observer chunk capped at a fifth of the window and `agentMaxTokens` as the output reservation, the worker leaves room for source input and output. If the reflector's slice omits eligible observations, accepted reflections stay usable, but the review remains incomplete and does not unlock the dropper. Coverage can advance once all eligible observations fit; increase `workerMemoryMaxTokens` or use a larger-context memory model if this limit prevents progress.
 
 ## `consolidateWhenIdle`
 
@@ -231,7 +231,7 @@ By default the observer, reflector, and dropper launch from Pi's `agent_start` a
 With `consolidateWhenIdle: true`:
 
 - Workers launch only from `agent_settled`, after the agent has finished a run and Pi is idle, so their requests never overlap the session's.
-- When a new agent run starts while a worker is still running, the run is aborted. Coverage markers are appended only on success, so an aborted run leaves the ledger untouched and retries after the next settled event.
+- When a new agent run starts while a worker is still running, the run is aborted. That stage appends nothing; entries from stages that already finished remain in the ledger. Unfinished input stays eligible after the next settled event.
 - Proactive compaction is evaluated after the idle run finishes, so it is not starved by memory work sharing the same settled event.
 
 The trade-off is that during a long autonomous tool loop the observer does not advance; the compaction hook still protects unobserved context by retaining it or delegating to Pi's native summarizer (see [`compactionMaxRetainedTokens`](#compactionmaxretainedtokens)). Memory catches up while you type.
@@ -274,7 +274,7 @@ If the fallback advertises a smaller context window than the primary, the observ
 
 Default: `true`.
 
-When `false`, the extension hides routine observer, reflector, and dropper progress notifications (including deliberate-empty observer info messages). Model fallback/unavailability, worker failures (including observer stream errors), compaction notifications, and explicit `/om:*` command output remain visible.
+When `false`, the extension hides routine observer, reflector, and dropper progress notifications (including no-new observer completion messages). Model fallback/unavailability, worker failures (including observer stream errors), compaction notifications, and explicit `/om:*` command output remain visible.
 
 ## `passive`
 

@@ -2,6 +2,13 @@ import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } fr
 import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
+import {
+	completedWorkerOutcome,
+	failedWorkerOutcome,
+	incompleteWorkerOutcome,
+	WorkerCompletionTracker,
+	type WorkerOutcome,
+} from "../worker-completion.js";
 import { hashId } from "../../ids.js";
 import { logAgentStreamError } from "../stream-errors.js";
 import { resolveWorkerStreamSimple, type StreamableModelRegistry, type WorkerStreamSimple } from "../worker-stream.js";
@@ -39,30 +46,30 @@ const RelevanceSchema = Type.Union([
 
 export const OBSERVATION_TIMESTAMP_PATTERN = "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}$";
 
-const RecordObservationsSchema = Type.Object({
-	observations: Type.Array(
-		Type.Object({
-			timestamp: Type.String({
-				pattern: OBSERVATION_TIMESTAMP_PATTERN,
-				description: "Observation time in local 'YYYY-MM-DD HH:MM' format.",
-			}),
-			content: Type.String({
-				minLength: 1,
-				description: "Single-line plain prose. No markdown, no tags, no embedded timestamp.",
-			}),
-			relevance: RelevanceSchema,
-			sourceEntryIds: Type.Array(
-				Type.String({ minLength: 1 }),
-				{
-					minItems: 1,
-					description:
-						"Exact source entry ids from the chunk that directly support this observation. " +
-						"Use only ids shown in '[Source entry id: ...]' labels; never invent ids.",
-				},
-			),
-		}),
-		{ description: "Batch of new observations. May be empty only if the tool is not called at all." },
+const OBSERVATION_PROPOSAL_SCHEMA = Type.Object({
+	timestamp: Type.String({
+		pattern: OBSERVATION_TIMESTAMP_PATTERN,
+		description: "Observation time in local 'YYYY-MM-DD HH:MM' format.",
+	}),
+	content: Type.String({
+		minLength: 1,
+		description: "Single-line plain prose. No markdown, no tags, no embedded timestamp.",
+	}),
+	relevance: RelevanceSchema,
+	sourceEntryIds: Type.Array(
+		Type.String({ minLength: 1 }),
+		{
+			minItems: 1,
+			description:
+				"Exact source entry ids from the chunk that directly support this observation. " +
+				"Use only ids shown in '[Source entry id: ...]' labels; never invent ids.",
+		},
 	),
+});
+
+const RecordObservationsSchema = Type.Object({
+	observations: Type.Array(OBSERVATION_PROPOSAL_SCHEMA),
+	complete: Type.Boolean(),
 });
 
 type RecordObservationsArgs = Static<typeof RecordObservationsSchema>;
@@ -103,10 +110,13 @@ export function normalizeSourceEntryIds(
 	return Array.from(seen).sort((a, b) => (allowedOrder.get(a) ?? 0) - (allowedOrder.get(b) ?? 0));
 }
 
-export async function runObserver(args: RunObserverArgs): Promise<Observation[] | undefined> {
+/** Returns tool-certified completion or partial observations; throws stream failures before any record was accepted. */
+export async function runObserver(args: RunObserverArgs): Promise<WorkerOutcome<Observation>> {
 	const { model, apiKey, headers, env, priorReflections, priorObservations, chunk, allowedSourceEntryIds, signal } = args;
 	const conversation = chunk.trim();
-	if (!conversation) return undefined;
+	if (!conversation) {
+		return incompleteWorkerOutcome([]);
+	}
 
 	const accumulated = new Map<string, Observation>();
 
@@ -114,11 +124,18 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 		name: "record_observations",
 		label: "Record observations",
 		description:
-			"Record a batch of new observations distilled from the conversation chunk. " +
-			"Call this multiple times as you work through the chunk. Stop calling when coverage is complete, " +
-			"then emit a short plain-text confirmation to end the run.",
+			"Record observations distilled from the conversation chunk. " +
+			"Use an empty complete=true batch when the fully reviewed chunk has nothing new. " +
+			"Use complete=false for partial batches or corrections.",
 		parameters: RecordObservationsSchema,
 		execute: async (_id, params: RecordObservationsArgs) => {
+			if (!params.complete && params.observations.length === 0) {
+				return {
+					content: [{ type: "text", text: "Incomplete batches need at least one observation. Use complete=true for an intentional no-new verdict after reviewing the full chunk." }],
+					details: { added: 0, duplicates: 0, rejected: 1, total: accumulated.size },
+					terminate: false,
+				};
+			}
 			let added = 0;
 			let duplicates = 0;
 			let rejected = 0;
@@ -157,8 +174,12 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 				(duplicates > 0 ? `(${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped).` : ".") +
 				rejectedPart +
 				` Total so far this run: ${accumulated.size}. ` +
-				`Continue if the chunk still has uncovered content; otherwise stop calling the tool and emit a short plain-text confirmation.`;
-			return { content: [{ type: "text", text: ack }], details: { added, duplicates, rejected, total: accumulated.size } };
+				`Continue with complete=false while content remains or corrections are needed; use complete=true on the final valid batch.`;
+			return {
+				content: [{ type: "text", text: ack }],
+				details: { added, duplicates, rejected, total: accumulated.size },
+				terminate: params.complete && rejected === 0,
+			};
 		},
 	};
 
@@ -171,7 +192,7 @@ ${joinOrEmpty(priorReflections)}
 CURRENT OBSERVATIONS:
 ${joinOrEmpty(priorObservations)}
 
-Compress the following new conversation chunk into observations by calling record_observations one or more times. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
+Compress the following new conversation chunk into observations by calling record_observations one or more times. Use complete=false for partial batches or corrections. Use complete=true only on the final valid batch after the chunk is fully covered. If the fully reviewed chunk has nothing new, call record_observations with observations:[] and complete:true. Plain text without that explicit completion call leaves the chunk unfinished. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies.
 
 NEW CONVERSATION CHUNK:
 ${conversation}`;
@@ -221,22 +242,37 @@ ${conversation}`;
 		signal,
 		resolveWorkerStreamSimple(model, args.modelRegistry, args.streamSimple),
 	);
+	const completion = new WorkerCompletionTracker("record_observations");
 	let streamError: { stopReason: string; errorMessage?: string } | undefined;
-	for await (const event of stream) {
-		// Drain events; the tool's execute already collects records.
-		logAgentStreamError("observer", event);
-		// Watch for a terminal API/stream failure so it is not conflated with
-		// a deliberate empty result.
-		const message = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string } }).message;
-		if (message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")) {
-			streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+	try {
+		for await (const event of stream) {
+			completion.observe(event);
+			logAgentStreamError("observer", event);
+			if (event.type === "message_end" && event.message.role === "assistant") {
+				if (event.message.stopReason === "error" || event.message.stopReason === "aborted") {
+					streamError = { stopReason: event.message.stopReason, errorMessage: event.message.errorMessage };
+				}
+			}
 		}
+		await stream.result();
+	} catch (error) {
+		const failure = error instanceof Error ? error : new Error(`Observer worker stream failed: ${String(error)}`);
+		const failedOutcome = failedWorkerOutcome(Array.from(accumulated.values()), failure);
+		if (failedOutcome) {
+			return failedOutcome;
+		}
+		throw failure;
 	}
-	await stream.result();
 
-	if (accumulated.size === 0) {
-		if (streamError) throw new ObserverStreamError(streamError.stopReason, streamError.errorMessage);
-		return undefined;
+	if (streamError) {
+		const failure = new ObserverStreamError(streamError.stopReason, streamError.errorMessage);
+		const failedOutcome = failedWorkerOutcome(Array.from(accumulated.values()), failure);
+		if (failedOutcome) {
+			return failedOutcome;
+		}
+		throw failure;
 	}
-	return Array.from(accumulated.values());
+
+	const records = Array.from(accumulated.values());
+	return completion.isComplete() ? completedWorkerOutcome(records) : incompleteWorkerOutcome(records);
 }

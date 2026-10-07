@@ -4,6 +4,7 @@ import {
 	isObservationsDroppedEntry,
 	isObservationsRecordedEntry,
 	isReflectionsRecordedEntry,
+	recordedInputBoundaryId,
 	type Entry,
 	type MemoryDetails,
 	type Observation,
@@ -93,7 +94,10 @@ function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Proje
 	const droppedObservationIds = new Set<string>();
 
 	for (const entry of entries) {
-		if (isObservationsRecordedEntry(entry) && isCoveredAtOrBefore(entry, indexes, observationsBoundary)) {
+		if (
+			isObservationsRecordedEntry(entry) &&
+			isAtOrBefore(indexes.get(recordedInputBoundaryId(entry.data)) ?? -1, observationsBoundary)
+		) {
 			for (const observation of entry.data.observations) {
 				if (observationsById.has(observation.id)) continue;
 				observationsById.add(observation.id);
@@ -102,7 +106,10 @@ function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Proje
 			continue;
 		}
 
-		if (isReflectionsRecordedEntry(entry) && isCoveredAtOrBefore(entry, indexes, reflectionsBoundary)) {
+		if (
+			isReflectionsRecordedEntry(entry) &&
+			isAtOrBefore(indexes.get(recordedInputBoundaryId(entry.data)) ?? -1, reflectionsBoundary)
+		) {
 			for (const reflection of entry.data.reflections) {
 				if (reflectionsById.has(reflection.id)) continue;
 				reflectionsById.add(reflection.id);

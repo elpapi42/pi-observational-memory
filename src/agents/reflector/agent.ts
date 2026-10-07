@@ -2,6 +2,13 @@ import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } fr
 import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
+import {
+	completedWorkerOutcome,
+	failedWorkerOutcome,
+	incompleteWorkerOutcome,
+	WorkerCompletionTracker,
+	type WorkerOutcome,
+} from "../worker-completion.js";
 import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
 import { logAgentStreamError } from "../stream-errors.js";
@@ -45,14 +52,14 @@ interface RunReflectorArgs {
 	streamSimple?: WorkerStreamSimple;
 }
 
+const REFLECTION_PROPOSAL_SCHEMA = Type.Object({
+	content: Type.String({ minLength: 1 }),
+	supportingObservationIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+});
+
 const RecordReflectionsSchema = Type.Object({
-	reflections: Type.Array(
-		Type.Object({
-			content: Type.String({ minLength: 1 }),
-			supportingObservationIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-		}),
-		{ minItems: 1 },
-	),
+	reflections: Type.Array(REFLECTION_PROPOSAL_SCHEMA),
+	complete: Type.Boolean(),
 });
 
 type RecordReflectionsArgs = Static<typeof RecordReflectionsSchema>;
@@ -118,9 +125,12 @@ function normalizeReflectionContent(content: string): string | undefined {
 	return normalized;
 }
 
-export async function runReflector(args: RunReflectorArgs): Promise<Reflection[] | undefined> {
+/** Returns tool-certified completion or partial reflections; throws stream failures before any record was accepted. */
+export async function runReflector(args: RunReflectorArgs): Promise<WorkerOutcome<Reflection>> {
 	const { model, apiKey, headers, env, reflections, observations, signal } = args;
-	if (observations.length === 0) return undefined;
+	if (observations.length === 0) {
+		return incompleteWorkerOutcome([]);
+	}
 
 	const coverageById = reflectionCoverageMap(observations, reflections);
 	debugLog("reflector.agent_start", {
@@ -141,10 +151,21 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 	const recordReflections: AgentTool<typeof RecordReflectionsSchema> = {
 		name: "record_reflections",
 		label: "Record reflections",
-		description: "Record new durable reflections with supporting observation ids.",
+		description:
+			"Record new durable reflections with supporting observation ids. " +
+			"Use an empty complete=true batch when the fully reviewed set has nothing new. " +
+			"Use complete=false for partial batches or corrections.",
 		parameters: RecordReflectionsSchema,
 		execute: async (_id, params: RecordReflectionsArgs) => {
 			toolCallCount++;
+			if (!params.complete && params.reflections.length === 0) {
+				rejectedReflectionCount++;
+				return {
+					content: [{ type: "text", text: "Incomplete batches need at least one reflection. Use complete=true for an intentional no-new verdict after reviewing the full set." }],
+					details: { added: 0, duplicates: 0, rejected: 1, total: accumulated.size },
+					terminate: false,
+				};
+			}
 			rawProposedReflectionCount += params.reflections.length;
 			let added = 0;
 			let duplicates = 0;
@@ -175,11 +196,12 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 			return {
 				content: [{ type: "text", text: `Recorded ${added} reflection${added === 1 ? "" : "s"}; ${duplicates} duplicate${duplicates === 1 ? "" : "s"}; ${rejected} rejected. Total this run: ${accumulated.size}.` }],
 				details: { added, duplicates, rejected, total: accumulated.size },
+				terminate: params.complete && rejected === 0,
 			};
 		},
 	};
 
-	const userText = `CURRENT REFLECTIONS:\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\nCURRENT OBSERVATIONS:\n${joinOrEmpty(observations.map((observation) => observationToReflectorLine(observation, coverageTierForObservation(observation, coverageById))))}\n\nCrystallize any missing durable facts or patterns into new reflections. If nothing is stable enough, do not call the tool.`;
+	const userText = `CURRENT REFLECTIONS:\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\nCURRENT OBSERVATIONS:\n${joinOrEmpty(observations.map((observation) => observationToReflectorLine(observation, coverageTierForObservation(observation, coverageById))))}\n\nCrystallize any missing durable facts or patterns into new reflections. If the full set has nothing new, call record_reflections with reflections:[] and complete:true. Plain text without that explicit completion call leaves the review unfinished.`;
 	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
 	const context: AgentContext = {
 		messages: [{ role: "system", content: REFLECTOR_SYSTEM, timestamp: Date.now() }],
@@ -216,18 +238,37 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 		signal,
 		resolveWorkerStreamSimple(model, args.modelRegistry, args.streamSimple),
 	);
+	const completion = new WorkerCompletionTracker("record_reflections");
 	let streamError: { stopReason: string; errorMessage?: string } | undefined;
-	for await (const event of stream) {
-		// Tool execution collects records.
-		logAgentStreamError("reflector", event);
-		const message = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string } }).message;
-		if (message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")) {
-			streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+	try {
+		for await (const event of stream) {
+			completion.observe(event);
+			logAgentStreamError("reflector", event);
+			if (event.type === "message_end" && event.message.role === "assistant") {
+				if (event.message.stopReason === "error" || event.message.stopReason === "aborted") {
+					streamError = { stopReason: event.message.stopReason, errorMessage: event.message.errorMessage };
+				}
+			}
 		}
+		await stream.result();
+	} catch (error) {
+		const failure = error instanceof Error ? error : new Error(`Reflector worker stream failed: ${String(error)}`);
+		const failedOutcome = failedWorkerOutcome(Array.from(accumulated.values()), failure);
+		if (failedOutcome) {
+			return failedOutcome;
+		}
+		throw failure;
 	}
-	await stream.result();
+
 	const acceptedReflections = Array.from(accumulated.values());
-	if (acceptedReflections.length === 0 && streamError) throw new ReflectorStreamError(streamError.stopReason, streamError.errorMessage);
+	if (streamError) {
+		const failure = new ReflectorStreamError(streamError.stopReason, streamError.errorMessage);
+		const failedOutcome = failedWorkerOutcome(acceptedReflections, failure);
+		if (failedOutcome) {
+			return failedOutcome;
+		}
+		throw failure;
+	}
 	const afterCoverageById = reflectionCoverageMap(observations, [...reflections, ...acceptedReflections]);
 	debugLog("reflector.result", {
 		reason: acceptedReflections.length > 0 ? "accepted_nonempty" : toolCallCount === 0 ? "no_tool_call" : "all_filtered",
@@ -239,5 +280,7 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 		acceptedSupportIdCounts: summarizeSupportIdCounts(acceptedReflections),
 		coverageTransitionsByRelevance: summarizeCoverageTransitionsByRelevance(observations, coverageById, afterCoverageById),
 	});
-	return acceptedReflections.length > 0 ? acceptedReflections : undefined;
+	return completion.isComplete()
+		? completedWorkerOutcome(acceptedReflections)
+		: incompleteWorkerOutcome(acceptedReflections);
 }

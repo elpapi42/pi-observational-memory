@@ -117,7 +117,7 @@ beforeEach(() => {
 describe("compaction hook synchronous catch-up", () => {
 	it("observes the unobserved gap and then cuts at Pi's proposed boundary", async () => {
 		const gapObs = observation("cccccccccccc", { sourceEntryIds: ["t1", "a2"], tokenCount: 12 });
-		mockAgents.runObserver.mockResolvedValueOnce([gapObs]);
+		mockAgents.runObserver.mockResolvedValueOnce({ kind: "completed", records: [gapObs] });
 		const { run, pi, runtime, ctx } = setup({ entries: laggingBranch() });
 
 		const result = await run("u2") as any;
@@ -129,7 +129,7 @@ describe("compaction hook synchronous catch-up", () => {
 			maxOutputTokens: 8192,
 			thinkingLevel: "off",
 		}));
-		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [gapObs], coversUpToId: "a2" });
+		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { completion: "completed", observations: [gapObs], coversUpToId: "a2" });
 		expect(result.compaction.firstKeptEntryId).toBe("u2");
 		expect(result.compaction.details.observations.map((obs: any) => obs.id)).toEqual([
 			"aaaaaaaaaaaa",
@@ -143,8 +143,8 @@ describe("compaction hook synchronous catch-up", () => {
 		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("keeping them in context"), "info");
 	});
 
-	it("falls back to retaining the tail when the observer records nothing", async () => {
-		mockAgents.runObserver.mockResolvedValueOnce([]);
+	it("falls back to retaining the tail when the observer does not complete its review", async () => {
+		mockAgents.runObserver.mockResolvedValueOnce({ kind: "incomplete", records: [] });
 		const { run, pi } = setup({ entries: laggingBranch() });
 
 		const result = await run("u2") as any;
@@ -166,7 +166,7 @@ describe("compaction hook synchronous catch-up", () => {
 
 	it("covers one chunk when the chunk cap stops it, then retains the rest", async () => {
 		const gapObs = observation("cccccccccccc", { sourceEntryIds: ["t1"], tokenCount: 12 });
-		mockAgents.runObserver.mockResolvedValueOnce([gapObs]);
+		mockAgents.runObserver.mockResolvedValueOnce({ kind: "completed", records: [gapObs] });
 		// t1 alone exceeds the minimum chunk budget, so each chunk carries one entry.
 		const { run, pi } = setup({ entries: laggingBranch("x".repeat(4000)), maxChunks: 1, observerChunkMaxTokens: 256 });
 
@@ -180,7 +180,7 @@ describe("compaction hook synchronous catch-up", () => {
 
 	it("treats entries the serializer skips as covered once the marker passes them", async () => {
 		const gapObs = observation("cccccccccccc", { sourceEntryIds: ["a2"], tokenCount: 12 });
-		mockAgents.runObserver.mockResolvedValueOnce([gapObs]);
+		mockAgents.runObserver.mockResolvedValueOnce({ kind: "completed", records: [gapObs] });
 		// An assistant message with no content renders nothing and is never part
 		// of a chunk; it must not count as a leftover after coverage passes it.
 		const entries = laggingBranch();
@@ -250,7 +250,7 @@ describe("catch-up coverage truthfulness (PR #81 review, issue 2)", () => {
 			assistantMessage("a3"),
 			userMessage("u4"),
 		];
-		mockAgents.runObserver.mockResolvedValueOnce([observation("cccccccccccc", { sourceEntryIds: ["u1", "a3"] })]);
+		mockAgents.runObserver.mockResolvedValueOnce({ kind: "completed", records: [observation("cccccccccccc", { sourceEntryIds: ["u1", "a3"] })] });
 		const { run } = setup({ entries });
 
 		await run("u4");

@@ -37,6 +37,46 @@ describe("session-ledger V3 projections", () => {
 		expect(projection.reflections.map((ref) => ref.id)).toEqual(["eeeeeeeeeeee"]);
 	});
 
+	it("bounds incomplete observation and reflection records by their input boundary", () => {
+		const observationAtFirstBoundary = observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-1"] });
+		const observationAtSecondBoundary = observation("bbbbbbbbbbbb", { sourceEntryIds: ["raw-2"] });
+		const reflectionAtFirstBoundary = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const reflectionAtSecondBoundary = reflection("ffffffffffff", ["bbbbbbbbbbbb"]);
+		const entries = [
+			textCustomMessage("raw-1", "first source"),
+			{
+				type: "custom",
+				id: "observer-complete",
+				customType: "om.observations.recorded",
+				data: { completion: "completed", observations: [observationAtFirstBoundary], coversUpToId: "raw-1" },
+			},
+			{
+				type: "custom",
+				id: "reflector-incomplete-first",
+				customType: "om.reflections.recorded",
+				data: { completion: "incomplete", reflections: [reflectionAtFirstBoundary], inputUpToId: "raw-1" },
+			},
+			textCustomMessage("raw-2", "second source"),
+			{
+				type: "custom",
+				id: "observer-incomplete-second",
+				customType: "om.observations.recorded",
+				data: { completion: "incomplete", observations: [observationAtSecondBoundary], inputUpToId: "raw-2" },
+			},
+			{
+				type: "custom",
+				id: "reflector-incomplete-second",
+				customType: "om.reflections.recorded",
+				data: { completion: "incomplete", reflections: [reflectionAtSecondBoundary], inputUpToId: "raw-2" },
+			},
+		];
+
+		expect(fullProjection(entries, "raw-1").observations.map((item) => item.id)).toEqual(["aaaaaaaaaaaa"]);
+		expect(fullProjection(entries, "raw-1").reflections.map((item) => item.id)).toEqual(["eeeeeeeeeeee"]);
+		expect(fullProjection(entries, "raw-2").observations.map((item) => item.id)).toEqual(["aaaaaaaaaaaa", "bbbbbbbbbbbb"]);
+		expect(fullProjection(entries, "raw-2").reflections.map((item) => item.id)).toEqual(["eeeeeeeeeeee", "ffffffffffff"]);
+	});
+
 	it("visible projection is empty when there is no V3 compaction", () => {
 		const entries = [
 			textCustomMessage("raw-1", "aaaa"),

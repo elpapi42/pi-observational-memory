@@ -5,10 +5,12 @@ import {
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
 	OM_REFLECTIONS_RECORDED,
+	recordedInputBoundaryId,
 	type Entry,
 	type Observation,
 	type Reflection,
 } from "./types.js";
+import { entryIndexById } from "./progress.js";
 
 export type FoldLedgerOptions = {
 	/** Fold entries from branch root through this entry id, inclusive. Omit to fold through branch tip. */
@@ -26,6 +28,8 @@ export type FoldedLedger = {
 	reflections: Reflection[];
 	/** All first-valid observation records by id, including dropped observations. */
 	observationsById: Map<string, Observation>;
+	/** Input boundary stored with each first-valid observation record. */
+	observationInputBoundariesById: Map<string, string>;
 	/** All first-valid reflection records by id. */
 	reflectionsById: Map<string, Reflection>;
 };
@@ -49,6 +53,7 @@ function isCustomEntry(entry: Entry, customType: string): boolean {
  */
 export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): FoldedLedger {
 	const observationsById = new Map<string, Observation>();
+	const observationInputBoundariesById = new Map<string, string>();
 	const reflectionsById = new Map<string, Reflection>();
 	const droppedObservationIds = new Set<string>();
 	const endIdx = foldEndIndex(entries, options.upToEntryId);
@@ -60,9 +65,11 @@ export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): F
 		if (isCustomEntry(entry, OM_OBSERVATIONS_RECORDED)) {
 			if (!isObservationsRecordedData(entry.data)) continue;
 			for (const observation of entry.data.observations) {
-				if (!observationsById.has(observation.id)) {
-					observationsById.set(observation.id, observation);
+				if (observationsById.has(observation.id)) {
+					continue;
 				}
+				observationsById.set(observation.id, observation);
+				observationInputBoundariesById.set(observation.id, recordedInputBoundaryId(entry.data));
 			}
 			continue;
 		}
@@ -94,7 +101,30 @@ export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): F
 		activeObservations,
 		droppedObservationIds,
 		reflections,
+		observationInputBoundariesById,
 		observationsById,
 		reflectionsById,
 	};
+}
+
+/** Keeps active observations whose stored input boundary falls within completed observer coverage. */
+export function observationsAtOrBeforeCoverage(
+	entries: Entry[],
+	folded: FoldedLedger,
+	coverageId: string,
+): Observation[] {
+	const indexes = entryIndexById(entries);
+	const coverageIndex = indexes.get(coverageId);
+	if (coverageIndex === undefined) {
+		return [];
+	}
+
+	return folded.activeObservations.filter((observation) => {
+		const inputBoundaryId = folded.observationInputBoundariesById.get(observation.id);
+		if (inputBoundaryId === undefined) {
+			return false;
+		}
+		const inputBoundaryIndex = indexes.get(inputBoundaryId);
+		return inputBoundaryIndex !== undefined && inputBoundaryIndex <= coverageIndex;
+	});
 }

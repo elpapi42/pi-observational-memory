@@ -123,13 +123,6 @@ export class Runtime {
 	lastDropperError: string | undefined;
 	/** provider -> epoch ms of the last availability re-check (see `recheckProviderCredential`). */
 	availabilityRecheckedAt = new Map<string, number>();
-	/** Deliberate-empty backoff (#23): skip observer re-fires over the same span until enough new tokens arrive. */
-	observerEmptyBackoff: {
-		sessionIdentity: string | undefined;
-		coverageId: string | undefined;
-		tokensAtEmpty: number;
-	} | undefined;
-
 	ensureConfig(cwd: string): void {
 		if (this.configLoaded) return;
 		this.config = loadConfig(cwd);

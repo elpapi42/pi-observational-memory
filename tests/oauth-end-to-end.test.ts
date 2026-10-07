@@ -78,6 +78,7 @@ async function startMockAnthropic(requests: RecordedRequest[]): Promise<{ server
 					relevance: "high",
 					sourceEntryIds: ["raw-1"],
 				}],
+				complete: true,
 			}));
 		});
 	});
@@ -151,7 +152,7 @@ describe("OAuth provider end-to-end consolidation", () => {
 
 		const runtime = new Runtime();
 		runtime.configLoaded = true;
-		runtime.config = { ...DEFAULTS, observeAfterTokens: 1, reflectAfterTokens: 1_000_000, agentMaxTurns: 1 };
+		runtime.config = { ...DEFAULTS, observeAfterTokens: 1, reflectAfterTokens: 1_000_000, agentMaxTurns: 3 };
 
 		registerConsolidationTrigger(pi as any, runtime);
 

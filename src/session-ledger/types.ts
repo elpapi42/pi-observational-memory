@@ -1,3 +1,6 @@
+import { Type, type Static } from "typebox";
+import { Value } from "typebox/value";
+
 export const OM_OBSERVATIONS_RECORDED = "om.observations.recorded";
 export const OM_REFLECTIONS_RECORDED = "om.reflections.recorded";
 export const OM_OBSERVATIONS_DROPPED = "om.observations.dropped";
@@ -22,31 +25,99 @@ export type Entry = {
 	firstKeptEntryId?: string;
 };
 
-export type Observation = {
-	id: string;
-	content: string;
-	timestamp: string;
-	relevance: Relevance;
-	sourceEntryIds: string[];
-	tokenCount: number;
-};
+const RELEVANCE_SCHEMA = Type.Union([
+	Type.Literal("low"),
+	Type.Literal("medium"),
+	Type.Literal("high"),
+	Type.Literal("critical"),
+]);
+const MEMORY_ID_SCHEMA = Type.String({ pattern: MEMORY_ID_PATTERN.source });
+const NONEMPTY_STRING_SCHEMA = Type.String({ minLength: 1 });
+const NONEMPTY_STRING_ARRAY_SCHEMA = Type.Array(NONEMPTY_STRING_SCHEMA, { minItems: 1 });
+const TOKEN_COUNT_SCHEMA = Type.Number({ minimum: 0 });
 
-export type Reflection = {
-	id: string;
-	content: string;
-	supportingObservationIds: string[];
-	tokenCount: number;
-};
+const OBSERVATION_SCHEMA = Type.Object({
+	id: MEMORY_ID_SCHEMA,
+	content: NONEMPTY_STRING_SCHEMA,
+	timestamp: NONEMPTY_STRING_SCHEMA,
+	relevance: RELEVANCE_SCHEMA,
+	sourceEntryIds: NONEMPTY_STRING_ARRAY_SCHEMA,
+	tokenCount: TOKEN_COUNT_SCHEMA,
+});
 
-export type ObservationsRecordedEntryData = {
-	observations: Observation[];
-	coversUpToId: string;
-};
+const REFLECTION_SCHEMA = Type.Object({
+	id: MEMORY_ID_SCHEMA,
+	content: Type.String({ minLength: 1, pattern: "^[^\\r\\n]+$" }),
+	supportingObservationIds: NONEMPTY_STRING_ARRAY_SCHEMA,
+	tokenCount: TOKEN_COUNT_SCHEMA,
+});
 
-export type ReflectionsRecordedEntryData = {
-	reflections: Reflection[];
-	coversUpToId: string;
-};
+/** Source-backed observation retained independently of its worker's completion status. */
+export type Observation = Static<typeof OBSERVATION_SCHEMA>;
+/** Durable memory whose support ids preserve links to the original observations. */
+export type Reflection = Static<typeof REFLECTION_SCHEMA>;
+
+const OBSERVATION_LIST_SCHEMA = Type.Array(OBSERVATION_SCHEMA);
+const NONEMPTY_OBSERVATION_LIST_SCHEMA = Type.Array(OBSERVATION_SCHEMA, { minItems: 1 });
+const REFLECTION_LIST_SCHEMA = Type.Array(REFLECTION_SCHEMA);
+const NONEMPTY_REFLECTION_LIST_SCHEMA = Type.Array(REFLECTION_SCHEMA, { minItems: 1 });
+
+const LEGACY_OBSERVATIONS_RECORDED_DATA_SCHEMA = Type.Object({
+	observations: NONEMPTY_OBSERVATION_LIST_SCHEMA,
+	coversUpToId: NONEMPTY_STRING_SCHEMA,
+});
+const COMPLETED_OBSERVATIONS_RECORDED_DATA_SCHEMA = Type.Object({
+	completion: Type.Literal("completed"),
+	observations: OBSERVATION_LIST_SCHEMA,
+	coversUpToId: NONEMPTY_STRING_SCHEMA,
+	inputUpToId: Type.Optional(Type.Never()),
+});
+const INCOMPLETE_OBSERVATIONS_RECORDED_DATA_SCHEMA = Type.Object({
+	completion: Type.Literal("incomplete"),
+	observations: NONEMPTY_OBSERVATION_LIST_SCHEMA,
+	inputUpToId: NONEMPTY_STRING_SCHEMA,
+	coversUpToId: Type.Optional(Type.Never()),
+});
+const NEW_OBSERVATIONS_RECORDED_DATA_SCHEMA = Type.Union([
+	COMPLETED_OBSERVATIONS_RECORDED_DATA_SCHEMA,
+	INCOMPLETE_OBSERVATIONS_RECORDED_DATA_SCHEMA,
+]);
+const OBSERVATIONS_RECORDED_DATA_SCHEMA = Type.Union([
+	LEGACY_OBSERVATIONS_RECORDED_DATA_SCHEMA,
+	COMPLETED_OBSERVATIONS_RECORDED_DATA_SCHEMA,
+	INCOMPLETE_OBSERVATIONS_RECORDED_DATA_SCHEMA,
+]);
+
+const LEGACY_REFLECTIONS_RECORDED_DATA_SCHEMA = Type.Object({
+	reflections: NONEMPTY_REFLECTION_LIST_SCHEMA,
+	coversUpToId: NONEMPTY_STRING_SCHEMA,
+});
+const COMPLETED_REFLECTIONS_RECORDED_DATA_SCHEMA = Type.Object({
+	completion: Type.Literal("completed"),
+	reflections: REFLECTION_LIST_SCHEMA,
+	coversUpToId: NONEMPTY_STRING_SCHEMA,
+	inputUpToId: Type.Optional(Type.Never()),
+});
+const INCOMPLETE_REFLECTIONS_RECORDED_DATA_SCHEMA = Type.Object({
+	completion: Type.Literal("incomplete"),
+	reflections: NONEMPTY_REFLECTION_LIST_SCHEMA,
+	inputUpToId: NONEMPTY_STRING_SCHEMA,
+	coversUpToId: Type.Optional(Type.Never()),
+});
+const NEW_REFLECTIONS_RECORDED_DATA_SCHEMA = Type.Union([
+	COMPLETED_REFLECTIONS_RECORDED_DATA_SCHEMA,
+	INCOMPLETE_REFLECTIONS_RECORDED_DATA_SCHEMA,
+]);
+const REFLECTIONS_RECORDED_DATA_SCHEMA = Type.Union([
+	LEGACY_REFLECTIONS_RECORDED_DATA_SCHEMA,
+	COMPLETED_REFLECTIONS_RECORDED_DATA_SCHEMA,
+	INCOMPLETE_REFLECTIONS_RECORDED_DATA_SCHEMA,
+]);
+
+/** Accepts legacy coverage and completion-aware observation entries at the ledger boundary. */
+export type ObservationsRecordedEntryData = Static<typeof OBSERVATIONS_RECORDED_DATA_SCHEMA>;
+/** Accepts legacy coverage and completion-aware reflection entries at the ledger boundary. */
+export type ReflectionsRecordedEntryData = Static<typeof REFLECTIONS_RECORDED_DATA_SCHEMA>;
 
 export type ObservationsDroppedEntryData = {
 	observationIds: string[];
@@ -73,78 +144,97 @@ export type V3MemoryCustomType =
 	| typeof OM_REFLECTIONS_RECORDED
 	| typeof OM_OBSERVATIONS_DROPPED;
 
+/** Stores the submitted input boundary only after the worker certifies the whole review. */
+export interface CompletedRecordBoundary {
+	kind: "completed";
+	coversUpToId: string;
+}
+
+/** Bounds partial records for projection without certifying input coverage. */
+export interface IncompleteRecordBoundary {
+	kind: "incomplete";
+	inputUpToId: string;
+}
+
+/** Couples each new ledger append to exactly one completed or unfinished input boundary. */
+export type RecordBoundary = CompletedRecordBoundary | IncompleteRecordBoundary;
+
+const NEW_RECORD_BOUNDARY_MARKER_SCHEMA = Type.Object({
+	completion: Type.Optional(Type.Unknown()),
+	inputUpToId: Type.Optional(Type.Unknown()),
+});
+
+/** Checks whether raw ledger data uses the new completion or input-boundary fields. */
+export function hasNewRecordBoundary(value: unknown): boolean {
+	if (!Value.Check(NEW_RECORD_BOUNDARY_MARKER_SCHEMA, value)) {
+		return false;
+	}
+	return Object.hasOwn(value, "completion") || Object.hasOwn(value, "inputUpToId");
+}
+
+/** Returns the input boundary for completed, incomplete, and legacy record envelopes. */
+export function recordedInputBoundaryId(
+	data: ObservationsRecordedEntryData | ReflectionsRecordedEntryData,
+): string {
+	if ("completion" in data && data.completion === "incomplete") {
+		return data.inputUpToId;
+	}
+	return data.coversUpToId;
+}
+
+/** Checks whether a value is one of the supported observation relevance values. */
 export function isRelevance(value: unknown): value is Relevance {
-	return typeof value === "string" && (RELEVANCE_VALUES as readonly string[]).includes(value);
+	return Value.Check(RELEVANCE_SCHEMA, value);
 }
 
+/** Checks whether a value is a nonempty string. */
 export function isNonEmptyString(value: unknown): value is string {
-	return typeof value === "string" && value.length > 0;
+	return Value.Check(NONEMPTY_STRING_SCHEMA, value);
 }
 
+/** Checks whether a value is a nonempty string list. */
 export function isNonEmptyStringArray(value: unknown): value is string[] {
-	return Array.isArray(value) && value.length > 0 && value.every(isNonEmptyString);
+	return Value.Check(NONEMPTY_STRING_ARRAY_SCHEMA, value);
 }
 
+/** Checks whether a value is a memory record id. */
 export function isMemoryId(value: unknown): value is string {
-	return typeof value === "string" && MEMORY_ID_PATTERN.test(value);
+	return Value.Check(MEMORY_ID_SCHEMA, value);
 }
 
-function isTokenCount(value: unknown): value is number {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object";
-}
-
+/** Checks whether a value is a valid stored observation. */
 export function isObservation(value: unknown): value is Observation {
-	if (!isPlainRecord(value)) return false;
-	return (
-		isMemoryId(value.id) &&
-		isNonEmptyString(value.content) &&
-		isNonEmptyString(value.timestamp) &&
-		isRelevance(value.relevance) &&
-		isNonEmptyStringArray(value.sourceEntryIds) &&
-		isTokenCount(value.tokenCount)
-	);
+	return Value.Check(OBSERVATION_SCHEMA, value);
 }
 
+/** Checks whether a value is a valid stored reflection. */
 export function isReflection(value: unknown): value is Reflection {
-	if (!isPlainRecord(value)) return false;
-	return (
-		isMemoryId(value.id) &&
-		isNonEmptyString(value.content) &&
-		!/\r|\n/.test(value.content) &&
-		isNonEmptyStringArray(value.supportingObservationIds) &&
-		isTokenCount(value.tokenCount)
-	);
+	return Value.Check(REFLECTION_SCHEMA, value);
 }
 
+/** Checks whether raw ledger data is a valid legacy or completion-aware observation envelope. */
 export function isObservationsRecordedData(value: unknown): value is ObservationsRecordedEntryData {
-	if (!isPlainRecord(value)) return false;
-	return (
-		Array.isArray(value.observations) &&
-		value.observations.length > 0 &&
-		value.observations.every(isObservation) &&
-		isNonEmptyString(value.coversUpToId)
-	);
+	if (hasNewRecordBoundary(value)) {
+		return Value.Check(NEW_OBSERVATIONS_RECORDED_DATA_SCHEMA, value);
+	}
+	return Value.Check(LEGACY_OBSERVATIONS_RECORDED_DATA_SCHEMA, value);
 }
 
+/** Checks whether raw ledger data is a valid legacy or completion-aware reflection envelope. */
 export function isReflectionsRecordedData(value: unknown): value is ReflectionsRecordedEntryData {
-	if (!isPlainRecord(value)) return false;
-	return (
-		Array.isArray(value.reflections) &&
-		value.reflections.length > 0 &&
-		value.reflections.every(isReflection) &&
-		isNonEmptyString(value.coversUpToId)
-	);
+	if (hasNewRecordBoundary(value)) {
+		return Value.Check(NEW_REFLECTIONS_RECORDED_DATA_SCHEMA, value);
+	}
+	return Value.Check(LEGACY_REFLECTIONS_RECORDED_DATA_SCHEMA, value);
 }
 
+/** Checks whether raw ledger data is a valid observation drop envelope. */
 export function isObservationsDroppedData(value: unknown): value is ObservationsDroppedEntryData {
 	if (!isPlainRecord(value)) return false;
 	return isNonEmptyStringArray(value.observationIds) && isNonEmptyString(value.coversUpToId);
 }
 
+/** Checks whether raw compaction details contain a supported folded-memory snapshot. */
 export function isMemoryDetails(value: unknown): value is MemoryDetails {
 	if (!isPlainRecord(value)) return false;
 	return (
@@ -159,6 +249,11 @@ export function isMemoryDetails(value: unknown): value is MemoryDetails {
 	);
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object";
+}
+
+/** Checks whether an entry stores valid observation records. */
 export function isObservationsRecordedEntry(entry: Entry): entry is Entry & {
 	type: "custom";
 	customType: typeof OM_OBSERVATIONS_RECORDED;
@@ -167,6 +262,7 @@ export function isObservationsRecordedEntry(entry: Entry): entry is Entry & {
 	return entry.type === "custom" && entry.customType === OM_OBSERVATIONS_RECORDED && isObservationsRecordedData(entry.data);
 }
 
+/** Checks whether an entry stores valid reflection records. */
 export function isReflectionsRecordedEntry(entry: Entry): entry is Entry & {
 	type: "custom";
 	customType: typeof OM_REFLECTIONS_RECORDED;
@@ -175,6 +271,7 @@ export function isReflectionsRecordedEntry(entry: Entry): entry is Entry & {
 	return entry.type === "custom" && entry.customType === OM_REFLECTIONS_RECORDED && isReflectionsRecordedData(entry.data);
 }
 
+/** Checks whether an entry stores valid observation tombstones. */
 export function isObservationsDroppedEntry(entry: Entry): entry is Entry & {
 	type: "custom";
 	customType: typeof OM_OBSERVATIONS_DROPPED;
@@ -183,22 +280,57 @@ export function isObservationsDroppedEntry(entry: Entry): entry is Entry & {
 	return entry.type === "custom" && entry.customType === OM_OBSERVATIONS_DROPPED && isObservationsDroppedData(entry.data);
 }
 
+/** Builds a completion-aware observation envelope; empty records are allowed only for completed reviews. */
 export function buildObservationsRecordedData(
 	observations: Observation[],
-	coversUpToId: string,
+	boundary: RecordBoundary,
 ): ObservationsRecordedEntryData | undefined {
-	if (observations.length === 0 || !isNonEmptyString(coversUpToId)) return undefined;
-	return { observations, coversUpToId };
+	switch (boundary.kind) {
+		case "completed": {
+			if (!isNonEmptyString(boundary.coversUpToId)) {
+				return undefined;
+			}
+			return { completion: "completed", observations, coversUpToId: boundary.coversUpToId };
+		}
+		case "incomplete": {
+			if (observations.length === 0 || !isNonEmptyString(boundary.inputUpToId)) {
+				return undefined;
+			}
+			return { completion: "incomplete", observations, inputUpToId: boundary.inputUpToId };
+		}
+		default: {
+			const exhaustive: never = boundary;
+			return exhaustive;
+		}
+	}
 }
 
+/** Builds a completion-aware reflection envelope; empty records are allowed only for completed reviews. */
 export function buildReflectionsRecordedData(
 	reflections: Reflection[],
-	coversUpToId: string,
+	boundary: RecordBoundary,
 ): ReflectionsRecordedEntryData | undefined {
-	if (reflections.length === 0 || !isNonEmptyString(coversUpToId)) return undefined;
-	return { reflections, coversUpToId };
+	switch (boundary.kind) {
+		case "completed": {
+			if (!isNonEmptyString(boundary.coversUpToId)) {
+				return undefined;
+			}
+			return { completion: "completed", reflections, coversUpToId: boundary.coversUpToId };
+		}
+		case "incomplete": {
+			if (reflections.length === 0 || !isNonEmptyString(boundary.inputUpToId)) {
+				return undefined;
+			}
+			return { completion: "incomplete", reflections, inputUpToId: boundary.inputUpToId };
+		}
+		default: {
+			const exhaustive: never = boundary;
+			return exhaustive;
+		}
+	}
 }
 
+/** Builds a valid observation tombstone envelope. */
 export function buildObservationsDroppedData(
 	observationIds: string[],
 	coversUpToId: string,

@@ -7,6 +7,7 @@ import { debugLog, withDebugLogContext } from "../debug-log.js";
 import { resolveObserverChunkMaxTokens, resolveWorkerMemoryMaxTokens } from "../config.js";
 import type { ConsolidationPhase, ResolveCtx, ResolveResult, Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
+import { uniqueNewRecords } from "../session-ledger/unique-new-records.js";
 import {
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
@@ -21,6 +22,7 @@ import {
 	isSourceEntry,
 	latestCoverageIndex,
 	latestCoverageMarkerId,
+	observationsAtOrBeforeCoverage,
 	observationToSummaryLine,
 	realTokensSinceAnchor,
 	rawTokensSinceObservationCoverage,
@@ -49,10 +51,18 @@ type ConsolidationCtx = {
 };
 
 type StageOutcome = "continue" | "abort";
+type ConsolidationEntryWriter = Pick<ExtensionAPI, "appendEntry">;
+
+interface ConsolidationTriggerAPI extends ConsolidationEntryWriter {
+	on(event: "agent_start", handler: (event: unknown, ctx: ConsolidationCtx) => void): () => void;
+	on(event: "turn_end", handler: (event: unknown, ctx: ConsolidationCtx) => void): () => void;
+	on(event: "agent_settled", handler: (event: unknown, ctx: ConsolidationCtx) => void): () => void;
+}
 
 type ReflectorStageResult = {
 	outcome: StageOutcome;
 	sameRunReflections: Reflection[];
+	reviewedObservations: Observation[];
 	effectiveReflectionCoverageId?: string;
 };
 
@@ -60,7 +70,7 @@ function sourceEntriesAfter(entries: Entry[], index: number): Entry[] {
 	return entries.slice(index + 1).filter(isSourceEntry);
 }
 
-function appendEntry(pi: ExtensionAPI, customType: string, data: unknown): void {
+function appendEntry(pi: ConsolidationEntryWriter, customType: string, data: unknown): void {
 	pi.appendEntry(customType, data);
 }
 
@@ -73,6 +83,10 @@ function mergeReflections(existing: Reflection[], additional: Reflection[]): Ref
 		merged.push(reflection);
 	}
 	return merged;
+}
+
+function emptyReflectorStageResult(outcome: StageOutcome): ReflectorStageResult {
+	return { outcome, sameRunReflections: [], reviewedObservations: [] };
 }
 
 /**
@@ -294,7 +308,8 @@ export type ConsolidationTriggerHooks = {
 	afterIdleConsolidation?: (ctx: unknown) => void;
 };
 
-export function registerConsolidationTrigger(pi: ExtensionAPI, runtime: Runtime, hooks: ConsolidationTriggerHooks = {}): void {
+/** Register worker launches and cancellation on the three Pi lifecycle hooks used by consolidation. */
+export function registerConsolidationTrigger(pi: ConsolidationTriggerAPI, runtime: Runtime, hooks: ConsolidationTriggerHooks = {}): void {
 	const idleMode = (ctx: ConsolidationCtx): boolean => {
 		runtime.ensureConfig(ctx.cwd);
 		return runtime.config.consolidateWhenIdle === true;
@@ -302,7 +317,7 @@ export function registerConsolidationTrigger(pi: ExtensionAPI, runtime: Runtime,
 
 	pi.on("agent_start", (_event: unknown, ctx: ConsolidationCtx) => {
 		if (!idleMode(ctx)) {
-			maybeLaunchConsolidation(pi, runtime, ctx);
+			void maybeLaunchConsolidation(pi, runtime, ctx);
 			return;
 		}
 		// The session model is about to be called: get memory workers off the
@@ -318,7 +333,7 @@ export function registerConsolidationTrigger(pi: ExtensionAPI, runtime: Runtime,
 	});
 	pi.on("turn_end", (_event: unknown, ctx: ConsolidationCtx) => {
 		if (idleMode(ctx)) return;
-		maybeLaunchConsolidation(pi, runtime, ctx);
+		void maybeLaunchConsolidation(pi, runtime, ctx);
 	});
 	pi.on("agent_settled", (_event: unknown, ctx: ConsolidationCtx) => {
 		if (!idleMode(ctx)) return;
@@ -344,7 +359,7 @@ function debugSessionMetadata(ctx: ConsolidationCtx): { sessionId?: string; sess
 }
 
 /** Launch a consolidation run when any stage is due. Returns its promise, or undefined when nothing launched. */
-function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): Promise<void> | undefined {
+function maybeLaunchConsolidation(pi: ConsolidationEntryWriter, runtime: Runtime, ctx: ConsolidationCtx): Promise<void> | undefined {
 	runtime.ensureConfig(ctx.cwd);
 	if (runtime.config.passive === true) return undefined;
 	if (runtime.consolidationInFlight) return undefined;
@@ -382,8 +397,9 @@ function wasAborted(runtime: Runtime): boolean {
 	return consolidationSignal(runtime)?.aborted === true;
 }
 
+/** Persists partial worker records without certifying coverage or running dependent stages after failure. */
 export async function runConsolidationPipeline(
-	pi: ExtensionAPI,
+	pi: ConsolidationEntryWriter,
 	runtime: Runtime,
 	ctx: ConsolidationCtx,
 ): Promise<void> {
@@ -414,7 +430,15 @@ export async function runConsolidationPipeline(
 
 	runtime.consolidationPhase = "dropper";
 	try {
-		await runDropperStage(pi, runtime, ctx, resolver, reflectorResult.sameRunReflections, reflectorResult.effectiveReflectionCoverageId);
+		await runDropperStage(
+			pi,
+			runtime,
+			ctx,
+			resolver,
+			reflectorResult.sameRunReflections,
+			reflectorResult.effectiveReflectionCoverageId,
+			reflectorResult.reviewedObservations,
+		);
 	} catch (error) {
 		if (wasAborted(runtime)) return;
 		debugLog("dropper.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "dropper", error) });
@@ -422,7 +446,7 @@ export async function runConsolidationPipeline(
 }
 
 async function runObserverStage(
-	pi: ExtensionAPI,
+	pi: ConsolidationEntryWriter,
 	runtime: Runtime,
 	ctx: ConsolidationCtx,
 	resolver: ModelResolver,
@@ -430,28 +454,6 @@ async function runObserverStage(
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const tokens = stageTokens(entries, OM_OBSERVATIONS_RECORDED, realContextTokens(ctx), rawTokensSinceObservationCoverage);
 	if (tokens < runtime.config.observeAfterTokens) return "continue";
-
-	const sessionMetadata = debugSessionMetadata(ctx);
-	const sessionIdentity = sessionMetadata.sessionId ?? sessionMetadata.sessionFile;
-	const coverageId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED);
-
-	// Deliberate-empty backoff (#23): an intentional "nothing to record" verdict
-	// must not re-fire the observer every turn over the same span. Retry only
-	// after another observeAfterTokens worth of new source tokens arrives, and
-	// drop the backoff as soon as coverage advances.
-	const backoff = runtime.observerEmptyBackoff;
-	if (backoff) {
-		if (
-			sessionIdentity !== backoff.sessionIdentity
-			|| coverageId !== backoff.coverageId
-			|| tokens >= backoff.tokensAtEmpty + runtime.config.observeAfterTokens
-		) {
-			runtime.observerEmptyBackoff = undefined;
-		} else {
-			debugLog("observer.empty_backoff", { tokens, resumeAtTokens: backoff.tokensAtEmpty + runtime.config.observeAfterTokens });
-			return "continue";
-		}
-	}
 
 	// Resolve the model before building the chunk: the default chunk cap
 	// derives from the resolved model's context window.
@@ -513,10 +515,11 @@ async function runObserverStage(
 		omittedObservations: memory.omittedObservations,
 	});
 
-	let observations: Observation[] | undefined;
+	let outcome: Awaited<ReturnType<typeof runObserver>>;
 	try {
-		observations = await runStageWithFallback(ctx, "observer", resolved, resolver, (worker) => runObserver({
-			model: worker.model as any,
+		outcome = await runStageWithFallback(ctx, "observer", resolved, resolver, (worker) => runObserver({
+			// SAFETY: Runtime resolves Pi registry models, which share the observer's Model contract.
+			model: worker.model as Parameters<typeof runObserver>[0]["model"],
 			apiKey: worker.apiKey,
 			headers: worker.headers,
 			env: worker.env,
@@ -547,73 +550,104 @@ async function runObserverStage(
 		debugLog("observer.aborted", { coversUpToId });
 		return "abort";
 	}
-	if (!observations || observations.length === 0) {
-		// Deliberate empty: routine info, not a warning, and back off re-fires
-		// over the same span (#23).
-		debugLog("observer.empty", { coversUpToId });
-		runtime.observerEmptyBackoff = { sessionIdentity, coverageId, tokensAtEmpty: tokens };
+	const folded = foldLedger(entries);
+	const records = outcome.kind === "completed" || outcome.kind === "incomplete" || outcome.kind === "failed"
+		? uniqueNewRecords(outcome.records, folded.observationsById.keys())
+		: [];
+	if (outcome.kind === "failed") {
+		const incompleteData = buildObservationsRecordedData(records, { kind: "incomplete", inputUpToId: coversUpToId });
+		if (incompleteData) {
+			appendEntry(pi, OM_OBSERVATIONS_RECORDED, incompleteData);
+		}
+		const errorMessage = runtime.recordConsolidationStageError(ctx, "observer", outcome.error);
+		debugLog("observer.error", { errorMessage, savedPartialRecordCount: records.length });
+		return "abort";
+	}
+	if (outcome.kind === "incomplete") {
+		const incompleteData = buildObservationsRecordedData(records, { kind: "incomplete", inputUpToId: coversUpToId });
+		if (incompleteData) {
+			appendEntry(pi, OM_OBSERVATIONS_RECORDED, incompleteData);
+		}
+		debugLog("observer.incomplete", { savedPartialRecordCount: records.length, inputUpToId: coversUpToId });
 		if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
-			"Observational memory: observer found nothing new in this chunk (coverage unchanged; will retry later)",
+			records.length > 0
+				? `Observational memory: saved ${records.length} partial observation${records.length === 1 ? "" : "s"}; chunk coverage remains open`
+				: "Observational memory: observer review remains open; no records were saved",
 			"info",
 		);
 		return "continue";
 	}
-	runtime.observerEmptyBackoff = undefined;
 
-	const data = buildObservationsRecordedData(observations, coversUpToId);
+	const data = buildObservationsRecordedData(records, { kind: "completed", coversUpToId });
 	if (!data) return "continue";
-	debugLog("observer.records", {
-		count: observations.length,
-		observationTokens: observations.reduce((sum, observation) => sum + observation.tokenCount, 0),
+	appendEntry(pi, OM_OBSERVATIONS_RECORDED, data);
+	debugLog(outcome.kind === "nothing-new" || records.length === 0 ? "observer.empty_completed" : "observer.appended", {
+		count: records.length,
 		coversUpToId,
 	});
-	appendEntry(pi, OM_OBSERVATIONS_RECORDED, data);
-	debugLog("observer.appended", { count: observations.length, coversUpToId });
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
-		`Observational memory: ${observations.length} observation${observations.length === 1 ? "" : "s"} recorded`,
+		records.length > 0
+			? `Observational memory: ${records.length} observation${records.length === 1 ? "" : "s"} recorded`
+			: "Observational memory: observer completed this chunk with no new observations",
 		"info",
 	);
 	return "continue";
 }
 
 async function runReflectorStage(
-	pi: ExtensionAPI,
+	pi: ConsolidationEntryWriter,
 	runtime: Runtime,
 	ctx: ConsolidationCtx,
 	resolver: ModelResolver,
 ): Promise<ReflectorStageResult> {
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const reflectionTokens = stageTokens(entries, OM_REFLECTIONS_RECORDED, realContextTokens(ctx), observedTokensSinceReflectionCoverage);
-	if (reflectionTokens < runtime.config.reflectAfterTokens) return { outcome: "continue", sameRunReflections: [] };
+	if (reflectionTokens < runtime.config.reflectAfterTokens) {
+		return emptyReflectorStageResult("continue");
+	}
 
 	const observationCoverageId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED);
-	if (!observationCoverageId) return { outcome: "continue", sameRunReflections: [] };
+	if (!observationCoverageId) {
+		return emptyReflectorStageResult("continue");
+	}
+
+	const folded = foldLedger(entries);
+	const eligibleObservations = observationsAtOrBeforeCoverage(entries, folded, observationCoverageId);
+	if (eligibleObservations.length === 0) {
+		return emptyReflectorStageResult("continue");
+	}
 
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
 		`Observational memory: reflector running (~${reflectionTokens.toLocaleString()} tokens)`,
 		"info",
 	);
 	const resolved = await resolver.resolve("reflector");
-	if (!resolved) return { outcome: "abort", sameRunReflections: [] };
+	if (!resolved) {
+		return emptyReflectorStageResult("abort");
+	}
 	if (wasAborted(runtime)) {
 		debugLog("reflector.aborted", {});
-		return { outcome: "abort", sameRunReflections: [] };
+		return emptyReflectorStageResult("abort");
 	}
 
-	const folded = foldLedger(entries);
-	const reflections = await runStageWithFallback(ctx, "reflector", resolved, resolver, (worker) => {
+	let reviewedObservations: Observation[] = [];
+	let omittedObservationCount = 0;
+	const outcome = await runStageWithFallback(ctx, "reflector", resolved, resolver, (worker) => {
 		const reflectorMemory = boundWorkerMemory(
 			folded.reflections,
-			folded.activeObservations,
+			eligibleObservations,
 			resolveWorkerMemoryMaxTokens(runtime.config, (worker.model as { contextWindow?: number }).contextWindow),
 		);
+		reviewedObservations = reflectorMemory.observations;
+		omittedObservationCount = reflectorMemory.omittedObservations;
 		return runReflector({
-			model: worker.model as any,
+			// SAFETY: Runtime resolves Pi registry models, which share the reflector's Model contract.
+			model: worker.model as Parameters<typeof runReflector>[0]["model"],
 			apiKey: worker.apiKey,
 			headers: worker.headers,
 			env: worker.env,
 			reflections: reflectorMemory.reflections,
-			observations: reflectorMemory.observations,
+			observations: reviewedObservations,
 			maxTurns: runtime.config.agentMaxTurns,
 			maxOutputTokens: runtime.config.agentMaxTokens,
 			signal: consolidationSignal(runtime),
@@ -623,27 +657,56 @@ async function runReflectorStage(
 	}, consolidationSignal(runtime));
 	if (wasAborted(runtime)) {
 		debugLog("reflector.aborted", {});
-		return { outcome: "abort", sameRunReflections: [] };
+		return emptyReflectorStageResult("abort");
 	}
-	if (!reflections) return { outcome: "continue", sameRunReflections: [] };
+	const records = outcome.kind === "completed" || outcome.kind === "incomplete" || outcome.kind === "failed"
+		? uniqueNewRecords(outcome.records, folded.reflectionsById.keys())
+		: [];
 
-	const data = buildReflectionsRecordedData(reflections, observationCoverageId);
-	if (!data) return { outcome: "continue", sameRunReflections: [] };
+	if (outcome.kind === "failed") {
+		const data = buildReflectionsRecordedData(records, { kind: "incomplete", inputUpToId: observationCoverageId });
+		if (data) {
+			appendEntry(pi, OM_REFLECTIONS_RECORDED, data);
+		}
+		const errorMessage = runtime.recordConsolidationStageError(ctx, "reflector", outcome.error);
+		debugLog("reflector.error", { errorMessage, savedPartialRecordCount: records.length });
+		return emptyReflectorStageResult("abort");
+	}
+	// A clean review of a capped subset cannot certify observations the worker never saw.
+	if (outcome.kind === "incomplete" || omittedObservationCount > 0) {
+		const data = buildReflectionsRecordedData(records, { kind: "incomplete", inputUpToId: observationCoverageId });
+		if (data) {
+			appendEntry(pi, OM_REFLECTIONS_RECORDED, data);
+		}
+		debugLog("reflector.incomplete", {
+			savedPartialRecordCount: records.length,
+			boundedByCoverageId: observationCoverageId,
+			omittedObservationCount,
+		});
+		return emptyReflectorStageResult("continue");
+	}
+
+	const data = buildReflectionsRecordedData(records, { kind: "completed", coversUpToId: observationCoverageId });
+	if (!data) {
+		return emptyReflectorStageResult("continue");
+	}
 	appendEntry(pi, OM_REFLECTIONS_RECORDED, data);
 	return {
 		outcome: "continue",
-		sameRunReflections: reflections,
+		sameRunReflections: records,
+		reviewedObservations,
 		effectiveReflectionCoverageId: data.coversUpToId,
 	};
 }
 
 async function runDropperStage(
-	pi: ExtensionAPI,
+	pi: ConsolidationEntryWriter,
 	runtime: Runtime,
 	ctx: ConsolidationCtx,
 	resolver: ModelResolver,
 	sameRunReflections: Reflection[],
 	sameRunReflectionCoverageId: string | undefined,
+	reviewedObservations: Observation[],
 ): Promise<StageOutcome> {
 	if (!sameRunReflectionCoverageId || sameRunReflections.length === 0) {
 		debugLog("dropper.waiting_for_reflection", { sameRunReflections: sameRunReflections.length });
@@ -655,7 +718,9 @@ async function runDropperStage(
 	if (!observationCoverageId) return "continue";
 
 	const folded = foldLedger(entries);
-	const metrics = observationPoolMetrics(folded.activeObservations, runtime.config.observationsPoolTargetTokens);
+	const reviewedObservationIds = new Set(reviewedObservations.map((observation) => observation.id));
+	const dropCandidates = folded.activeObservations.filter((observation) => reviewedObservationIds.has(observation.id));
+	const metrics = observationPoolMetrics(dropCandidates, runtime.config.observationsPoolTargetTokens);
 	if (!metrics.ready) {
 		debugLog("dropper.not_ready", {
 			observationTokens: metrics.observationTokens,
@@ -696,12 +761,13 @@ async function runDropperStage(
 		// The dropper prunes old observations, so it sees the oldest ones that fit.
 		const dropperMemory = boundWorkerMemory(
 			reflectionsForDropper,
-			folded.activeObservations,
+			dropCandidates,
 			resolveWorkerMemoryMaxTokens(runtime.config, (worker.model as { contextWindow?: number }).contextWindow),
 			{ observationsFrom: "oldest" },
 		);
 		return runDropper({
-			model: worker.model as any,
+			// SAFETY: Runtime resolves Pi registry models, which share the dropper's Model contract.
+			model: worker.model as Parameters<typeof runDropper>[0]["model"],
 			apiKey: worker.apiKey,
 			headers: worker.headers,
 			env: worker.env,

@@ -1,5 +1,8 @@
 import { estimateEntryTokens } from "../tokens.js";
 import {
+	hasNewRecordBoundary,
+	isObservationsRecordedData,
+	isReflectionsRecordedData,
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
 	OM_REFLECTIONS_RECORDED,
@@ -35,6 +38,15 @@ function isNonEmptyArray(value: unknown): value is unknown[] {
 
 function isValidCoverageEntry(entry: Entry, customType: V3MemoryCustomType): entry is Entry & { data: { coversUpToId: string } } {
 	if (entry.type !== "custom" || entry.customType !== customType) return false;
+	if (hasNewRecordBoundary(entry.data)) {
+		if (customType === OM_OBSERVATIONS_RECORDED) {
+			return isObservationsRecordedData(entry.data) && "completion" in entry.data && entry.data.completion === "completed";
+		}
+		if (customType === OM_REFLECTIONS_RECORDED) {
+			return isReflectionsRecordedData(entry.data) && "completion" in entry.data && entry.data.completion === "completed";
+		}
+		return false;
+	}
 	if (!isObject(entry.data) || typeof entry.data.coversUpToId !== "string") return false;
 
 	if (customType === OM_OBSERVATIONS_RECORDED) return isNonEmptyArray(entry.data.observations);

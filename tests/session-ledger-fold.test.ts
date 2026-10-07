@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { foldLedger } from "../src/session-ledger/index.js";
+import { foldLedger, latestCoverageMarkerId, observationsAtOrBeforeCoverage, OM_OBSERVATIONS_RECORDED } from "../src/session-ledger/index.js";
 import {
 	branchSummary,
 	observation,
@@ -31,6 +31,42 @@ describe("session-ledger V3 folding", () => {
 		expect(folded.activeObservations.map((obs) => obs.id)).toEqual(["aaaaaaaaaaaa"]);
 		expect(folded.reflections.map((ref) => ref.id)).toEqual(["eeeeeeeeeeee"]);
 		expect(folded.observationsById.get("bbbbbbbbbbbb")).toBeUndefined();
+	});
+
+	it("limits reflector input to completed observer coverage and preserves first-record boundaries", () => {
+		const covered = observation("aaaaaaaaaaaa", { content: "covered", sourceEntryIds: ["raw-1"] });
+		const partial = observation("bbbbbbbbbbbb", { content: "partial first record", sourceEntryIds: ["raw-2"] });
+		const duplicate = observation("bbbbbbbbbbbb", { content: "duplicate with an earlier boundary", sourceEntryIds: ["raw-1"] });
+		const entries = [
+			textCustomMessage("raw-1", "first chunk"),
+			{
+				type: "custom",
+				id: "complete-first-chunk",
+				customType: OM_OBSERVATIONS_RECORDED,
+				data: { completion: "completed", observations: [covered], coversUpToId: "raw-1" },
+			},
+			textCustomMessage("raw-2", "second chunk"),
+			{
+				type: "custom",
+				id: "partial-second-chunk",
+				customType: OM_OBSERVATIONS_RECORDED,
+				data: { completion: "incomplete", observations: [partial], inputUpToId: "raw-2" },
+			},
+			{
+				type: "custom",
+				id: "duplicate-earlier-boundary",
+				customType: OM_OBSERVATIONS_RECORDED,
+				data: { completion: "incomplete", observations: [duplicate], inputUpToId: "raw-1" },
+			},
+		];
+		const coverageId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED);
+		const folded = foldLedger(entries);
+
+		expect(coverageId).toBe("raw-1");
+		expect(folded.observationsById.get("bbbbbbbbbbbb")?.content).toBe("partial first record");
+		expect(observationsAtOrBeforeCoverage(entries, folded, coverageId ?? "").map((item) => item.id)).toEqual([
+			"aaaaaaaaaaaa",
+		]);
 	});
 
 	it("applies drops as tombstones while preserving observation history", () => {

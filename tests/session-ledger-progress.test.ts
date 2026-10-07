@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	earlierCoverageMarkerId,
 	entryIndexById,
+	isObservationsRecordedData,
 	isSourceEntry,
 	latestCoverageIndex,
 	latestCoverageMarkerId,
@@ -98,6 +99,43 @@ describe("session-ledger V3 progress helpers", () => {
 		expect(latestCoverageIndex(entries, V3_OBSERVATIONS_RECORDED)).toBe(1);
 		expect(latestCoverageMarkerId(entries, V3_OBSERVATIONS_RECORDED)).toBe("raw-2");
 		expect(rawTokensSinceObservationCoverage(entries)).toBe(3);
+	});
+
+	it("advances only on explicit completed data and preserves shallow legacy progress", () => {
+		const shallowLegacy = {
+			type: "custom",
+			id: "legacy-shallow",
+			customType: V3_OBSERVATIONS_RECORDED,
+			data: { observations: [{}], coversUpToId: "raw-1" },
+		};
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			shallowLegacy,
+			textCustomMessage("raw-2", "bbbb"),
+			{
+				type: "custom",
+				id: "completed-empty",
+				customType: V3_OBSERVATIONS_RECORDED,
+				data: { completion: "completed", observations: [], coversUpToId: "raw-2" },
+			},
+			textCustomMessage("raw-3", "cccc"),
+			{
+				type: "custom",
+				id: "incomplete-record",
+				customType: V3_OBSERVATIONS_RECORDED,
+				data: { completion: "incomplete", observations: [observation("aaaaaaaaaaaa")], inputUpToId: "raw-3" },
+			},
+			{
+				type: "custom",
+				id: "invalid-completion",
+				customType: V3_OBSERVATIONS_RECORDED,
+				data: { completion: "unknown", observations: [observation("bbbbbbbbbbbb")], coversUpToId: "raw-3" },
+			},
+		];
+
+		expect(isObservationsRecordedData(shallowLegacy.data)).toBe(false);
+		expect(latestCoverageMarkerId(entries, V3_OBSERVATIONS_RECORDED)).toBe("raw-2");
+		expect(rawTokensSinceObservationCoverage(entries)).toBe(1);
 	});
 
 	it("returns latest inner coverage marker and earlier marker by branch index", () => {

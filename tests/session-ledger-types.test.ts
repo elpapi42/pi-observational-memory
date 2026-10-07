@@ -60,25 +60,49 @@ describe("session-ledger V3 type guards and builders", () => {
 		expect(isObservationsDroppedData(dropData)).toBe(true);
 	});
 
-	it("rejects empty ledger entry data so no empty progress entries can be appended", () => {
+	it("accepts empty records only for explicit completed coverage", () => {
+		expect(isObservationsRecordedData({ completion: "completed", observations: [], coversUpToId: "raw-1" })).toBe(true);
+		expect(isReflectionsRecordedData({ completion: "completed", reflections: [], coversUpToId: "raw-1" })).toBe(true);
 		expect(isObservationsRecordedData({ observations: [], coversUpToId: "raw-1" })).toBe(false);
 		expect(isReflectionsRecordedData({ reflections: [], coversUpToId: "raw-1" })).toBe(false);
+		expect(isObservationsRecordedData({ completion: "incomplete", observations: [], inputUpToId: "raw-1" })).toBe(false);
+		expect(isReflectionsRecordedData({ completion: "incomplete", reflections: [], inputUpToId: "raw-1" })).toBe(false);
 		expect(isObservationsDroppedData({ observationIds: [], coversUpToId: "raw-1" })).toBe(false);
 	});
 
-	it("builders return undefined for empty arrays and data for non-empty arrays", () => {
-		expect(buildObservationsRecordedData([], "raw-1")).toBeUndefined();
-		expect(buildReflectionsRecordedData([], "raw-1")).toBeUndefined();
-		expect(buildObservationsDroppedData([], "raw-1")).toBeUndefined();
+	it("rejects unknown completion values and mixed completed/incomplete boundaries", () => {
+		const observations = [observation("aaaaaaaaaaaa")];
+		const reflections = [reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"])];
+		expect(isObservationsRecordedData({ completion: "unknown", observations, coversUpToId: "raw-1" })).toBe(false);
+		expect(isReflectionsRecordedData({ completion: "unknown", reflections, coversUpToId: "raw-1" })).toBe(false);
+		expect(isObservationsRecordedData({ completion: "incomplete", observations, inputUpToId: "raw-1", coversUpToId: "raw-2" })).toBe(false);
+		expect(isReflectionsRecordedData({ completion: "incomplete", reflections, inputUpToId: "raw-1", coversUpToId: "raw-2" })).toBe(false);
+	});
 
-		expect(buildObservationsRecordedData([observation("aaaaaaaaaaaa")], "raw-1")).toEqual({
+	it("builds completed empty and incomplete non-empty record envelopes", () => {
+		expect(buildObservationsRecordedData([], { kind: "completed", coversUpToId: "raw-1" })).toEqual({
+			completion: "completed",
+			observations: [],
+			coversUpToId: "raw-1",
+		});
+		expect(buildReflectionsRecordedData([], { kind: "completed", coversUpToId: "raw-1" })).toEqual({
+			completion: "completed",
+			reflections: [],
+			coversUpToId: "raw-1",
+		});
+		expect(buildObservationsRecordedData([], { kind: "incomplete", inputUpToId: "raw-1" })).toBeUndefined();
+		expect(buildReflectionsRecordedData([], { kind: "incomplete", inputUpToId: "raw-1" })).toBeUndefined();
+		expect(buildObservationsRecordedData([observation("aaaaaaaaaaaa")], { kind: "incomplete", inputUpToId: "raw-1" })).toEqual({
+			completion: "incomplete",
 			observations: [observation("aaaaaaaaaaaa")],
-			coversUpToId: "raw-1",
+			inputUpToId: "raw-1",
 		});
-		expect(buildReflectionsRecordedData([reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"])], "raw-1")).toEqual({
+		expect(buildReflectionsRecordedData([reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"])], { kind: "incomplete", inputUpToId: "raw-1" })).toEqual({
+			completion: "incomplete",
 			reflections: [reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"])],
-			coversUpToId: "raw-1",
+			inputUpToId: "raw-1",
 		});
+		expect(buildObservationsDroppedData([], "raw-1")).toBeUndefined();
 		expect(buildObservationsDroppedData(["aaaaaaaaaaaa"], "ref-entry-1")).toEqual({
 			observationIds: ["aaaaaaaaaaaa"],
 			coversUpToId: "ref-entry-1",
