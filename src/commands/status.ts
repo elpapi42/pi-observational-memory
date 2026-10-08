@@ -63,9 +63,9 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			);
 			const obsProgress = rawTokensSinceObservationCoverage(entries);
 			const reflectionProgress = observedTokensSinceReflectionCoverage(entries);
-			const compactionProgress = compactionProgressFor(runtime, entries);
-			const unobservedSinceCompaction = Math.max(0, rawTokensSinceLastCompaction(entries) - observedTokensSinceLastCompaction(entries));
 			const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : undefined;
+			const compactionProgress = compactionProgressFor(runtime, entries, contextWindow);
+			const unobservedSinceCompaction = Math.max(0, rawTokensSinceLastCompaction(entries) - observedTokensSinceLastCompaction(entries));
 			const compactThreshold = resolveCompactAfterTokens(runtime.config, contextWindow);
 
 			const passiveLines = runtime.config.passive === true
@@ -85,7 +85,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				"── Activity ──",
 				`Next observation: ~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} tokens (${pct(obsProgress, runtime.config.observeAfterTokens)}%)`,
 				`Next reflection:  ~${reflectionProgress.toLocaleString()} / ${runtime.config.reflectAfterTokens.toLocaleString()} observed tokens (${pct(reflectionProgress, runtime.config.reflectAfterTokens)}%)`,
-				`Next compaction:  ~${compactionProgress.toLocaleString()} / ${compactThreshold.toLocaleString()} ${progressUnit(runtime, entries)} (${pct(compactionProgress, compactThreshold)}%)`,
+				`Next compaction:  ~${compactionProgress.toLocaleString()} / ${compactThreshold.toLocaleString()} ${progressUnit(runtime, entries, contextWindow)} (${pct(compactionProgress, compactThreshold)}%)`,
 				`Observer backlog: ~${unobservedSinceCompaction.toLocaleString()} unobserved source tokens since the compaction boundary`,
 				`Visible observation pool: ~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} tokens (${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%)`,
 				`Active observation pool: ~${activeObservationPool.observationTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} target tokens (${pct(activeObservationPool.observationTokens, runtime.config.observationsPoolTargetTokens)}%)`,

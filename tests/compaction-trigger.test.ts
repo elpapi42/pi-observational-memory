@@ -591,5 +591,82 @@ describe("V3 compaction trigger", () => {
 				"info",
 			);
 		});
+
+		it("does not use the real clock when the context window is unavailable", async () => {
+			// The threshold falls back to calibrated 81,000, so the real clock must
+			// fall back with it — measuring 100,000 absolute usage against a ledger
+			// budget would compare different units.
+			const { handler, runtime } = captureHandler({
+				compactAfterTokens: 81000,
+				compactAfterTokensMode: "ratio",
+				compactAfterTokensRatio: 0.5,
+			});
+			const branch = covered([
+				rawMessage("assistant-1", "done", {
+					message: { role: "assistant", content: "done", stopReason: "end_turn", usage: { totalTokens: 100_000 } },
+				}),
+				textCustomMessage("raw-1", "aaaaaaaaaaaa"), // 3 estimated tokens, observed
+			]);
+			const ctx = fakeCtx([branch], { model: undefined });
+
+			handler(agentSettled(), ctx);
+			await vi.runAllTimersAsync();
+
+			expect(ctx.compact).not.toHaveBeenCalled();
+			expect(runtime.compactInFlight).toBe(false);
+		});
+
+		it("does not use the real clock when contextWindow is zero", async () => {
+			const { handler, runtime } = captureHandler({
+				compactAfterTokens: 81000,
+				compactAfterTokensMode: "ratio",
+				compactAfterTokensRatio: 0.5,
+			});
+			const branch = covered([
+				rawMessage("assistant-1", "done", {
+					message: { role: "assistant", content: "done", stopReason: "end_turn", usage: { totalTokens: 100_000 } },
+				}),
+				textCustomMessage("raw-1", "aaaaaaaaaaaa"),
+			]);
+			const ctx = fakeCtx([branch], { model: { contextWindow: 0 } });
+
+			handler(agentSettled(), ctx);
+			await vi.runAllTimersAsync();
+
+			expect(ctx.compact).not.toHaveBeenCalled();
+			expect(runtime.compactInFlight).toBe(false);
+		});
+
+		it("rechecks with the ledger clock when no post-compaction usage exists", async () => {
+			// First branch: real usage above the ratio threshold -> fires, deferred
+			// because Pi is busy. Second branch: after a compaction, no assistant
+			// usage yet -> the real clock is undefined (pre-compaction usage must
+			// not be reused), the ledger clock is small -> skipped.
+			const { handler, runtime } = captureHandler({
+				compactAfterTokens: 81000,
+				compactAfterTokensMode: "ratio",
+				compactAfterTokensRatio: 0.5,
+			});
+			const fireBranch = covered([
+				rawMessage("assistant-1", "done", {
+					message: { role: "assistant", content: "done", stopReason: "end_turn", usage: { totalTokens: 100_000 } },
+				}),
+				textCustomMessage("raw-1", "aaaaaaaaaaaa"),
+			]);
+			const postCompactionBranch = covered([
+				compactionEntry("cmp-1"),
+				textCustomMessage("raw-2", "aaaa"), // 1 estimated token, observed
+			]);
+			const ctx = fakeCtx([fireBranch, postCompactionBranch], {
+				model: { contextWindow: 100_000 },
+				isIdle: vi.fn(() => false),
+			});
+
+			handler(agentSettled(), ctx);
+			await vi.runAllTimersAsync();
+
+			expect(ctx.compact).not.toHaveBeenCalled();
+			expect(runtime.compactInFlight).toBe(false);
+		});
 	});
 });

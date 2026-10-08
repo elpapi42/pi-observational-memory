@@ -274,6 +274,9 @@ overhead everywhere, and far more on CJK-heavy sessions where one character is
 roughly one token — which would otherwise push the effective trigger past Pi's
 native compaction. When no provider usage is available yet (fresh session, or a
 provider that reports no usage), ratio mode falls back to the ledger clocks.
+When the active model's `contextWindow` is unknown, the ratio threshold itself
+cannot be resolved, so the mode falls back to calibrated semantics: the
+threshold becomes `compactAfterTokens` and the ledger clocks apply.
 Pi's native window-pressure compaction remains independent.
 
 `compactAfterTokensRatio` is user-tunable precisely because **context window ≠

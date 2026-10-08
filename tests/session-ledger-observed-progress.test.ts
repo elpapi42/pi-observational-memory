@@ -219,4 +219,22 @@ describe("latestRealContextTokens", () => {
 
 		expect(latestRealContextTokens(entries)).toBe(38);
 	});
+
+	it("ignores usage from before the latest compaction", () => {
+		const entries = [
+			assistant("a-1", { totalTokens: 500 }),
+			compactionEntry("cmp-1"),
+			assistant("a-2", { totalTokens: 999 }, "aborted"),
+		];
+
+		// No valid usage since the compaction; the pre-compaction 500 must not be read as current.
+		expect(latestRealContextTokens(entries)).toBeUndefined();
+
+		const withPostUsage = [
+			assistant("a-3", { totalTokens: 500 }),
+			compactionEntry("cmp-2"),
+			assistant("a-4", { totalTokens: 700 }),
+		];
+		expect(latestRealContextTokens(withPostUsage)).toBe(700);
+	});
 });
