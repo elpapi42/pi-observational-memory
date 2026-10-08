@@ -638,10 +638,11 @@ describe("V3 compaction trigger", () => {
 		});
 
 		it("rechecks with the ledger clock when no post-compaction usage exists", async () => {
-			// First branch: real usage above the ratio threshold -> fires, deferred
-			// because Pi is busy. Second branch: after a compaction, no assistant
-			// usage yet -> the real clock is undefined (pre-compaction usage must
-			// not be reused), the ledger clock is small -> skipped.
+			// First branch: real usage above the ratio threshold -> fires; Pi is
+			// idle, so the deferred callback runs the recheck. Second branch: after
+			// a compaction, no assistant usage yet -> the real clock is undefined
+			// (pre-compaction usage must not be reused), the ledger clock is small
+			// -> skipped.
 			const { handler, runtime } = captureHandler({
 				compactAfterTokens: 81000,
 				compactAfterTokensMode: "ratio",
@@ -659,13 +660,20 @@ describe("V3 compaction trigger", () => {
 			]);
 			const ctx = fakeCtx([fireBranch, postCompactionBranch], {
 				model: { contextWindow: 100_000 },
-				isIdle: vi.fn(() => false),
 			});
 
 			handler(agentSettled(), ctx);
 			await vi.runAllTimersAsync();
 
+			// The deferred recheck must run: isIdle stays true, the second branch
+			// has no post-compaction usage (the real clock is undefined) and only
+			// 1 observed ledger token, well below the 50,000 ratio threshold.
 			expect(ctx.compact).not.toHaveBeenCalled();
+			expect(ctx.sessionManager.getBranch).toHaveBeenCalledTimes(2);
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				"Observational memory: compaction skipped — another compaction already ran before deferred compaction",
+				"info",
+			);
 			expect(runtime.compactInFlight).toBe(false);
 		});
 	});
