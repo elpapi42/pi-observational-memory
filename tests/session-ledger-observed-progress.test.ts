@@ -4,6 +4,7 @@ import {
 	compactionRangeStartIndex,
 	observedTokensSinceLastCompaction,
 	observedTokensSinceReflectionCoverage,
+	latestRealContextTokens,
 	rawTokensSinceLastCompaction,
 	unobservedSourceSpanBefore,
 } from "../src/session-ledger/index.js";
@@ -13,6 +14,7 @@ import {
 	observationsRecordedEntry,
 	reflection,
 	reflectionsRecordedEntry,
+	rawMessage,
 	textCustomMessage,
 } from "./fixtures/session.js";
 
@@ -172,5 +174,67 @@ describe("observed tokens since reflection coverage", () => {
 		];
 
 		expect(observedTokensSinceReflectionCoverage(entries)).toBe(0);
+	});
+});
+
+describe("latestRealContextTokens", () => {
+	function assistant(id: string, usage: unknown, stopReason = "end_turn") {
+		return rawMessage(id, "ignored", {
+			message: { role: "assistant", content: "done", stopReason, usage },
+		});
+	}
+
+	it("returns the last valid assistant usage", () => {
+		const entries = [
+			assistant("a-1", { totalTokens: 100 }),
+			textCustomMessage("raw-1", "aaaa"),
+			assistant("a-2", { totalTokens: 300 }),
+		];
+
+		expect(latestRealContextTokens(entries)).toBe(300);
+	});
+
+	it("ignores aborted and error assistant responses", () => {
+		const entries = [
+			assistant("a-1", { totalTokens: 100 }),
+			assistant("a-2", { totalTokens: 999 }, "aborted"),
+			assistant("a-3", { totalTokens: 888 }, "error"),
+		];
+
+		expect(latestRealContextTokens(entries)).toBe(100);
+	});
+
+	it("ignores user messages and entries without usage", () => {
+		const entries = [textCustomMessage("raw-1", "aaaa")];
+
+		expect(latestRealContextTokens(entries)).toBeUndefined();
+		expect(latestRealContextTokens([])).toBeUndefined();
+	});
+
+	it("prefers totalTokens and falls back to the usage parts sum", () => {
+		const entries = [
+			assistant("a-1", { input: 10, output: 5, cacheRead: 20, cacheWrite: 3 }),
+			assistant("a-2", { totalTokens: 0 }),
+		];
+
+		expect(latestRealContextTokens(entries)).toBe(38);
+	});
+
+	it("ignores usage from before the latest compaction", () => {
+		const entries = [
+			assistant("a-1", { totalTokens: 500 }),
+			compactionEntry("cmp-1"),
+			assistant("a-2", { totalTokens: 999 }, "aborted"),
+		];
+
+		// No valid usage since the compaction; the pre-compaction 500 must not be read as current.
+		expect(latestRealContextTokens(entries)).toBeUndefined();
+
+		const withPostUsage = [
+			assistant("a-3", { totalTokens: 500 }),
+			compactionEntry("cmp-2"),
+			assistant("a-4", { totalTokens: 700 }),
+		];
+		expect(latestRealContextTokens(withPostUsage)).toBe(700);
 	});
 });

@@ -517,5 +517,164 @@ describe("V3 compaction trigger", () => {
 			expect(ctx.compact).not.toHaveBeenCalled();
 			expect(runtime.compactInFlight).toBe(false);
 		});
+
+		it("measures progress from real provider usage when available", async () => {
+			// #98: CJK-heavy sessions undercount chars/4 estimates, so the ledger
+			// clock stays below the window-ratio threshold while real usage is far
+			// past it. 20 estimated ledger tokens vs 100,000 real context tokens;
+			// threshold = 0.5 * 100,000 = 50,000.
+			const { handler } = captureHandler({
+				compactAfterTokens: 81000,
+				compactAfterTokensMode: "ratio",
+				compactAfterTokensRatio: 0.5,
+			});
+			const branch = covered([
+				textCustomMessage("raw-cjk", "汉字汉字"),
+				rawMessage("assistant-1", "done", {
+					message: { role: "assistant", content: "done", stopReason: "end_turn", usage: { totalTokens: 100_000 } },
+				}),
+			]);
+			const ctx = fakeCtx([branch], { model: { contextWindow: 100_000 } });
+
+			handler(agentSettled(), ctx);
+			await vi.runAllTimersAsync();
+
+			expect(ctx.compact).toHaveBeenCalledTimes(1);
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				"Observational memory: compaction threshold reached (~100,000 real context tokens); triggering compaction",
+				"info",
+			);
+		});
+
+		it("does not compact when real usage is below the ratio threshold", async () => {
+			const { handler, runtime } = captureHandler({
+				compactAfterTokens: 81000,
+				compactAfterTokensMode: "ratio",
+				compactAfterTokensRatio: 0.5,
+			});
+			const branch = covered([
+				rawMessage("assistant-1", "done", {
+					message: { role: "assistant", content: "done", stopReason: "end_turn", usage: { totalTokens: 1_000 } },
+				}),
+				textCustomMessage("raw-1", "aaaaaaaaaaaa"),
+			]);
+			const ctx = fakeCtx([branch], { model: { contextWindow: 100_000 } });
+
+			handler(agentSettled(), ctx);
+			await vi.runAllTimersAsync();
+
+			expect(ctx.compact).not.toHaveBeenCalled();
+			expect(runtime.compactInFlight).toBe(false);
+		});
+
+		it("falls back to the observed ledger clock when no valid usage exists", async () => {
+			const { handler } = captureHandler({
+				compactAfterTokens: 81000,
+				compactAfterTokensMode: "ratio",
+				compactAfterTokensRatio: 0.5,
+			});
+			const branch = covered([
+				rawMessage("assistant-aborted", "aborted", {
+					message: { role: "assistant", content: "aborted", stopReason: "aborted", usage: { totalTokens: 999_999 } },
+				}),
+				textCustomMessage("raw-1", "aaaaaaaaaaaa"), // 3 estimated tokens, observed
+			]);
+			const ctx = fakeCtx([branch], { model: { contextWindow: 4 } });
+
+			handler(agentSettled(), ctx);
+			await vi.runAllTimersAsync();
+
+			// Ledger clock: 3 observed tokens >= floor(4 * 0.5) = 2.
+			expect(ctx.compact).toHaveBeenCalledTimes(1);
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				"Observational memory: compaction threshold reached (~3 observed source tokens); triggering compaction",
+				"info",
+			);
+		});
+
+		it("does not use the real clock when the context window is unavailable", async () => {
+			// The threshold falls back to calibrated 81,000, so the real clock must
+			// fall back with it — measuring 100,000 absolute usage against a ledger
+			// budget would compare different units.
+			const { handler, runtime } = captureHandler({
+				compactAfterTokens: 81000,
+				compactAfterTokensMode: "ratio",
+				compactAfterTokensRatio: 0.5,
+			});
+			const branch = covered([
+				rawMessage("assistant-1", "done", {
+					message: { role: "assistant", content: "done", stopReason: "end_turn", usage: { totalTokens: 100_000 } },
+				}),
+				textCustomMessage("raw-1", "aaaaaaaaaaaa"), // 3 estimated tokens, observed
+			]);
+			const ctx = fakeCtx([branch], { model: undefined });
+
+			handler(agentSettled(), ctx);
+			await vi.runAllTimersAsync();
+
+			expect(ctx.compact).not.toHaveBeenCalled();
+			expect(runtime.compactInFlight).toBe(false);
+		});
+
+		it("does not use the real clock when contextWindow is zero", async () => {
+			const { handler, runtime } = captureHandler({
+				compactAfterTokens: 81000,
+				compactAfterTokensMode: "ratio",
+				compactAfterTokensRatio: 0.5,
+			});
+			const branch = covered([
+				rawMessage("assistant-1", "done", {
+					message: { role: "assistant", content: "done", stopReason: "end_turn", usage: { totalTokens: 100_000 } },
+				}),
+				textCustomMessage("raw-1", "aaaaaaaaaaaa"),
+			]);
+			const ctx = fakeCtx([branch], { model: { contextWindow: 0 } });
+
+			handler(agentSettled(), ctx);
+			await vi.runAllTimersAsync();
+
+			expect(ctx.compact).not.toHaveBeenCalled();
+			expect(runtime.compactInFlight).toBe(false);
+		});
+
+		it("rechecks with the ledger clock when no post-compaction usage exists", async () => {
+			// First branch: real usage above the ratio threshold -> fires; Pi is
+			// idle, so the deferred callback runs the recheck. Second branch: after
+			// a compaction, no assistant usage yet -> the real clock is undefined
+			// (pre-compaction usage must not be reused), the ledger clock is small
+			// -> skipped.
+			const { handler, runtime } = captureHandler({
+				compactAfterTokens: 81000,
+				compactAfterTokensMode: "ratio",
+				compactAfterTokensRatio: 0.5,
+			});
+			const fireBranch = covered([
+				rawMessage("assistant-1", "done", {
+					message: { role: "assistant", content: "done", stopReason: "end_turn", usage: { totalTokens: 100_000 } },
+				}),
+				textCustomMessage("raw-1", "aaaaaaaaaaaa"),
+			]);
+			const postCompactionBranch = covered([
+				compactionEntry("cmp-1"),
+				textCustomMessage("raw-2", "aaaa"), // 1 estimated token, observed
+			]);
+			const ctx = fakeCtx([fireBranch, postCompactionBranch], {
+				model: { contextWindow: 100_000 },
+			});
+
+			handler(agentSettled(), ctx);
+			await vi.runAllTimersAsync();
+
+			// The deferred recheck must run: isIdle stays true, the second branch
+			// has no post-compaction usage (the real clock is undefined) and only
+			// 1 observed ledger token, well below the 50,000 ratio threshold.
+			expect(ctx.compact).not.toHaveBeenCalled();
+			expect(ctx.sessionManager.getBranch).toHaveBeenCalledTimes(2);
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				"Observational memory: compaction skipped — another compaction already ran before deferred compaction",
+				"info",
+			);
+			expect(runtime.compactInFlight).toBe(false);
+		});
 	});
 });

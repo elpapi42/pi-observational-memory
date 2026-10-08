@@ -265,11 +265,19 @@ the trigger scale with the active model's `contextWindow`:
 
 In ratio mode the effective threshold is
 `floor(model.contextWindow * compactAfterTokensRatio)` (clamped to a minimum of
-1). With the example above, a 1,000,000-token window compacts after about
-500,000 estimated source-entry tokens after the latest compaction boundary; a
-200,000-token window uses about 100,000. The threshold counts source entries,
-not Pi's system prompt, tool schemas, or provider accounting. Pi's native
-window-pressure compaction remains independent.
+1), and progress is measured from provider-reported context usage — the same
+basis as Pi's context-usage percentage. With the example above, a
+1,000,000-token window compacts at about 500,000 real context tokens; a
+200,000-token window at about 100,000. Measuring real usage matters because
+ledger estimates (chars/4) undercount it — by system-prompt and tool-schema
+overhead everywhere, and far more on CJK-heavy sessions where one character is
+roughly one token — which would otherwise push the effective trigger past Pi's
+native compaction. When no provider usage is available yet (fresh session, or a
+provider that reports no usage), ratio mode falls back to the ledger clocks.
+When the active model's `contextWindow` is unknown, the ratio threshold itself
+cannot be resolved, so the mode falls back to calibrated semantics: the
+threshold becomes `compactAfterTokens` and the ledger clocks apply.
+Pi's native window-pressure compaction remains independent.
 
 `compactAfterTokensRatio` is user-tunable precisely because **context window ≠
 attention**. Some models advertise a large window but degrade at long range; set
@@ -291,8 +299,8 @@ on the `Next compaction` line regardless of mode.
 | `reflectAfterTokens`        | `20000`       | Raw/source token threshold for reflection runs; successful reflection creates dropper opportunities. |
 | `compactAfterTokens`        | `81000`       | Estimated source-entry threshold for proactive auto-compaction, counted after the latest compaction boundary and only up to the observation frontier. |
 | `compactionMaxRetainedTokens` | derived     | Max estimated source tokens the compaction hook keeps in context when it retains entries the observer has not reached yet. Unset: half of the session model's context window, or `60000` when unknown. |
-| `compactAfterTokensMode`    | `"calibrated"`| `"calibrated"` uses `compactAfterTokens` directly. `"ratio"` scales the source-entry threshold by the active model's `contextWindow`. |
-| `compactAfterTokensRatio`   | `0.68`        | In `"ratio"` mode, the threshold is `floor(contextWindow * ratio)`. Tunable because large windows do not always mean strong long-range attention. Must be in `(0, 1)`. |
+| `compactAfterTokensMode`    | `"calibrated"`| `"calibrated"` uses `compactAfterTokens` directly. `"ratio"` measures real provider-reported context against `floor(contextWindow * ratio)` of the active model, falling back to the ledger clocks when no usage exists. |
+| `compactAfterTokensRatio`   | `0.68`        | In `"ratio"` mode, compaction fires when real context usage reaches `floor(contextWindow * ratio)`. Tunable because large windows do not always mean strong long-range attention. Must be in `(0, 1)`. |
 | `observationsPoolMaxTokens` | `20000`       | Observation-token budget used for compaction full-fold pressure.                                  |
 | `observationsPoolTargetTokens` | half of max | Active observation target used by post-reflection dropper maintenance.                            |
 | `agentMaxTurns`             | `16`          | Shared turn cap for background memory-agent loops.                                                |
