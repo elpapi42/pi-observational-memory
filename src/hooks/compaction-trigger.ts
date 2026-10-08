@@ -1,24 +1,51 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolveCompactAfterTokens } from "../config.js";
-import { observedTokensSinceLastCompaction, rawTokensSinceLastCompaction, type Entry } from "../session-ledger/index.js";
+import { latestRealContextTokens, observedTokensSinceLastCompaction, rawTokensSinceLastCompaction, type Entry } from "../session-ledger/index.js";
 import type { Runtime } from "../runtime.js";
 
 /**
- * Source tokens counted toward the proactive threshold. Normally only tokens
- * the observer has covered: compacting past the frontier would discard entries
- * no memory describes, and Pi's own threshold compaction backstops a stalled
- * observer. When Pi's automatic compaction is disabled there is no backstop,
- * so count raw tokens; the compaction hook still protects unobserved entries
- * (catch-up, retention, or delegation to Pi's native summarizer).
+ * Tokens counted toward the proactive threshold, measured in the threshold's
+ * own currency. Ratio-mode thresholds are a percentage of the model context
+ * window, so the clock must be real provider-reported context: comparing a
+ * window percentage against a chars/4 ledger estimate drifts with
+ * system-prompt/tool-schema overhead everywhere, and by 30-40% on CJK-heavy
+ * sessions where the estimate undercounts real usage — pushing the effective
+ * trigger past Pi's native compaction. Calibrated thresholds are absolute
+ * ledger budgets, so the ledger clocks apply: normally only tokens the
+ * observer has covered (compacting past the frontier would discard entries no
+ * memory describes; Pi's own threshold compaction backstops a stalled
+ * observer), or raw tokens when Pi's automatic compaction is disabled and
+ * there is no backstop — the compaction hook still protects unobserved
+ * entries (catch-up, retention, or delegation to Pi's native summarizer).
+ * Ratio mode falls back to the ledger clocks when no provider usage exists.
  */
 export function compactionProgress(runtime: Runtime, entries: Entry[]): number {
+	if (runtime.config.compactAfterTokensMode === "ratio") {
+		const real = latestRealContextTokens(entries);
+		if (real !== undefined) return real;
+	}
 	return runtime.config.piAutoCompactionEnabled === false
 		? rawTokensSinceLastCompaction(entries)
 		: observedTokensSinceLastCompaction(entries);
 }
 
-export function progressLabel(runtime: Runtime): "observed" | "estimated" {
+/**
+ * Label for the compaction clock in use: "real" when ratio mode is measuring
+ * provider-reported context, otherwise the ledger-clock label matching the Pi
+ * auto-compaction setting.
+ */
+export function progressLabel(runtime: Runtime, entries: Entry[]): "observed" | "estimated" | "real" {
+	if (runtime.config.compactAfterTokensMode === "ratio" && latestRealContextTokens(entries) !== undefined) {
+		return "real";
+	}
 	return runtime.config.piAutoCompactionEnabled === false ? "estimated" : "observed";
+}
+
+/** Human-readable unit for the compaction clock, for notify and status lines. */
+export function progressUnit(runtime: Runtime, entries: Entry[]): string {
+	return progressLabel(runtime, entries) === "real"
+		? "real context tokens"
+		: `${progressLabel(runtime, entries)} source tokens`;
 }
 
 type CompactionTriggerCtx = Parameters<Parameters<ExtensionAPI["on"]>[1]>[1];
@@ -53,7 +80,7 @@ export function maybeTriggerCompaction(runtime: Runtime, ctx: CompactionTriggerC
 		const ui = ctx.ui;
 
 		if (hasUI) ui?.notify(
-			`Observational memory: compaction threshold reached (~${progress.toLocaleString()} ${progressLabel(runtime)} source tokens); triggering compaction`,
+			`Observational memory: compaction threshold reached (~${progress.toLocaleString()} ${progressUnit(runtime, entries)}); triggering compaction`,
 			"info",
 		);
 

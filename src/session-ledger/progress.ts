@@ -204,6 +204,23 @@ export function realContextTokensAtCoverage(entries: Entry[], coverageIdx: numbe
 }
 
 /**
+ * Latest real context size from provider-reported usage: the last valid
+ * assistant usage in the branch, scanning backwards. Same basis as the
+ * context-usage percentage and Pi's own compaction backstop. Returns
+ * undefined when no valid usage exists (fresh session, only aborted/error
+ * assistant responses, or a provider that reports no usage) — callers must
+ * fall back to an estimate-based clock rather than treating the threshold as
+ * reached or unreached.
+ */
+export function latestRealContextTokens(entries: Entry[]): number | undefined {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const t = validAssistantContextTokens(entries[i]);
+		if (t !== undefined) return t;
+	}
+	return undefined;
+}
+
+/**
  * Real context growth since the most recent anchor (a compaction, or the given
  * coverage marker), measured from provider-reported usage.
  *
