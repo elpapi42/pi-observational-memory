@@ -117,6 +117,8 @@ export class Runtime {
 	consolidationAbortController: AbortController | undefined;
 	compactInFlight = false;
 	compactHookInFlight = false;
+	/** Epoch ms of the last "Nothing to compact" failure — used for backoff. */
+	lastCompactNoopAt: number | undefined;
 	resolveFailureNotified = false;
 	lastObserverError: string | undefined;
 	lastReflectorError: string | undefined;
