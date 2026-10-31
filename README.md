@@ -6,6 +6,8 @@
 
 # pi-observational-memory
 
+[![omp status](https://omppackages.com/badge/pi-observational-memory.svg)](https://omppackages.com/packages/pi-observational-memory)
+
 > **Make Pi sessions feel endless.**
 
 `pi-observational-memory` is a Pi extension that keeps long agent sessions coherent across compactions, handoffs, and days of work.
