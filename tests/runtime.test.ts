@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { Runtime } from "../src/runtime.js";
+import { MAX_NOTIFY_ERROR_CHARS, Runtime } from "../src/runtime.js";
 
 function modelRegistry(args: { found?: unknown; auth?: unknown } = {}) {
 	return {
@@ -370,5 +370,52 @@ describe("Runtime V3 behavior", () => {
 
 			expect(result).toEqual({ ok: true, model: FALLBACK, apiKey: undefined, headers: { Authorization: "Bearer go" } });
 		});
+	});
+});
+
+describe("failure notifications", () => {
+	const providerError =
+		'observer stream ended with stopReason "error": 400 data:\n' +
+		'{"error":{"param":"messages[1].tool_calls[0] is missing a function\nname"}}\n\n';
+
+	it("renders a multi-line provider error as one transcript line", () => {
+		const runtime = new Runtime();
+		const notify = vi.fn();
+
+		runtime.recordConsolidationStageError({ hasUI: true, ui: { notify } }, "observer", new Error(providerError));
+
+		expect(notify).toHaveBeenCalledWith(
+			'Observational memory: observer failed: observer stream ended with stopReason "error": 400 data: {"error":{"param":"messages[1].tool_calls[0] is missing a function name"}}',
+			"warning",
+		);
+	});
+
+	it("keeps the raw error for status and diagnostics", () => {
+		const runtime = new Runtime();
+
+		runtime.recordConsolidationStageError({ hasUI: true, ui: { notify: vi.fn() } }, "observer", new Error(providerError));
+
+		expect(runtime.lastObserverError).toBe(providerError);
+	});
+
+	it("truncates an over-long error and marks the cut", () => {
+		const runtime = new Runtime();
+		const notify = vi.fn();
+
+		runtime.recordConsolidationStageError({ hasUI: true, ui: { notify } }, "reflector", new Error("x".repeat(500)));
+
+		const [message] = notify.mock.calls[0] as [string, string];
+		expect(message).toBe(`Observational memory: reflector failed: ${"x".repeat(MAX_NOTIFY_ERROR_CHARS)}…`);
+	});
+
+	it("applies the same formatting to a failed tracked task", async () => {
+		const runtime = new Runtime();
+		const notify = vi.fn();
+
+		await runtime.launchConsolidationTask({ hasUI: true, ui: { notify } }, async () => {
+			throw new Error("line one\nline two");
+		});
+
+		expect(notify).toHaveBeenCalledWith("Observational memory: consolidation failed: line one line two", "warning");
 	});
 });

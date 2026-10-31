@@ -47,6 +47,22 @@ function countUsableHeaders(headers: unknown): number {
 }
 
 /**
+ * Upper bound for the error text shown in a TUI warning.
+ *
+ * Provider failures can carry an entire response body (a gateway 400 is often a JSON
+ * document), and `ui.notify(..., "warning")` is rendered into pi's transcript, not a
+ * transient toast: every newline in the message becomes a transcript row. Flatten the
+ * text to one bounded line for the UI while the raw message keeps flowing into
+ * `lastObserverError` / `debugLog`, where multi-line detail is still useful.
+ */
+export const MAX_NOTIFY_ERROR_CHARS = 200;
+
+export function formatNotifyError(message: string): string {
+	const flattened = message.replace(/\s+/g, " ").trim();
+	return flattened.length > MAX_NOTIFY_ERROR_CHARS ? `${flattened.slice(0, MAX_NOTIFY_ERROR_CHARS)}…` : flattened;
+}
+
+/**
  * How long to wait for the availability re-check in `recheckProviderCredential`, and how
  * long before the same provider may be re-checked again.
  *
@@ -389,7 +405,8 @@ export class Runtime {
 		if (phase === "observer") this.lastObserverError = message;
 		if (phase === "reflector") this.lastReflectorError = message;
 		if (phase === "dropper") this.lastDropperError = message;
-		if (ctx.hasUI && ctx.ui) ctx.ui.notify(`Observational memory: ${phase} failed: ${message}`, "warning");
+		if (ctx.hasUI && ctx.ui)
+			ctx.ui.notify(`Observational memory: ${phase} failed: ${formatNotifyError(message)}`, "warning");
 		return message;
 	}
 
@@ -407,7 +424,8 @@ export class Runtime {
 				await work();
 			} catch (error) {
 				errorMessage = error instanceof Error ? error.message : String(error);
-				if (hasUI && ui) ui.notify(`Observational memory: ${label} failed: ${errorMessage}`, "warning");
+				if (hasUI && ui)
+					ui.notify(`Observational memory: ${label} failed: ${formatNotifyError(errorMessage)}`, "warning");
 			} finally {
 				onFinally(errorMessage);
 			}
