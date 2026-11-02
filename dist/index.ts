@@ -1762,13 +1762,13 @@ async function runObserver(args) {
     }
   };
   const now = nowTimestamp();
-  const userText = `Current local time: ${now}
-
-CURRENT REFLECTIONS:
+  const userText = `CURRENT REFLECTIONS:
 ${joinOrEmpty(priorReflections)}
 
 CURRENT OBSERVATIONS:
 ${joinOrEmpty(priorObservations)}
+
+Current local time: ${now}
 
 Compress the following new conversation chunk into observations by calling record_observations one or more times. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
 

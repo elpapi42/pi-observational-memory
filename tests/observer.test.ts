@@ -111,6 +111,25 @@ describe("runObserver", () => {
 		expect(systemPrompt).not.toContain("pruner");
 	});
 
+	it("puts the current local time after prior memory so the memory stays a cacheable prefix", async () => {
+		let userText = "";
+		const loop = fakeAgentLoop((prompts) => {
+			userText = prompts[0]?.content?.[0]?.text ?? "";
+		});
+
+		await runObserver({
+			...baseArgs,
+			priorReflections: ["reflection-marker"],
+			priorObservations: ["observation-marker"],
+			agentLoop: loop,
+		});
+
+		expect(userText.startsWith("CURRENT REFLECTIONS:")).toBe(true);
+		const timeAt = userText.indexOf("Current local time:");
+		expect(timeAt).toBeGreaterThan(userText.indexOf("observation-marker"));
+		expect(timeAt).toBeLessThan(userText.indexOf("NEW CONVERSATION CHUNK:"));
+	});
+
 	it("records V3 observations with source ids and code-computed tokenCount", async () => {
 		const content = "User asked for a memory update.";
 		const loop = fakeAgentLoop(async (_prompts, context) => {
