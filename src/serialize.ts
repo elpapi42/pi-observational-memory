@@ -69,6 +69,58 @@ function textOnly(content: unknown): string {
 		.join("\n");
 }
 
+/** Pi's `bashExecution` message, recorded for a user `!` command (no `content`). */
+type BashExecutionMessage = {
+	role: "bashExecution";
+	command?: unknown;
+	output?: unknown;
+	exitCode?: unknown;
+	cancelled?: unknown;
+	truncated?: unknown;
+	fullOutputPath?: unknown;
+	excludeFromContext?: unknown;
+};
+
+/** Pi's `bashExecutionToText` (core/messages.js): the user text `convertToLlm` sends the model. */
+function bashExecutionToText(msg: BashExecutionMessage): string {
+	let text = `Ran \`${String(msg.command ?? "")}\`\n`;
+	text += typeof msg.output === "string" && msg.output ? `\`\`\`\n${msg.output}\n\`\`\`` : "(no output)";
+	if (msg.cancelled === true) {
+		text += "\n\n(command cancelled)";
+	} else if (typeof msg.exitCode === "number" && msg.exitCode !== 0) {
+		text += `\n\nCommand exited with code ${msg.exitCode}`;
+	}
+	if (msg.truncated === true && typeof msg.fullOutputPath === "string" && msg.fullOutputPath) {
+		text += `\n\n[Output truncated. Full output: ${msg.fullOutputPath}]`;
+	}
+	return text;
+}
+
+/**
+ * Render a message role other than user, assistant and tool result the way
+ * Pi's `convertToLlm` presents it to the model. Null when Pi sends the model
+ * no conversation for it: a `!!` command (`excludeFromContext`), or a system
+ * message, which carries prompt sections rather than conversation (Pi's own
+ * compaction serializer skips it too). Undefined for the roles callers render.
+ */
+function renderPiMessageRole(msg: Record<string, unknown>, time: string, text: (content: unknown) => string): string | null | undefined {
+	switch (msg.role) {
+		case "user":
+		case "assistant":
+		case "toolResult":
+			return undefined;
+		case "bashExecution":
+			if (msg.excludeFromContext === true) return null;
+			return `[User @ ${time}]: ${bashExecutionToText(msg as BashExecutionMessage)}`;
+		case "system":
+			return null;
+		default: {
+			const body = text(msg.content);
+			return body ? `[${String(msg.role)} @ ${time}]: ${body}` : null;
+		}
+	}
+}
+
 export function serializeConversation(messages: Message[]): string {
 	return messages
 		.map((msg): string | null => {
@@ -88,6 +140,8 @@ export function serializeConversation(messages: Message[]): string {
 				if (!body) return null;
 				return `[Assistant @ ${time}]: ${body}`;
 			}
+			const other = renderPiMessageRole(msg as unknown as Record<string, unknown>, time, textOnly);
+			if (other !== undefined) return other;
 			const text = textOnly(msg.content);
 			return `[Tool result for ${(msg as ToolResultMessage).toolName} @ ${time}]: ${text}`;
 		})
@@ -253,6 +307,8 @@ function renderRecallMessage(entry: RenderableEntry): string | null {
 		if (!body) return null;
 		return `[Assistant @ ${time}]: ${body}`;
 	}
+	const other = renderPiMessageRole(msg as unknown as Record<string, unknown>, time, (content) => textAndPlaceholders(content));
+	if (other !== undefined) return other;
 	return `[Tool result: ${(msg as ToolResultMessage).toolName} @ ${time}]: ${textAndPlaceholders(msg.content)}`;
 }
 

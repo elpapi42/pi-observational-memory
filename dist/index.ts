@@ -1521,6 +1521,43 @@ function textOnly(content) {
   if (!Array.isArray(content)) return "";
   return content.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n");
 }
+function bashExecutionToText(msg) {
+  let text = `Ran \`${String(msg.command ?? "")}\`
+`;
+  text += typeof msg.output === "string" && msg.output ? `\`\`\`
+${msg.output}
+\`\`\`` : "(no output)";
+  if (msg.cancelled === true) {
+    text += "\n\n(command cancelled)";
+  } else if (typeof msg.exitCode === "number" && msg.exitCode !== 0) {
+    text += `
+
+Command exited with code ${msg.exitCode}`;
+  }
+  if (msg.truncated === true && typeof msg.fullOutputPath === "string" && msg.fullOutputPath) {
+    text += `
+
+[Output truncated. Full output: ${msg.fullOutputPath}]`;
+  }
+  return text;
+}
+function renderPiMessageRole(msg, time, text) {
+  switch (msg.role) {
+    case "user":
+    case "assistant":
+    case "toolResult":
+      return void 0;
+    case "bashExecution":
+      if (msg.excludeFromContext === true) return null;
+      return `[User @ ${time}]: ${bashExecutionToText(msg)}`;
+    case "system":
+      return null;
+    default: {
+      const body = text(msg.content);
+      return body ? `[${String(msg.role)} @ ${time}]: ${body}` : null;
+    }
+  }
+}
 function serializeConversation(messages) {
   return messages.map((msg) => {
     const time = formatTimestamp(msg.timestamp);
@@ -1536,6 +1573,8 @@ function serializeConversation(messages) {
       if (!body) return null;
       return `[Assistant @ ${time}]: ${body}`;
     }
+    const other = renderPiMessageRole(msg, time, textOnly);
+    if (other !== void 0) return other;
     const text = textOnly(msg.content);
     return `[Tool result for ${msg.toolName} @ ${time}]: ${text}`;
   }).filter((line) => line !== null).join("\n\n");
@@ -1646,6 +1685,8 @@ function renderRecallMessage(entry) {
     if (!body) return null;
     return `[Assistant @ ${time}]: ${body}`;
   }
+  const other = renderPiMessageRole(msg, time, (content) => textAndPlaceholders(content));
+  if (other !== void 0) return other;
   return `[Tool result: ${msg.toolName} @ ${time}]: ${textAndPlaceholders(msg.content)}`;
 }
 function renderRecallSourceEntry(entry) {
@@ -3532,6 +3573,9 @@ function sourceOriginAndQualifiers(entry) {
       );
       return { origin: "Assistant", timestamp, qualifiers: toolCalls.length > 0 ? [`tool calls: ${toolCalls.join(", ")}`] : [] };
     }
+    const role = msg.role;
+    if (role === "bashExecution") return { origin: "User shell command", timestamp, qualifiers: [] };
+    if (role === "system") return { origin: "System", timestamp, qualifiers: [] };
     const toolName = msg.toolName;
     return { origin: `Tool result: ${typeof toolName === "string" && toolName ? toolName : "unknown"}`, timestamp, qualifiers: [] };
   }
