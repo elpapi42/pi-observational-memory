@@ -21,6 +21,9 @@ export function progressLabel(runtime: Runtime): "observed" | "estimated" {
 	return runtime.config.piAutoCompactionEnabled === false ? "estimated" : "observed";
 }
 
+/** Backoff window after a "Nothing to compact" failure (ms). */
+const NOOP_BACKOFF_MS = 60_000;
+
 type CompactionTriggerCtx = Parameters<Parameters<ExtensionAPI["on"]>[1]>[1];
 
 export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): void {
@@ -39,6 +42,14 @@ export function maybeTriggerCompaction(runtime: Runtime, ctx: CompactionTriggerC
 		runtime.ensureConfig(ctx.cwd);
 		if (runtime.config.passive === true) return;
 		if (runtime.compactInFlight) return;
+
+		// Backoff: if the last compact attempt was a no-op ("Nothing to compact"),
+		// don't immediately re-trigger on every agent_settled. Wait for the
+		// backoff window to expire before attempting again.
+		if (runtime.lastCompactNoopAt !== undefined) {
+			const elapsed = Date.now() - runtime.lastCompactNoopAt;
+			if (elapsed < NOOP_BACKOFF_MS) return;
+		}
 
 		const entries = ctx.sessionManager?.getBranch?.() as Entry[] | undefined;
 		if (!entries) return;
@@ -91,6 +102,17 @@ export function maybeTriggerCompaction(runtime: Runtime, ctx: CompactionTriggerC
 						runtime.compactInFlight = false;
 						if (error.message === "Compaction cancelled") {
 							// We already notified the user with the real reason before returning { cancel: true }.
+							return;
+						}
+						if (error.message.includes("Nothing to compact")) {
+							// Benign: the core compaction found no valid cut point or
+							// summarizable content (e.g. after a truncated-response
+							// recovery cycle). Not an error — just log at info level.
+							runtime.lastCompactNoopAt = Date.now();
+							if (hasUI) ui?.notify(
+								`Observational memory: ${error.message} — skipping`,
+								"info",
+							);
 							return;
 						}
 						if (hasUI) ui?.notify(`Observational memory: ${error.message}`, "error");
