@@ -146,6 +146,23 @@ export class Runtime {
 		tokensAtEmpty: number;
 	} | undefined;
 
+	/**
+	 * Empty-reflection backoff: a reflector run finished and found nothing to
+	 * crystallize from the memory as of this observation frontier (or kept
+	 * being cut off there). Its input only changes when new observations
+	 * arrive, so skip it until the frontier moves.
+	 */
+	reflectorEmptyBackoff: {
+		sessionIdentity: string | undefined;
+		observationCoverageId: string;
+	} | undefined;
+	/** Consecutive incomplete reflector runs (truncated or turn-capped, nothing accepted) on one frontier. */
+	reflectorIncomplete: {
+		sessionIdentity: string | undefined;
+		observationCoverageId: string;
+		attempts: number;
+	} | undefined;
+
 	ensureConfig(cwd: string): void {
 		if (this.configLoaded) return;
 		this.config = loadConfig(cwd);

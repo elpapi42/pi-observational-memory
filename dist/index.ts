@@ -2558,6 +2558,18 @@ var ReflectorStreamError = class extends Error {
     this.stopReason = stopReason;
   }
 };
+var ReflectorIncompleteError = class extends Error {
+  reason;
+  constructor(reason, maxTurns) {
+    super(reason === "length" ? "reflector response was cut off by the output-token limit before recording anything" : `reflector reached its ${maxTurns}-turn cap without an accepted reflection`);
+    this.name = "ReflectorIncompleteError";
+    this.reason = reason;
+  }
+};
+function calledTool(message) {
+  if (message.stopReason === "toolUse") return true;
+  return Array.isArray(message.content) && message.content.some((block) => block?.type === "toolCall");
+}
 var RecordReflectionsSchema = Type3.Object({
   reflections: Type3.Array(
     Type3.Object({
@@ -2682,6 +2694,8 @@ Crystallize any missing durable facts or patterns into new reflections. If nothi
   const thinkingLevel = args.thinkingLevel ?? "low";
   const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : void 0;
   let turnCount = 0;
+  let endedByTurnCap = false;
+  let lastStopReason;
   const config = {
     model,
     apiKey,
@@ -2694,7 +2708,9 @@ Crystallize any missing durable facts or patterns into new reflections. If nothi
     ...effectiveMaxTurns !== void 0 ? {
       finishTurn: (turn) => {
         if (turn.message.stopReason === "error" || turn.message.stopReason === "aborted") return;
-        return ++turnCount >= effectiveMaxTurns ? { action: "end" } : void 0;
+        if (++turnCount < effectiveMaxTurns) return void 0;
+        endedByTurnCap = calledTool(turn.message);
+        return { action: "end" };
       }
     } : {}
   };
@@ -2713,10 +2729,13 @@ Crystallize any missing durable facts or patterns into new reflections. If nothi
     if (message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")) {
       streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };
     }
+    if (event.type === "message_end" && message?.role === "assistant") lastStopReason = message.stopReason;
   }
   await stream.result();
   const acceptedReflections = Array.from(accumulated.values());
   if (acceptedReflections.length === 0 && streamError) throw new ReflectorStreamError(streamError.stopReason, streamError.errorMessage);
+  if (acceptedReflections.length === 0 && endedByTurnCap) throw new ReflectorIncompleteError("max_turns", effectiveMaxTurns);
+  if (acceptedReflections.length === 0 && lastStopReason === "length") throw new ReflectorIncompleteError("length");
   const afterCoverageById = reflectionCoverageMap(observations, [...reflections, ...acceptedReflections]);
   debugLog("reflector.result", {
     reason: acceptedReflections.length > 0 ? "accepted_nonempty" : toolCallCount === 0 ? "no_tool_call" : "all_filtered",
@@ -2903,6 +2922,11 @@ function registerConsolidationTrigger(pi, runtime, hooks = {}) {
   pi.on("turn_end", (_event, ctx) => {
     if (idleMode(ctx)) return;
     maybeLaunchConsolidation(pi, runtime, ctx);
+  });
+  pi.on("session_tree", () => {
+    runtime.observerEmptyBackoff = void 0;
+    runtime.reflectorEmptyBackoff = void 0;
+    runtime.reflectorIncomplete = void 0;
   });
   pi.on("agent_settled", (_event, ctx) => {
     if (!idleMode(ctx)) return;
@@ -3109,12 +3133,37 @@ async function runObserverStage(pi, runtime, ctx, resolver) {
   );
   return "continue";
 }
+var REFLECTOR_INCOMPLETE_ATTEMPTS = 2;
+function retryIncompleteReflectorRun(runtime, ctx, error, frontier) {
+  const previous = runtime.reflectorIncomplete;
+  const sameFrontier = previous !== void 0 && previous.sessionIdentity === frontier.sessionIdentity && previous.observationCoverageId === frontier.observationCoverageId;
+  const attempts = (sameFrontier ? previous.attempts : 0) + 1;
+  debugLog("reflector.incomplete", { reason: error.reason, attempts, observationCoverageId: frontier.observationCoverageId });
+  if (attempts < REFLECTOR_INCOMPLETE_ATTEMPTS) {
+    runtime.reflectorIncomplete = { ...frontier, attempts };
+    return { outcome: "continue", sameRunReflections: [] };
+  }
+  runtime.reflectorIncomplete = void 0;
+  runtime.reflectorEmptyBackoff = { ...frontier };
+  runtime.recordConsolidationStageError(ctx, "reflector", error);
+  return { outcome: "continue", sameRunReflections: [] };
+}
 async function runReflectorStage(pi, runtime, ctx, resolver) {
   const entries = ctx.sessionManager.getBranch();
   const reflectionTokens = stageTokens(entries, OM_REFLECTIONS_RECORDED, realContextTokens(ctx), observedTokensSinceReflectionCoverage);
   if (reflectionTokens < runtime.config.reflectAfterTokens) return { outcome: "continue", sameRunReflections: [] };
   const observationCoverageId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED);
   if (!observationCoverageId) return { outcome: "continue", sameRunReflections: [] };
+  const sessionMetadata = debugSessionMetadata(ctx);
+  const sessionIdentity = sessionMetadata.sessionId ?? sessionMetadata.sessionFile;
+  const backoff = runtime.reflectorEmptyBackoff;
+  if (backoff) {
+    if (backoff.sessionIdentity === sessionIdentity && backoff.observationCoverageId === observationCoverageId) {
+      debugLog("reflector.empty_backoff", { observationCoverageId });
+      return { outcome: "continue", sameRunReflections: [] };
+    }
+    runtime.reflectorEmptyBackoff = void 0;
+  }
   if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
     `Observational memory: reflector running (~${reflectionTokens.toLocaleString()} tokens)`,
     "info"
@@ -3126,31 +3175,43 @@ async function runReflectorStage(pi, runtime, ctx, resolver) {
     return { outcome: "abort", sameRunReflections: [] };
   }
   const folded = foldLedger(entries);
-  const reflections = await runStageWithFallback(ctx, "reflector", resolved, resolver, (worker) => {
-    const reflectorMemory = boundWorkerMemory(
-      folded.reflections,
-      folded.activeObservations,
-      resolveWorkerMemoryMaxTokens(runtime.config, worker.model.contextWindow)
-    );
-    return runReflector({
-      model: worker.model,
-      apiKey: worker.apiKey,
-      headers: worker.headers,
-      env: worker.env,
-      reflections: reflectorMemory.reflections,
-      observations: reflectorMemory.observations,
-      maxTurns: runtime.config.agentMaxTurns,
-      maxOutputTokens: runtime.config.agentMaxTokens,
-      signal: consolidationSignal(runtime),
-      thinkingLevel: workerThinkingLevel(runtime, worker),
-      modelRegistry: ctx.modelRegistry
-    });
-  }, consolidationSignal(runtime));
+  let reflections;
+  try {
+    reflections = await runStageWithFallback(ctx, "reflector", resolved, resolver, (worker) => {
+      const reflectorMemory = boundWorkerMemory(
+        folded.reflections,
+        folded.activeObservations,
+        resolveWorkerMemoryMaxTokens(runtime.config, worker.model.contextWindow)
+      );
+      return runReflector({
+        model: worker.model,
+        apiKey: worker.apiKey,
+        headers: worker.headers,
+        env: worker.env,
+        reflections: reflectorMemory.reflections,
+        observations: reflectorMemory.observations,
+        maxTurns: runtime.config.agentMaxTurns,
+        maxOutputTokens: runtime.config.agentMaxTokens,
+        signal: consolidationSignal(runtime),
+        thinkingLevel: workerThinkingLevel(runtime, worker),
+        modelRegistry: ctx.modelRegistry
+      });
+    }, consolidationSignal(runtime));
+  } catch (error) {
+    if (wasAborted(runtime) || !(error instanceof ReflectorIncompleteError)) throw error;
+    return retryIncompleteReflectorRun(runtime, ctx, error, { sessionIdentity, observationCoverageId });
+  }
   if (wasAborted(runtime)) {
     debugLog("reflector.aborted", {});
     return { outcome: "abort", sameRunReflections: [] };
   }
-  if (!reflections) return { outcome: "continue", sameRunReflections: [] };
+  runtime.reflectorIncomplete = void 0;
+  if (!reflections) {
+    debugLog("reflector.empty", { observationCoverageId });
+    runtime.reflectorEmptyBackoff = { sessionIdentity, observationCoverageId };
+    return { outcome: "continue", sameRunReflections: [] };
+  }
+  runtime.reflectorEmptyBackoff = void 0;
   const data = buildReflectionsRecordedData(reflections, observationCoverageId);
   if (!data) return { outcome: "continue", sameRunReflections: [] };
   appendEntry(pi, OM_REFLECTIONS_RECORDED, data);
@@ -3288,6 +3349,15 @@ var Runtime = class {
   availabilityRecheckedAt = /* @__PURE__ */ new Map();
   /** Deliberate-empty backoff (#23): skip observer re-fires over the same span until enough new tokens arrive. */
   observerEmptyBackoff;
+  /**
+   * Empty-reflection backoff: a reflector run finished and found nothing to
+   * crystallize from the memory as of this observation frontier (or kept
+   * being cut off there). Its input only changes when new observations
+   * arrive, so skip it until the frontier moves.
+   */
+  reflectorEmptyBackoff;
+  /** Consecutive incomplete reflector runs (truncated or turn-capped, nothing accepted) on one frontier. */
+  reflectorIncomplete;
   ensureConfig(cwd) {
     if (this.configLoaded) return;
     this.config = loadConfig(cwd);
