@@ -44,6 +44,25 @@ describe("session-ledger V3 progress helpers", () => {
 		expect(entryIndexById(entries).get("raw-2")).toBe(1);
 	});
 
+	it("caches the branch index and invalidates it when entries are appended or the branch changes", () => {
+		const branch = [textCustomMessage("raw-1", "abcd"), textCustomMessage("raw-2", "efgh")];
+		const first = entryIndexById(branch);
+		// Same branch (same tip + length): the cached Map is reused.
+		expect(entryIndexById(branch)).toBe(first);
+
+		// Append a new entry (new tip + length): the cache must invalidate and rebuild.
+		const appended = [...branch, textCustomMessage("raw-3", "ijkl")];
+		const rebuilt = entryIndexById(appended);
+		expect(rebuilt).not.toBe(first);
+		expect(rebuilt.get("raw-1")).toBe(0);
+		expect(rebuilt.get("raw-3")).toBe(2);
+
+		// A branch switch to a different tip rebuilds as well.
+		const switched = [textCustomMessage("x-1", "zz"), textCustomMessage("x-2", "zz")];
+		expect(entryIndexById(switched)).not.toBe(rebuilt);
+		expect(entryIndexById(switched).get("x-2")).toBe(1);
+	});
+
 	it("counts raw tokens after a branch index and ignores memory/compaction entries", () => {
 		const entries = [
 			textCustomMessage("raw-1", "aaaa"),
