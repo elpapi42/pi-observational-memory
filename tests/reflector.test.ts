@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	normalizeSupportingObservationIds,
 	observationToReflectorLine,
+	ReflectorIncompleteError,
 	runReflector,
 	summarizeSupportIdCounts,
 } from "../src/agents/reflector/agent.js";
@@ -297,5 +298,38 @@ describe("V3 reflector agent", () => {
 			result: async () => ({}),
 		})) as any;
 		await expect(runReflector({ ...baseArgs, agentLoop: loop })).resolves.toMatchObject([{ content }]);
+	});
+
+	it("reports a response cut off by the token limit with no tool call as incomplete, not empty", async () => {
+		const loop = (() => ({
+			async *[Symbol.asyncIterator]() {
+				yield { type: "message_end", message: { role: "assistant", stopReason: "length", content: [{ type: "text", text: "Let me think about the durable" }] } };
+			},
+			result: async () => ({}),
+		})) as any;
+
+		const error = await runReflector({ ...baseArgs, agentLoop: loop }).catch((e) => e);
+
+		expect(error).toBeInstanceOf(Error);
+		expect(error).toBeInstanceOf(ReflectorIncompleteError);
+		expect(error.reason).toBe("length");
+	});
+
+	it("reports a turn-capped run whose proposals were all rejected as incomplete, but not a text-only reply at the cap", async () => {
+		const loop = fakeAgentLoop(async (_prompts, context, config) => {
+			await context.tools[0].execute("tool-1", { reflections: [{ content: "Bad support", supportingObservationIds: ["missing"] }] });
+			expect(config.finishTurn({ message: { stopReason: "toolUse", content: [{ type: "toolCall", name: "record_reflections" }] } })).toEqual({ action: "end" });
+		});
+
+		const error = await runReflector({ ...baseArgs, agentLoop: loop, maxTurns: 1 }).catch((e) => e);
+
+		expect(error).toBeInstanceOf(Error);
+		expect(error).toBeInstanceOf(ReflectorIncompleteError);
+		expect(error.reason).toBe("max_turns");
+
+		const textOnlyAtCap = fakeAgentLoop(async (_prompts, _context, config) => {
+			config.finishTurn({ message: { stopReason: "stop", content: [{ type: "text", text: "Nothing durable yet." }] } });
+		});
+		await expect(runReflector({ ...baseArgs, agentLoop: textOnlyAtCap, maxTurns: 1 })).resolves.toBeUndefined();
 	});
 });

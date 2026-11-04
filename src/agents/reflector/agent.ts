@@ -28,6 +28,30 @@ export class ReflectorStreamError extends Error {
 	}
 }
 
+/**
+ * Thrown when the reflector accepted nothing and the run did not finish on its
+ * own: the last response was cut off by the output-token limit
+ * (`stopReason` `"length"`), or the turn cap ended a turn that called the tool.
+ * Unlike a run that ends with a text-only reply, it is no verdict that the
+ * memory holds nothing to crystallize.
+ */
+export class ReflectorIncompleteError extends Error {
+	readonly reason: "length" | "max_turns";
+	constructor(reason: "length" | "max_turns", maxTurns?: number) {
+		super(reason === "length"
+			? "reflector response was cut off by the output-token limit before recording anything"
+			: `reflector reached its ${maxTurns}-turn cap without an accepted reflection`);
+		this.name = "ReflectorIncompleteError";
+		this.reason = reason;
+	}
+}
+
+function calledTool(message: { content?: unknown; stopReason?: string }): boolean {
+	if (message.stopReason === "toolUse") return true;
+	return Array.isArray(message.content)
+		&& message.content.some((block) => (block as { type?: string } | null)?.type === "toolCall");
+}
+
 interface RunReflectorArgs {
 	model: Model<any>;
 	apiKey?: string;
@@ -189,6 +213,8 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 	const thinkingLevel = args.thinkingLevel ?? "low";
 	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
 	let turnCount = 0;
+	let endedByTurnCap = false;
+	let lastStopReason: string | undefined;
 	const config: AgentLoopConfig = {
 		model,
 		apiKey,
@@ -202,7 +228,9 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 			? {
 				finishTurn: (turn) => {
 					if (turn.message.stopReason === "error" || turn.message.stopReason === "aborted") return;
-					return ++turnCount >= effectiveMaxTurns ? { action: "end" } : undefined;
+					if (++turnCount < effectiveMaxTurns) return undefined;
+					endedByTurnCap = calledTool(turn.message);
+					return { action: "end" };
 				},
 			}
 			: {}),
@@ -224,10 +252,13 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 		if (message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")) {
 			streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };
 		}
+		if (event.type === "message_end" && message?.role === "assistant") lastStopReason = message.stopReason;
 	}
 	await stream.result();
 	const acceptedReflections = Array.from(accumulated.values());
 	if (acceptedReflections.length === 0 && streamError) throw new ReflectorStreamError(streamError.stopReason, streamError.errorMessage);
+	if (acceptedReflections.length === 0 && endedByTurnCap) throw new ReflectorIncompleteError("max_turns", effectiveMaxTurns);
+	if (acceptedReflections.length === 0 && lastStopReason === "length") throw new ReflectorIncompleteError("length");
 	const afterCoverageById = reflectionCoverageMap(observations, [...reflections, ...acceptedReflections]);
 	debugLog("reflector.result", {
 		reason: acceptedReflections.length > 0 ? "accepted_nonempty" : toolCallCount === 0 ? "no_tool_call" : "all_filtered",

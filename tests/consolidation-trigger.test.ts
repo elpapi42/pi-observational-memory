@@ -10,7 +10,10 @@ vi.mock("../src/agents/observer/agent.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../src/agents/observer/agent.js")>()),
 	runObserver: mockAgents.runObserver,
 }));
-vi.mock("../src/agents/reflector/agent.js", () => ({ runReflector: mockAgents.runReflector }));
+vi.mock("../src/agents/reflector/agent.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../src/agents/reflector/agent.js")>()),
+	runReflector: mockAgents.runReflector,
+}));
 vi.mock("../src/agents/dropper/agent.js", () => ({ runDropper: mockAgents.runDropper }));
 
 import { ObserverStreamError } from "../src/agents/observer/agent.js";
@@ -777,6 +780,59 @@ describe("V3 consolidation trigger", () => {
 		await runLaunchedWork();
 
 		expect(pi.appendEntry.mock.calls[1]).toEqual([OM_OBSERVATIONS_DROPPED, { observationIds: ["bbbbbbbbbbbb"], coversUpToId: "raw-2" }]);
+	});
+
+	it("starts the empty-result backoffs over after navigating to another branch", async () => {
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+			textCustomMessage("raw-2", "bbbbbbbb"),
+		];
+		const { fireTurnEnd, fire, runLaunchedWork, runtime } = setup({ entries, observeAfterTokens: 1, reflectAfterTokens: 1 });
+
+		fireTurnEnd();
+		await runLaunchedWork();
+		fireTurnEnd();
+		await runLaunchedWork();
+		expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
+		expect(mockAgents.runReflector).toHaveBeenCalledTimes(1);
+
+		(runtime as any).reflectorIncomplete = { sessionIdentity: "session-1", observationCoverageId: "raw-1", attempts: 1 };
+		fire("session_tree");
+		expect((runtime as any).observerEmptyBackoff).toBeUndefined();
+		expect((runtime as any).reflectorEmptyBackoff).toBeUndefined();
+		expect((runtime as any).reflectorIncomplete).toBeUndefined();
+		fireTurnEnd();
+		await runLaunchedWork();
+
+		expect(mockAgents.runObserver).toHaveBeenCalledTimes(2);
+		expect(mockAgents.runReflector).toHaveBeenCalledTimes(2);
+	});
+
+	it("runs the reflector once over unchanged memory after an empty result, and again once new observations arrive", async () => {
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+		];
+		const { fireTurnEnd, runLaunchedWork, addEntries, pi } = setup({ entries, observeAfterTokens: 1_000_000, reflectAfterTokens: 1 });
+		mockAgents.runReflector.mockResolvedValue(undefined);
+
+		fireTurnEnd();
+		await runLaunchedWork();
+		fireTurnEnd();
+		await runLaunchedWork();
+
+		expect(mockAgents.runReflector).toHaveBeenCalledTimes(1);
+		expect(pi.appendEntry).not.toHaveBeenCalled();
+
+		addEntries(
+			textCustomMessage("raw-2", "bbbbbbbb"),
+			observationsRecordedEntry("om-obs-2", { observations: [obsB], coversUpToId: "raw-2" }),
+		);
+		fireTurnEnd();
+		await runLaunchedWork();
+
+		expect(mockAgents.runReflector).toHaveBeenCalledTimes(2);
 	});
 
 	it("appends no empty reflection or drop entries", async () => {
