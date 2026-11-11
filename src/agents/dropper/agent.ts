@@ -62,6 +62,8 @@ interface RunDropperArgs {
 	thinkingLevel?: ModelThinkingLevel;
 	modelRegistry?: StreamableModelRegistry;
 	streamSimple?: WorkerStreamSimple;
+	/** Provider cache key (see `workerCacheKey`); omitted when the session has no id. */
+	cacheKey?: string;
 }
 
 const RELEVANCE_DROP_RANK: Record<Observation["relevance"], number> = {
@@ -261,6 +263,7 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 		apiKey,
 		headers,
 		env,
+		...(args.cacheKey ? { sessionId: args.cacheKey } : {}),
 		maxTokens: boundedMaxTokens(model, args.maxOutputTokens ?? AGENT_LOOP_MAX_TOKENS),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",

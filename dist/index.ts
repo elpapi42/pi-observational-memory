@@ -1794,6 +1794,7 @@ ${conversation}`;
     apiKey,
     headers,
     env,
+    ...args.cacheKey ? { sessionId: args.cacheKey } : {},
     maxTokens: boundedMaxTokens(model, args.maxOutputTokens ?? AGENT_LOOP_MAX_TOKENS),
     convertToLlm: (msgs) => msgs,
     toolExecution: "sequential",
@@ -1828,6 +1829,25 @@ ${conversation}`;
     return void 0;
   }
   return Array.from(accumulated.values());
+}
+
+// src/agents/cache-key.ts
+import { createHash as createHash2 } from "node:crypto";
+var MAX_CACHE_KEY_LENGTH = 64;
+function sessionCacheId(ctx) {
+  try {
+    return ctx?.sessionManager?.getSessionId?.();
+  } catch {
+    return void 0;
+  }
+}
+function workerCacheKey(stage, sessionId) {
+  const trimmed = sessionId?.trim();
+  if (!trimmed) return void 0;
+  const prefix = `om:${stage}:`;
+  if (prefix.length + trimmed.length <= MAX_CACHE_KEY_LENGTH) return prefix + trimmed;
+  const digest = createHash2("sha256").update(trimmed).digest("hex");
+  return prefix + digest.slice(0, MAX_CACHE_KEY_LENGTH - prefix.length);
 }
 
 // src/hooks/compaction-catch-up.ts
@@ -1871,6 +1891,7 @@ async function catchUpObserver(args) {
         apiKey: resolved.apiKey,
         headers: resolved.headers,
         env: resolved.env,
+        cacheKey: workerCacheKey("observer", sessionCacheId(ctx)),
         priorReflections: memory.reflections.map(reflectionToSummaryLine),
         priorObservations: memory.observations.map(observationToSummaryLine),
         chunk,
@@ -2413,6 +2434,7 @@ This maximum is a hard upper bound, not a target. Drop fewer or none if fewer ob
     apiKey,
     headers,
     env,
+    ...args.cacheKey ? { sessionId: args.cacheKey } : {},
     maxTokens: boundedMaxTokens(model, args.maxOutputTokens ?? AGENT_LOOP_MAX_TOKENS),
     convertToLlm: (msgs) => msgs,
     toolExecution: "sequential",
@@ -2687,6 +2709,7 @@ Crystallize any missing durable facts or patterns into new reflections. If nothi
     apiKey,
     headers,
     env,
+    ...args.cacheKey ? { sessionId: args.cacheKey } : {},
     maxTokens: boundedMaxTokens(model, args.maxOutputTokens ?? AGENT_LOOP_MAX_TOKENS),
     convertToLlm: (msgs) => msgs,
     toolExecution: "sequential",
@@ -3059,6 +3082,7 @@ async function runObserverStage(pi, runtime, ctx, resolver) {
       apiKey: worker.apiKey,
       headers: worker.headers,
       env: worker.env,
+      cacheKey: workerCacheKey("observer", sessionCacheId(ctx)),
       priorReflections,
       priorObservations,
       chunk,
@@ -3137,6 +3161,7 @@ async function runReflectorStage(pi, runtime, ctx, resolver) {
       apiKey: worker.apiKey,
       headers: worker.headers,
       env: worker.env,
+      cacheKey: workerCacheKey("reflector", sessionCacheId(ctx)),
       reflections: reflectorMemory.reflections,
       observations: reflectorMemory.observations,
       maxTurns: runtime.config.agentMaxTurns,
@@ -3216,6 +3241,7 @@ async function runDropperStage(pi, runtime, ctx, resolver, sameRunReflections, s
       apiKey: worker.apiKey,
       headers: worker.headers,
       env: worker.env,
+      cacheKey: workerCacheKey("dropper", sessionCacheId(ctx)),
       reflections: dropperMemory.reflections,
       observations: dropperMemory.observations,
       targetTokens: runtime.config.observationsPoolTargetTokens,
