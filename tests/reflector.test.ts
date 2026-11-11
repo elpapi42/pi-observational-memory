@@ -299,3 +299,35 @@ describe("V3 reflector agent", () => {
 		await expect(runReflector({ ...baseArgs, agentLoop: loop })).resolves.toMatchObject([{ content }]);
 	});
 });
+
+describe("runReflector provider cache key", () => {
+	const args = {
+		apiKey: "test",
+		reflections: [],
+		observations: [observation("aaaaaaaaaaaa")],
+	};
+
+	function captureLoopConfig() {
+		let loopConfig: any;
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			loopConfig = config;
+		});
+		return { loop, config: () => loopConfig };
+	}
+
+	it("forwards the stage cache key as the provider session id", async () => {
+		const { loop, config } = captureLoopConfig();
+
+		await runReflector({ ...args, model: {} as any, agentLoop: loop, cacheKey: "om:reflector:session-1" });
+
+		expect(config().sessionId).toBe("om:reflector:session-1");
+	});
+
+	it("omits the session id when no cache key is available", async () => {
+		const { loop, config } = captureLoopConfig();
+
+		await runReflector({ ...args, model: {} as any, agentLoop: loop });
+
+		expect(config()).not.toHaveProperty("sessionId");
+	});
+});

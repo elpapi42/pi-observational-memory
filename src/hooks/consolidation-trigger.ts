@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { sessionCacheId, workerCacheKey } from "../agents/cache-key.js";
 import { runDropper } from "../agents/dropper/agent.js";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { ObserverStreamError, runObserver } from "../agents/observer/agent.js";
@@ -520,6 +521,7 @@ async function runObserverStage(
 			apiKey: worker.apiKey,
 			headers: worker.headers,
 			env: worker.env,
+			cacheKey: workerCacheKey("observer", sessionCacheId(ctx)),
 			priorReflections,
 			priorObservations,
 			chunk,
@@ -612,6 +614,7 @@ async function runReflectorStage(
 			apiKey: worker.apiKey,
 			headers: worker.headers,
 			env: worker.env,
+			cacheKey: workerCacheKey("reflector", sessionCacheId(ctx)),
 			reflections: reflectorMemory.reflections,
 			observations: reflectorMemory.observations,
 			maxTurns: runtime.config.agentMaxTurns,
@@ -705,6 +708,7 @@ async function runDropperStage(
 			apiKey: worker.apiKey,
 			headers: worker.headers,
 			env: worker.env,
+			cacheKey: workerCacheKey("dropper", sessionCacheId(ctx)),
 			reflections: dropperMemory.reflections,
 			observations: dropperMemory.observations,
 			targetTokens: runtime.config.observationsPoolTargetTokens,

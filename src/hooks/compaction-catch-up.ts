@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { runObserver } from "../agents/observer/agent.js";
+import { sessionCacheId, workerCacheKey } from "../agents/cache-key.js";
 import { resolveObserverChunkMaxTokens, resolveWorkerMemoryMaxTokens } from "../config.js";
 import { debugLog } from "../debug-log.js";
 import type { Runtime } from "../runtime.js";
@@ -96,6 +97,7 @@ export async function catchUpObserver(args: CatchUpArgs): Promise<CatchUpResult>
 				apiKey: resolved.apiKey,
 				headers: resolved.headers,
 				env: resolved.env,
+				cacheKey: workerCacheKey("observer", sessionCacheId(ctx)),
 				priorReflections: memory.reflections.map(reflectionToSummaryLine),
 				priorObservations: memory.observations.map(observationToSummaryLine),
 				chunk,

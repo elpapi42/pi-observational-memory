@@ -262,3 +262,37 @@ describe("normalizeSourceEntryIds", () => {
 		expect(normalizeSourceEntryIds(["entry-a"], [])).toBeUndefined();
 	});
 });
+
+describe("runObserver provider cache key", () => {
+	const args = {
+		apiKey: "test",
+		priorReflections: [],
+		priorObservations: [],
+		chunk: "[Source entry id: entry-a]\nUser asked for a memory update.",
+		allowedSourceEntryIds: ["entry-a"],
+	};
+
+	function captureLoopConfig() {
+		let loopConfig: any;
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			loopConfig = config;
+		});
+		return { loop, config: () => loopConfig };
+	}
+
+	it("forwards the stage cache key as the provider session id", async () => {
+		const { loop, config } = captureLoopConfig();
+
+		await runObserver({ ...args, model: {} as any, agentLoop: loop, cacheKey: "om:observer:session-1" });
+
+		expect(config().sessionId).toBe("om:observer:session-1");
+	});
+
+	it("omits the session id when no cache key is available", async () => {
+		const { loop, config } = captureLoopConfig();
+
+		await runObserver({ ...args, model: {} as any, agentLoop: loop });
+
+		expect(config()).not.toHaveProperty("sessionId");
+	});
+});
