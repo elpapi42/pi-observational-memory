@@ -13,9 +13,29 @@ export function isSourceEntry(entry: Entry): boolean {
 	return SOURCE_ENTRY_TYPES.has(entry.type);
 }
 
+// Session branches grow by appending at the tip and never rewrite history, so
+// the entry index only changes when (tip id, length) changes: an append moves
+// both, and a branch switch lands on a different tip (or the same prefix, which
+// serializes to an identical index). Caching the Map here removes a full-branch
+// rebuild from every progress/coverage helper on the per-turn trigger path.
+let cachedBranchTip: string | undefined;
+let cachedBranchLength = -1;
+let cachedEntryIndex: Map<string, number> | undefined;
+
 export function entryIndexById(entries: Entry[]): Map<string, number> {
+	const tipId = entries.length > 0 ? entries[entries.length - 1].id : undefined;
+	if (
+		cachedEntryIndex !== undefined
+		&& cachedBranchTip === tipId
+		&& cachedBranchLength === entries.length
+	) {
+		return cachedEntryIndex;
+	}
 	const idToIndex = new Map<string, number>();
 	for (let i = 0; i < entries.length; i++) idToIndex.set(entries[i].id, i);
+	cachedBranchTip = tipId;
+	cachedBranchLength = entries.length;
+	cachedEntryIndex = idToIndex;
 	return idToIndex;
 }
 
