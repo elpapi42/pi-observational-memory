@@ -6,6 +6,8 @@
 
 # pi-observational-memory
 
+[![omp status](https://omppackages.com/badge/pi-observational-memory.svg)](https://omppackages.com/packages/pi-observational-memory)
+
 > **Make Pi sessions feel endless.**
 
 `pi-observational-memory` is a Pi extension that keeps long agent sessions coherent across compactions, handoffs, and days of work.
@@ -187,7 +189,13 @@ pi install git:github.com/elpapi42/pi-observational-memory
 pi install /absolute/path/to/pi-observational-memory
 ```
 
-Pi loads the extension from `src/index.ts` through the package `pi.extensions` entry.
+Pi loads the extension from the prebuilt `dist/index.ts` module that the package `pi.extensions` entry points at.
+
+---
+
+## Development
+
+`src/` is the source of truth. To regenerate the prebuilt module after editing `src/`, run `npm run build`. CI fails when `dist/` is stale.
 
 ---
 

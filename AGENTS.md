@@ -29,6 +29,13 @@ single place that applies Pi's auth acceptance rule — both the primary and fal
 it. Do not make the fallback mandatory: with none configured, the previous skip/fail-safe behavior
 must be byte-for-byte unchanged (covered by `tests/runtime.test.ts` and `tests/consolidation-trigger.test.ts`).
 
+## Prebuilt extension entry
+
+`pi.extensions` loads the committed prebuilt module at `dist/index.ts`, so `src/` edits need
+`npm run build` before committing; CI rebuilds the module and fails when `dist/` is stale (a base
+branch that moved and changed `src/` also needs a merge + rebuild). Keep the output's `.ts`
+extension and the host packages external — `scripts/build.js` explains why.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
