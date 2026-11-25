@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { runDropper } from "../agents/dropper/agent.js";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
-import { ObserverStreamError, runObserver } from "../agents/observer/agent.js";
+import { ObserverStreamError, observeChunkWithThinkingRetry, runObserver } from "../agents/observer/agent.js";
 import { runReflector } from "../agents/reflector/agent.js";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
 import { resolveObserverChunkMaxTokens, resolveWorkerMemoryMaxTokens } from "../config.js";
@@ -515,21 +515,27 @@ async function runObserverStage(
 
 	let observations: Observation[] | undefined;
 	try {
-		observations = await runStageWithFallback(ctx, "observer", resolved, resolver, (worker) => runObserver({
-			model: worker.model as any,
-			apiKey: worker.apiKey,
-			headers: worker.headers,
-			env: worker.env,
-			priorReflections,
-			priorObservations,
-			chunk,
-			allowedSourceEntryIds: sourceEntryIds,
-			maxTurns: runtime.config.agentMaxTurns,
-			maxOutputTokens: runtime.config.agentMaxTokens,
-			signal: consolidationSignal(runtime),
-			thinkingLevel: workerThinkingLevel(runtime, worker),
-			modelRegistry: ctx.modelRegistry,
-		}), consolidationSignal(runtime));
+		observations = await runStageWithFallback(ctx, "observer", resolved, resolver, (worker) => observeChunkWithThinkingRetry(
+			backlogEntries,
+			{ text: chunk, sourceEntryIds },
+			{ maxTokens: maxChunkTokens },
+			(observedChunk) => runObserver({
+				model: worker.model as any,
+				apiKey: worker.apiKey,
+				headers: worker.headers,
+				env: worker.env,
+				priorReflections,
+				priorObservations,
+				chunk: observedChunk,
+				allowedSourceEntryIds: sourceEntryIds,
+				maxTurns: runtime.config.agentMaxTurns,
+				maxOutputTokens: runtime.config.agentMaxTokens,
+				signal: consolidationSignal(runtime),
+				thinkingLevel: workerThinkingLevel(runtime, worker),
+				modelRegistry: ctx.modelRegistry,
+			}),
+			(error) => debugLog("observer.retry_without_thinking", { error: error instanceof Error ? error.message : String(error) }),
+		), consolidationSignal(runtime));
 	} catch (error) {
 		if (wasAborted(runtime)) {
 			debugLog("observer.aborted", { coversUpToId });

@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { runObserver } from "../agents/observer/agent.js";
+import { observeChunkWithThinkingRetry, runObserver } from "../agents/observer/agent.js";
 import { resolveObserverChunkMaxTokens, resolveWorkerMemoryMaxTokens } from "../config.js";
 import { debugLog } from "../debug-log.js";
 import type { Runtime } from "../runtime.js";
@@ -91,21 +91,24 @@ export async function catchUpObserver(args: CatchUpArgs): Promise<CatchUpResult>
 
 		let observations;
 		try {
-			observations = await runObserver({
+			observations = await observeChunkWithThinkingRetry(remaining, { text: chunk, sourceEntryIds }, { maxTokens: maxChunkTokens }, (observedChunk) => runObserver({
 				model: resolved.model as any,
 				apiKey: resolved.apiKey,
 				headers: resolved.headers,
 				env: resolved.env,
 				priorReflections: memory.reflections.map(reflectionToSummaryLine),
 				priorObservations: memory.observations.map(observationToSummaryLine),
-				chunk,
+				chunk: observedChunk,
 				allowedSourceEntryIds: sourceEntryIds,
 				signal,
 				maxTurns: runtime.config.agentMaxTurns,
 				maxOutputTokens: runtime.config.agentMaxTokens,
 				thinkingLevel: runtime.config.model?.thinking ?? "low",
 				modelRegistry: ctx.modelRegistry as any,
-			});
+			}), (error) => debugLog("compaction.catch_up.retry_without_thinking", {
+				chunkIndex,
+				error: error instanceof Error ? error.message : String(error),
+			}));
 		} catch (error) {
 			if (signal?.aborted) return { ...result, stoppedBecause: "aborted" };
 			const errorMessage = error instanceof Error ? error.message : String(error);

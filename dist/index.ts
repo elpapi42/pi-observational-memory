@@ -1521,7 +1521,7 @@ function textOnly(content) {
   if (!Array.isArray(content)) return "";
   return content.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n");
 }
-function serializeConversation(messages) {
+function serializeConversation(messages, options = {}) {
   return messages.map((msg) => {
     const time = formatTimestamp(msg.timestamp);
     if (msg.role === "user") {
@@ -1530,7 +1530,7 @@ function serializeConversation(messages) {
     }
     if (msg.role === "assistant") {
       const body = textAndPlaceholders(msg.content, {
-        includeThinking: true,
+        includeThinking: options.includeThinking ?? true,
         omitRedactedThinking: true
       }).split("\n").filter(Boolean).join("\n");
       if (!body) return null;
@@ -1560,11 +1560,11 @@ function renderCustomMessage(entry, options) {
   const tag = entry.customType ? `Custom (${entry.customType})` : "Custom";
   return `[${tag} @ ${time}]: ${text}`;
 }
-function serializeBranchEntries(entries) {
+function serializeBranchEntries(entries, options = {}) {
   const blocks = [];
   for (const entry of entries) {
     if (entry.type === "message" && entry.message) {
-      const part = serializeConversation([entry.message]);
+      const part = serializeConversation([entry.message], options);
       if (part) blocks.push(part);
       continue;
     }
@@ -1606,7 +1606,7 @@ function serializeSourceAddressedBranchEntries(entries, options = {}) {
   let estimatedTokens = 0;
   for (const entry of entries) {
     if (!entry.id || !isSourceRenderableEntry(entry)) continue;
-    const rendered = serializeBranchEntries([entry]);
+    const rendered = serializeBranchEntries([entry], { includeThinking: options.includeThinking });
     if (!rendered.trim()) continue;
     const label = `[Source entry id: ${entry.id}]`;
     const block = `${label}
@@ -1700,6 +1700,25 @@ var ObserverStreamError = class extends Error {
     this.stopReason = stopReason;
   }
 };
+function isProviderPolicyBlock(error) {
+  if (!(error instanceof ObserverStreamError) || error.stopReason !== "error") return false;
+  return /terms of service|usage polic|duplicating model outputs/i.test(error.message);
+}
+async function observeChunkWithThinkingRetry(sourceEntries, chunk, options, run, onRetry) {
+  try {
+    return await run(chunk.text);
+  } catch (error) {
+    if (!isProviderPolicyBlock(error)) throw error;
+    const ids = new Set(chunk.sourceEntryIds);
+    const retry = serializeSourceAddressedBranchEntries(
+      sourceEntries.filter((entry) => entry.id !== void 0 && ids.has(entry.id)),
+      { maxTokens: options.maxTokens, includeThinking: false }
+    );
+    if (retry.text === chunk.text) throw error;
+    onRetry?.(error);
+    return await run(retry.text);
+  }
+}
 function joinOrEmpty(items) {
   return items.length ? items.join("\n") : "(none yet)";
 }
@@ -1866,21 +1885,24 @@ async function catchUpObserver(args) {
     debugLog("compaction.catch_up.chunk", { chunkIndex, sourceEntryCount: sourceEntryIds.length, estimatedTokens, coversUpToId });
     let observations;
     try {
-      observations = await runObserver({
+      observations = await observeChunkWithThinkingRetry(remaining, { text: chunk, sourceEntryIds }, { maxTokens: maxChunkTokens }, (observedChunk) => runObserver({
         model: resolved.model,
         apiKey: resolved.apiKey,
         headers: resolved.headers,
         env: resolved.env,
         priorReflections: memory.reflections.map(reflectionToSummaryLine),
         priorObservations: memory.observations.map(observationToSummaryLine),
-        chunk,
+        chunk: observedChunk,
         allowedSourceEntryIds: sourceEntryIds,
         signal,
         maxTurns: runtime.config.agentMaxTurns,
         maxOutputTokens: runtime.config.agentMaxTokens,
         thinkingLevel: runtime.config.model?.thinking ?? "low",
         modelRegistry: ctx.modelRegistry
-      });
+      }), (error) => debugLog("compaction.catch_up.retry_without_thinking", {
+        chunkIndex,
+        error: error instanceof Error ? error.message : String(error)
+      }));
     } catch (error) {
       if (signal?.aborted) return { ...result, stoppedBecause: "aborted" };
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -3054,21 +3076,27 @@ async function runObserverStage(pi, runtime, ctx, resolver) {
   });
   let observations;
   try {
-    observations = await runStageWithFallback(ctx, "observer", resolved, resolver, (worker) => runObserver({
-      model: worker.model,
-      apiKey: worker.apiKey,
-      headers: worker.headers,
-      env: worker.env,
-      priorReflections,
-      priorObservations,
-      chunk,
-      allowedSourceEntryIds: sourceEntryIds,
-      maxTurns: runtime.config.agentMaxTurns,
-      maxOutputTokens: runtime.config.agentMaxTokens,
-      signal: consolidationSignal(runtime),
-      thinkingLevel: workerThinkingLevel(runtime, worker),
-      modelRegistry: ctx.modelRegistry
-    }), consolidationSignal(runtime));
+    observations = await runStageWithFallback(ctx, "observer", resolved, resolver, (worker) => observeChunkWithThinkingRetry(
+      backlogEntries,
+      { text: chunk, sourceEntryIds },
+      { maxTokens: maxChunkTokens },
+      (observedChunk) => runObserver({
+        model: worker.model,
+        apiKey: worker.apiKey,
+        headers: worker.headers,
+        env: worker.env,
+        priorReflections,
+        priorObservations,
+        chunk: observedChunk,
+        allowedSourceEntryIds: sourceEntryIds,
+        maxTurns: runtime.config.agentMaxTurns,
+        maxOutputTokens: runtime.config.agentMaxTokens,
+        signal: consolidationSignal(runtime),
+        thinkingLevel: workerThinkingLevel(runtime, worker),
+        modelRegistry: ctx.modelRegistry
+      }),
+      (error) => debugLog("observer.retry_without_thinking", { error: error instanceof Error ? error.message : String(error) })
+    ), consolidationSignal(runtime));
   } catch (error) {
     if (wasAborted(runtime)) {
       debugLog("observer.aborted", { coversUpToId });
