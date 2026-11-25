@@ -7,7 +7,7 @@ const CONTEXT_USAGE_INSTRUCTIONS = `These are condensed memories from earlier in
 
 Treat these as past records. When entries conflict, the most recent observation reflects the latest known state. Work that prior observations describe as completed should not be redone unless the user explicitly asks to revisit it.
 
-When exact source context is needed for precision or traceability, use the recall tool with the relevant observation or reflection id. This is especially useful when a reflection materially affects a decision or is too compressed to continue confidently. Do not use recall as broad search or inject raw source unless it is needed.`;
+When exact source context is needed for precision or traceability, use the recall tool with the relevant observation or reflection id. This is especially useful when a reflection materially affects a decision or is too brief to continue confidently. Do not use recall as broad search or inject raw source unless it is needed.`;
 
 export function observationToSummaryLine(observation: Observation): string {
 	return `[${observation.id}] ${observation.timestamp} [${observation.relevance}] ${observation.content}`;

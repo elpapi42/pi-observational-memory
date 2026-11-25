@@ -108,7 +108,7 @@ describe("V3 reflector agent", () => {
 		expect(systemPrompt).toContain("Do not lightly reword existing reflections");
 		expect(systemPrompt).toContain("Reflections are scarce, expensive durable orientation anchors");
 		expect(systemPrompt).toContain("not a second observation layer");
-		expect(systemPrompt).toContain("Over-reflection is also memory distortion");
+		expect(systemPrompt).toContain("Over-reflection is also an accuracy problem");
 		expect(systemPrompt).toContain("makes transient details look durable");
 		expect(systemPrompt).toContain("Decision procedure:");
 		expect(systemPrompt).toContain("First reject observations that are transient, low-level, partial, routine, or only useful as current working state");
@@ -118,7 +118,7 @@ describe("V3 reflector agent", () => {
 		expect(systemPrompt).toContain("If unsure, emit no reflection");
 		expect(systemPrompt).toContain("High and critical observations deserve careful review, not automatic reflection");
 		expect(systemPrompt).toContain("Do not turn each observation into a reflection");
-		expect(systemPrompt).toContain("Observations are evidence; reflections are compressed durable conclusions");
+		expect(systemPrompt).toContain("Observations are evidence; reflections are summarized durable conclusions");
 		expect(systemPrompt).toContain("Single-observation reflections are allowed");
 		expect(systemPrompt).toContain("durable user preference, constraint, correction, decision, invariant, completed outcome, or long-lived blocker");
 		expect(systemPrompt).toContain("Do not copy or lightly paraphrase observation lines");

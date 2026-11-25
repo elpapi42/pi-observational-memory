@@ -114,7 +114,7 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 		name: "record_observations",
 		label: "Record observations",
 		description:
-			"Record a batch of new observations distilled from the conversation chunk. " +
+			"Record a batch of new observations summarizing the conversation chunk. " +
 			"Call this multiple times as you work through the chunk. Stop calling when coverage is complete, " +
 			"then emit a short plain-text confirmation to end the run.",
 		parameters: RecordObservationsSchema,
@@ -173,7 +173,7 @@ ${joinOrEmpty(priorObservations)}
 
 Current local time: ${now}
 
-Compress the following new conversation chunk into observations by calling record_observations one or more times. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
+Summarize the following new conversation chunk as observations by calling record_observations one or more times. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
 
 NEW CONVERSATION CHUNK:
 ${conversation}`;

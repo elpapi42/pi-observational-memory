@@ -880,7 +880,7 @@ var CONTEXT_USAGE_INSTRUCTIONS = `These are condensed memories from earlier in t
 
 Treat these as past records. When entries conflict, the most recent observation reflects the latest known state. Work that prior observations describe as completed should not be redone unless the user explicitly asks to revisit it.
 
-When exact source context is needed for precision or traceability, use the recall tool with the relevant observation or reflection id. This is especially useful when a reflection materially affects a decision or is too compressed to continue confidently. Do not use recall as broad search or inject raw source unless it is needed.`;
+When exact source context is needed for precision or traceability, use the recall tool with the relevant observation or reflection id. This is especially useful when a reflection materially affects a decision or is too brief to continue confidently. Do not use recall as broad search or inject raw source unless it is needed.`;
 function observationToSummaryLine(observation) {
   return `[${observation.id}] ${observation.timestamp} [${observation.relevance}] ${observation.content}`;
 }
@@ -1347,9 +1347,9 @@ function boundedMaxTokens(model, requested = AGENT_LOOP_MAX_TOKENS) {
 // src/agents/observer/prompts.ts
 var OBSERVER_SYSTEM = `You are the observation agent for a coding assistant.
 
-These records are the ONLY information the assistant will have about past interactions once the raw conversation is compacted out of context. Anything you do not capture here will be forgotten. Anything you distort here will be remembered wrong. Take this seriously.
+These notes are kept as a record of the session after older conversation is compacted out of context. Record facts accurately and completely; later turns rely on these notes to stay consistent with what happened.
 
-Your job is to compress a chunk of recent conversation into timestamped, rated observations by calling the record_observations tool. The observations you emit \u2014 together with the reflections crystallized from them \u2014 are the assistant's ONLY memory of this session after the raw conversation falls out of context.
+Your job is to summarize a chunk of recent conversation as timestamped, rated observations by calling the record_observations tool. The observations you record, together with the reflections derived from them, serve as the session's notes once older messages are compacted.
 
 You receive:
 - Current reflections (long-lived facts already crystallized).
@@ -1453,7 +1453,7 @@ Relevance levels (pick one per observation; this field drives future dropping):
 - medium: task-level context that helps within the current work but isn't durable. The default when you are unsure between medium and high.
 - low: routine tool-call acks, repetitive status updates, content trivially re-derivable from recent messages. The dropper will drop these first.
 
-Do NOT default to "critical" or "high". Most observations are medium or low. Reserve "critical" for things that would cause real damage if forgotten.
+Do NOT default to "critical" or "high". Most observations are medium or low. Reserve "critical" for things that would cause real damage if lost.
 
   BAD:  relevance=critical for "Agent ran tests and they passed."
   GOOD: relevance=low for "Agent ran tests and they passed." (routine; captured by a completion observation if it matters)
@@ -1463,7 +1463,7 @@ Do NOT default to "critical" or "high". Most observations are medium or low. Res
 
 Timestamp format: "YYYY-MM-DD HH:MM" (local time, 24-hour, to the minute). This goes in the timestamp field, not the content.
 
-Remember: these observations are the assistant's ONLY memory of this chunk once the raw messages fall out of context. Make them count.`;
+Keep these notes accurate and specific; later turns rely on them once the original messages are compacted.`;
 
 // src/serialize.ts
 function pad(n) {
@@ -1723,7 +1723,7 @@ async function runObserver(args) {
   const recordObservations = {
     name: "record_observations",
     label: "Record observations",
-    description: "Record a batch of new observations distilled from the conversation chunk. Call this multiple times as you work through the chunk. Stop calling when coverage is complete, then emit a short plain-text confirmation to end the run.",
+    description: "Record a batch of new observations summarizing the conversation chunk. Call this multiple times as you work through the chunk. Stop calling when coverage is complete, then emit a short plain-text confirmation to end the run.",
     parameters: RecordObservationsSchema,
     execute: async (_id, params) => {
       let added = 0;
@@ -1770,7 +1770,7 @@ ${joinOrEmpty(priorObservations)}
 
 Current local time: ${now}
 
-Compress the following new conversation chunk into observations by calling record_observations one or more times. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
+Summarize the following new conversation chunk as observations by calling record_observations one or more times. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
 
 NEW CONVERSATION CHUNK:
 ${conversation}`;
@@ -2107,11 +2107,11 @@ import { Type as Type2 } from "@earendil-works/pi-ai";
 // src/agents/dropper/prompts.ts
 var DROPPER_SYSTEM = `You are the dropper agent for a coding assistant.
 
-These records are the ONLY information the assistant will have about past interactions once the raw conversation is compacted out of context. Dropping the wrong observation can make future work repeat, contradict, or misremember the user. Take this seriously.
+These notes are kept as a record of the session after older conversation is compacted out of context. Dropping the wrong observation can cause later work to be repeated, to contradict earlier decisions, or to misstate user facts. Choose carefully.
 
 Your job is to identify only the safest active observations to remove from compacted memory by calling drop_observations with their ids. Default action is KEEP. When uncertain, keep the observation.
 
-Active-memory framing. Dropping an observation removes it from active compacted memory; it does not erase the ledger history or source evidence. Still, future compressed context will no longer show the observation, so only drop it when its durable meaning is safely captured elsewhere or it is genuinely low-signal and carries no unique future value.
+Active-memory framing. Dropping an observation removes it from active compacted memory; it does not erase the ledger history or source evidence. Still, the session summary will no longer show the observation, so only drop it when its durable meaning is safely captured elsewhere or it is genuinely low-signal and carries no unique future value.
 
 The user message includes the active observation pool target and "Maximum drops allowed this run". The maximum is a hard upper bound sized to move the pool toward the target if every proposed drop is clearly safe. It is not a target. Do not try to fill it. Drop fewer or none when fewer observations are safely removable. When the active pool is far over target, make a thorough pass over safe candidates rather than stopping after a few obvious examples.
 
@@ -2152,7 +2152,7 @@ What you cannot do:
 - You cannot add new observations or reflections.
 - You can only call drop_observations with ids from the current observations list.
 
-Do not force drops you do not believe in. If no observations are safe to drop, do not call the tool and reply briefly. Hitting the budget or maximum count is less important than preserving load-bearing memory.`;
+Do not force drops you do not believe in. If no observations are safe to drop, do not call the tool and reply briefly. Hitting the budget or maximum count is less important than preserving load-bearing notes.`;
 
 // src/agents/dropper/coverage.ts
 var REFLECTION_COVERAGE_DROP_RANK = {
@@ -2469,9 +2469,9 @@ import { Type as Type3 } from "@earendil-works/pi-ai";
 // src/agents/reflector/prompts.ts
 var REFLECTOR_SYSTEM = `You are the reflection agent for a coding assistant.
 
-These records are the ONLY information the assistant will have about past interactions once the raw conversation is compacted out of context. Anything you fail to preserve may be forgotten. Anything you distort may be remembered wrong. Take this seriously. Over-reflection is also memory distortion: it makes transient details look durable and crowds out the few facts future runs actually need.
+These notes are kept as a record of the session after older conversation is compacted out of context. Record facts accurately; later turns rely on these notes. Over-reflection is also an accuracy problem: it makes transient details look durable and crowds out the few facts future runs actually need.
 
-Your task is different from the observer's: you are not recording events, you are distilling stable, long-lived facts and patterns from active observations into new reflections by calling record_reflections. Reflections are scarce, expensive durable orientation anchors, not a second observation layer.
+Your task is different from the observer's: you are not recording events, you are summarizing stable, long-lived facts and patterns from active observations as new reflections by calling record_reflections. Reflections are scarce, expensive durable orientation anchors, not a second observation layer.
 
 You receive:
 - Current reflections: durable facts already crystallized.
@@ -2490,12 +2490,12 @@ What to emit:
 Decision procedure:
 1. First reject observations that are transient, low-level, partial, routine, or only useful as current working state.
 2. From the remaining observations, identify only durable orientation facts: user preferences, constraints, corrections, decisions, invariants, completed outcomes, long-lived blockers, stable project goals, or rationale that future runs must know.
-3. Apply the future-agent utility test: would a future assistant need this fact automatically in compressed context to avoid a wrong decision, repeated work, or user-preference violation?
+3. Apply the future-agent utility test: would a future assistant need this fact automatically in the session summary to avoid a wrong decision, repeated work, or user-preference violation?
 4. If the candidate fails that future-agent utility test, leave it as an observation.
 5. If unsure, emit no reflection.
 
 Abstraction gate:
-- Do not turn each observation into a reflection. Observations are evidence; reflections are compressed durable conclusions.
+- Do not turn each observation into a reflection. Observations are evidence; reflections are summarized durable conclusions.
 - A reflection should usually do at least one of these: combine multiple observations into one durable pattern, preserve a user preference/constraint/correction/decision, record a completed outcome future runs must not redo, or capture durable rationale that explains why a decision was made.
 - Single-observation reflections are allowed when the observation itself contains a durable user preference, constraint, correction, decision, invariant, completed outcome, or long-lived blocker.
 - Do not copy or lightly paraphrase observation lines just because they are high or critical. If the reflection would say nearly the same thing as one observation with a few words removed, usually emit no reflection unless that observation contains a durable user assertion, durable decision, invariant, or completed outcome.
@@ -2516,7 +2516,7 @@ Support ids and coverage stewardship:
 - supportingObservationIds are not a checklist to cover every observation. Do not add ids merely to improve coverage counts, maximize support ids, maximize strong coverage, or unlock the dropper.
 - False or inflated support ids can cause unsafe downstream dropper pruning, including removal of high-resistance active observations whose meaning was not actually preserved.
 - Include additional observation ids only when the reflection preserves their durable meaning with equivalent fidelity.
-- Leave observations unsupported when their details are still active working state, too specific to compress safely, or not yet durable enough.
+- Leave observations unsupported when their details are still active working state, too specific to summarize safely, or not yet durable enough.
 - Do not include observations whose unique exact detail, current task state, user correction, user constraint, or concrete completion is not captured by the reflection.
 - If no candidate reflection passes the durable-value bar, emit zero reflections even when observations have coverage: none.
 - Never invent observation ids. Proposals with missing, empty, or invalid supportingObservationIds are rejected.
