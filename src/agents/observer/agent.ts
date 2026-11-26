@@ -114,7 +114,7 @@ export async function observeChunkWithThinkingRetry<T>(
 			sourceEntries.filter((entry) => entry.id !== undefined && ids.has(entry.id)),
 			{ maxTokens: options.maxTokens, includeThinking: false },
 		);
-		if (retry.text === chunk.text) throw error;
+		if (!retry.text.trim() || retry.text === chunk.text) throw error;
 		onRetry?.(error);
 		return await run(retry.text);
 	}

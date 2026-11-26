@@ -40,6 +40,47 @@ describe("observer policy-block retry", () => {
 		expect(onRetry).toHaveBeenCalledWith(blocked);
 	});
 
+	it("omits thinking without growing a near-budget chunk or dropping trailing entries", async () => {
+		const twoEntries = [
+			{
+				type: "message",
+				id: "a1",
+				timestamp: "2026-05-02T10:00:00.000Z",
+				message: {
+					role: "assistant",
+					content: [{ type: "thinking", thinking: "ok" }, { type: "text", text: "first" }],
+					timestamp: Date.parse("2026-05-02T10:00:00.000Z"),
+				},
+			},
+			{
+				type: "message",
+				id: "a2",
+				timestamp: "2026-05-02T10:01:00.000Z",
+				message: {
+					role: "user",
+					content: "second",
+					timestamp: Date.parse("2026-05-02T10:01:00.000Z"),
+				},
+			},
+		];
+		const chunk = serializeSourceAddressedBranchEntries(twoEntries);
+		expect(chunk.sourceEntryIds).toEqual(["a1", "a2"]);
+		const run = vi.fn(async (text: string) => {
+			if (text.includes("[thinking:")) throw blocked;
+			return text;
+		});
+		const result = await observeChunkWithThinkingRetry(
+			twoEntries,
+			chunk,
+			{ maxTokens: chunk.estimatedTokens },
+			run,
+		);
+		expect(run).toHaveBeenCalledTimes(2);
+		expect(result).toContain("[Source entry id: a1]");
+		expect(result).toContain("[Source entry id: a2]");
+		expect(result).not.toContain("[non-text content omitted]");
+	});
+
 	it("does not retry other failures or chunks without thinking", async () => {
 		const chunk = serializeSourceAddressedBranchEntries(entries);
 		const other = new ObserverStreamError("error", "rate limited");

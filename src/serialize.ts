@@ -47,6 +47,7 @@ function textAndPlaceholders(
 				parts.push(`[thinking: ${block.thinking}]`);
 				continue;
 			}
+			if (options.includeThinking === false) continue;
 			parts.push("[non-text content omitted]");
 			continue;
 		}

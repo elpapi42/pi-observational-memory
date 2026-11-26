@@ -1504,6 +1504,7 @@ function textAndPlaceholders(content, options = {}) {
         parts.push(`[thinking: ${block.thinking}]`);
         continue;
       }
+      if (options.includeThinking === false) continue;
       parts.push("[non-text content omitted]");
       continue;
     }
@@ -1714,7 +1715,7 @@ async function observeChunkWithThinkingRetry(sourceEntries, chunk, options, run,
       sourceEntries.filter((entry) => entry.id !== void 0 && ids.has(entry.id)),
       { maxTokens: options.maxTokens, includeThinking: false }
     );
-    if (retry.text === chunk.text) throw error;
+    if (!retry.text.trim() || retry.text === chunk.text) throw error;
     onRetry?.(error);
     return await run(retry.text);
   }
