@@ -47,6 +47,7 @@ function textAndPlaceholders(
 				parts.push(`[thinking: ${block.thinking}]`);
 				continue;
 			}
+			if (options.includeThinking === false) continue;
 			parts.push("[non-text content omitted]");
 			continue;
 		}
@@ -69,7 +70,7 @@ function textOnly(content: unknown): string {
 		.join("\n");
 }
 
-export function serializeConversation(messages: Message[]): string {
+export function serializeConversation(messages: Message[], options: { includeThinking?: boolean } = {}): string {
 	return messages
 		.map((msg): string | null => {
 			const time = formatTimestamp(msg.timestamp);
@@ -79,7 +80,7 @@ export function serializeConversation(messages: Message[]): string {
 			}
 			if (msg.role === "assistant") {
 				const body = textAndPlaceholders(msg.content, {
-					includeThinking: true,
+					includeThinking: options.includeThinking ?? true,
 					omitRedactedThinking: true,
 				})
 					.split("\n")
@@ -138,11 +139,11 @@ function renderCustomMessage(entry: RenderableEntry, options: { recallFormat: bo
 	return `[${tag} @ ${time}]: ${text}`;
 }
 
-export function serializeBranchEntries(entries: RenderableEntry[]): string {
+export function serializeBranchEntries(entries: RenderableEntry[], options: { includeThinking?: boolean } = {}): string {
 	const blocks: string[] = [];
 	for (const entry of entries) {
 		if (entry.type === "message" && entry.message) {
-			const part = serializeConversation([entry.message as Message]);
+			const part = serializeConversation([entry.message as Message], options);
 			if (part) blocks.push(part);
 			continue;
 		}
@@ -168,6 +169,8 @@ export type SourceAddressedSerialization = {
 export type SourceAddressedSerializationOptions = {
 	/** Maximum estimated tokens in the final source-addressed text. */
 	maxTokens?: number;
+	/** Render assistant thinking blocks as text. Defaults to true. */
+	includeThinking?: boolean;
 };
 
 const SOURCE_OMISSION_MARKER =
@@ -207,7 +210,7 @@ export function serializeSourceAddressedBranchEntries(
 
 	for (const entry of entries) {
 		if (!entry.id || !isSourceRenderableEntry(entry)) continue;
-		const rendered = serializeBranchEntries([entry]);
+		const rendered = serializeBranchEntries([entry], { includeThinking: options.includeThinking });
 		if (!rendered.trim()) continue;
 		const label = `[Source entry id: ${entry.id}]`;
 		const block = `${label}\n${rendered}`;

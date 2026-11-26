@@ -7,7 +7,12 @@ import { logAgentStreamError } from "../stream-errors.js";
 import { resolveWorkerStreamSimple, type StreamableModelRegistry, type WorkerStreamSimple } from "../worker-stream.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
-import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
+import {
+	nowTimestamp,
+	serializeSourceAddressedBranchEntries,
+	truncateRecordContent,
+	type RenderableEntry,
+} from "../../serialize.js";
 import type { Observation, Relevance } from "../../session-ledger/index.js";
 import { observationLineTokenCount } from "../../tokens.js";
 
@@ -82,6 +87,39 @@ export class ObserverStreamError extends Error {
 	}
 }
 
+/** A provider refused the request on policy grounds rather than failing it. */
+export function isProviderPolicyBlock(error: unknown): boolean {
+	if (!(error instanceof ObserverStreamError) || error.stopReason !== "error") return false;
+	return /terms of service|usage polic|duplicating model outputs/i.test(error.message);
+}
+
+/**
+ * Run the observer on a serialized chunk. Some providers block requests that
+ * carry the assistant's thinking as plain text, so a policy block of a chunk
+ * that included thinking is retried once on the same source entries without it.
+ */
+export async function observeChunkWithThinkingRetry<T>(
+	sourceEntries: readonly RenderableEntry[],
+	chunk: { text: string; sourceEntryIds: readonly string[] },
+	options: { maxTokens?: number },
+	run: (chunk: string) => Promise<T>,
+	onRetry?: (error: unknown) => void,
+): Promise<T> {
+	try {
+		return await run(chunk.text);
+	} catch (error) {
+		if (!isProviderPolicyBlock(error)) throw error;
+		const ids = new Set(chunk.sourceEntryIds);
+		const retry = serializeSourceAddressedBranchEntries(
+			sourceEntries.filter((entry) => entry.id !== undefined && ids.has(entry.id)),
+			{ maxTokens: options.maxTokens, includeThinking: false },
+		);
+		if (!retry.text.trim() || retry.text === chunk.text) throw error;
+		onRetry?.(error);
+		return await run(retry.text);
+	}
+}
+
 function joinOrEmpty(items: string[]): string {
 	return items.length ? items.join("\n") : "(none yet)";
 }
@@ -114,7 +152,7 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 		name: "record_observations",
 		label: "Record observations",
 		description:
-			"Record a batch of new observations distilled from the conversation chunk. " +
+			"Record a batch of new observations summarizing the conversation chunk. " +
 			"Call this multiple times as you work through the chunk. Stop calling when coverage is complete, " +
 			"then emit a short plain-text confirmation to end the run.",
 		parameters: RecordObservationsSchema,
@@ -173,7 +211,7 @@ ${joinOrEmpty(priorObservations)}
 
 Current local time: ${now}
 
-Compress the following new conversation chunk into observations by calling record_observations one or more times. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
+Summarize the following new conversation chunk as observations by calling record_observations one or more times. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
 
 NEW CONVERSATION CHUNK:
 ${conversation}`;
